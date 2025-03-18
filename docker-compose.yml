@@ -9,3 +9,12 @@ services:
     container_name: countdown-viewer
     stdin_open: true  # Keep STDIN open
     tty: true        # Allocate a pseudo-TTY
+
+  data-generator:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    volumes:
+      - ./data:/data/countdown
+    container_name: countdown-data-generator
+    command: conda run -n zero python /app/experiments/continual/data_gen.py

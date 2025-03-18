@@ -1,0 +1,11 @@
+version: '3'
+services:
+  countdown-viewer:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    volumes:
+      - ./data:/data/countdown
+    container_name: countdown-viewer
+    stdin_open: true  # Keep STDIN open
+    tty: true        # Allocate a pseudo-TTY

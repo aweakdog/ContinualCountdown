@@ -30,7 +30,7 @@ RUN conda create -n zero python=3.9 -y && \
     conda run -n zero pip install -e . && \
     conda run -n zero pip install flash-attn --no-build-isolation && \
     conda run -n zero pip install wandb IPython matplotlib && \
-    conda run -n zero pip install datasets
+    conda run -n zero pip install datasets rich
 
 # Create data directory
 RUN mkdir -p /data/countdown
@@ -41,5 +41,5 @@ SHELL ["conda", "run", "-n", "zero", "/bin/bash", "-c"]
 # Set working directory for data
 WORKDIR /data/countdown
 
-# Download and prepare the dataset when container starts
-CMD ["conda", "run", "-n", "zero", "python", "/app/examples/data_preprocess/countdown.py", "--local_dir", "/data/countdown"]
+# Set the default command to run our data viewer
+CMD ["conda", "run", "-n", "zero", "python", "/app/tmp/show_data.py"]

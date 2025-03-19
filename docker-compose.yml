@@ -1,43 +1,45 @@
 version: '3'
 services:
-  countdown-viewer:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    volumes:
-      - ./data:/data/countdown
-    container_name: countdown-viewer
-    stdin_open: true  # Keep STDIN open
-    tty: true        # Allocate a pseudo-TTY
-
-  data-generator:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    volumes:
-      - ./data:/data/countdown
-    container_name: countdown-data-generator
-    command: conda run -n zero python /app/experiments/continual/data_gen.py
-
   continual-trainer:
     build:
       context: .
       dockerfile: Dockerfile
     volumes:
-      - ./data:/data/countdown
+      - ./data:/data/countdown  # Mount data according to memory
       - ./wandb:/app/wandb  # For WandB logs
       - ./logs:/app/logs    # For training logs
+      - ~/model/qwen0.5b:/app/models/qwen:ro  # Mount Qwen model as read-only
+      - ./metrics:/app/metrics  # For metrics output
+      - ./scripts:/app/scripts  # Mount training scripts
     container_name: countdown-continual-trainer
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
-      - BASE_MODEL=/app/models/base_model.pt  # Set your base model path
-      - N_GPUS=4
-      - ROLLOUT_TP_SIZE=2
+      - BASE_MODEL=/app/models/qwen  # Path to mounted Qwen model
+      - N_GPUS=8  # Using all 8 3090 GPUs
+      - ROLLOUT_TP_SIZE=2  # Using tensor parallel size 2 for Qwen-0.5B's 14 attention heads
+      - DATA_DIR=/data/countdown/continual  # Match the mounted data path
+      - WANDB_MODE=offline  # Run WandB in offline mode to avoid API key requirement
+      - VLLM_ATTENTION_BACKEND=XFORMERS  # As specified in OLD_README.md
+      - CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
     deploy:
       resources:
         reservations:
           devices:
             - driver: nvidia
-              count: all
+              count: 8
               capabilities: [gpu]
-    command: conda run -n zero bash /app/scripts/train_continual_countdown.sh
+    shm_size: '64gb'  # Increased shared memory for multi-GPU training
+    ulimits:
+      memlock: -1  # Remove memory lock limits
+      stack: 67108864  # Increase stack size
+    ipc: host  # Use host IPC namespace for better inter-process communication
+    working_dir: /app
+    command: >
+      bash -c '
+        # Ensure all directories exist
+        mkdir -p /app/models/qwen /app/metrics /app/logs /app/wandb &&
+        # Initialize conda and start training
+        . /opt/conda/etc/profile.d/conda.sh &&
+        conda activate zero &&
+        bash scripts/train_continual_countdown.sh
+      '

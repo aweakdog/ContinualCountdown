@@ -13,7 +13,7 @@ from omegaconf import OmegaConf
 from verl.trainer.main_ppo import main as train_ppo
 
 class ContinualTrainer:
-    def __init__(self, base_dir: str = "/data/countdown/continual"):
+    def __init__(self, base_dir: str = "/data/continual"):
         self.base_dir = base_dir
         self.groups = [
             "plus",
@@ -94,8 +94,19 @@ class ContinualTrainer:
         cfg.data.train_files = os.path.join(self.base_dir, group, "train.parquet")
         cfg.data.val_files = os.path.join(self.base_dir, group, "test.parquet")
         
-        # Update experiment name to include round and group
-        cfg.trainer.experiment_name = f"{cfg.trainer.experiment_name}_round{round_idx+1}_{group}"
+        # Update experiment name and WandB config to include round and group
+        run_name = f"{cfg.trainer.experiment_name}_round{round_idx+1}_{group}"
+        cfg.trainer.experiment_name = run_name
+        
+        # Configure WandB
+        wandb_config = {
+            "round": round_idx + 1,
+            "group": group,
+            "run_name": run_name
+        }
+        if not hasattr(cfg.trainer, "wandb"):
+            cfg.trainer.wandb = {}
+        cfg.trainer.wandb.update(wandb_config)
         
         # Get initial model state if first round and group
         if round_idx == 0 and group_idx == 0:
@@ -103,6 +114,10 @@ class ContinualTrainer:
         
         # Train the model
         metrics = train_ppo(cfg)
+        
+        # Add round and group info to metrics
+        metrics["round"] = round_idx + 1
+        metrics["group"] = group
         
         # Update and save metrics
         self.update_metrics(round_idx, group_idx, metrics)

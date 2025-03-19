@@ -4,6 +4,17 @@ FROM nvidia/cuda:12.1.0-devel-ubuntu22.04
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
 ENV CONDA_DIR=/opt/conda
+ENV VLLM_ATTENTION_BACKEND=XFORMERS
+ENV TORCH_CUDA_ARCH_LIST="8.0;8.6+PTX"
+ENV VLLM_USE_CUDA_GRAPH=0
+ENV TRANSFORMERS_OFFLINE=1
+ENV CUDA_HOME=/usr/local/cuda
+ENV PATH=${CUDA_HOME}/bin:${PATH}
+ENV LD_LIBRARY_PATH=${CUDA_HOME}/lib64:${LD_LIBRARY_PATH}
+ENV VLLM_ATTENTION_BACKEND=XFORMERS
+ENV TORCH_CUDA_ARCH_LIST="8.0;8.6+PTX"
+ENV VLLM_USE_CUDA_GRAPH=0
+ENV TRANSFORMERS_OFFLINE=1
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
@@ -11,6 +22,8 @@ RUN apt-get update && apt-get install -y \
     wget \
     curl \
     ca-certificates \
+    ninja-build \
+    build-essential \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Miniconda
@@ -24,6 +37,7 @@ WORKDIR /app
 COPY . /app/
 
 RUN conda create -n zero python=3.9 -y && \
+    conda run -n zero pip install numpy && \
     conda run -n zero pip install torch==2.4.0 --index-url https://download.pytorch.org/whl/cu121 && \
     conda run -n zero pip install vllm==0.6.3 && \
     conda run -n zero pip install ray && \

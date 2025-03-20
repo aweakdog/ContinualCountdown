@@ -125,8 +125,10 @@ class RLHFDataset(Dataset):
 
         chat = row_dict.pop(self.prompt_key)
 
+        # Handle both string prompts and chat format
+        #prompt_with_chat_template = chat[0]['content'] if isinstance(chat, list) else chat
+        #prompt_with_chat_template = chat
         prompt_with_chat_template = chat[0]['content']
-        # prompt_with_chat_template = chat
 
         input_ids, attention_mask = verl_F.tokenize_and_postprocess_data(prompt=prompt_with_chat_template,
                                                                          tokenizer=self.tokenizer,

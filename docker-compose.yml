@@ -1,16 +1,33 @@
 version: '3'
 services:
+  data-generator:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    volumes:
+      - .:/app  # Mount entire project
+      - ./data:/data/countdown  # Mount data directory
+    container_name: countdown-data-generator
+    working_dir: /app
+    command: >
+      bash -c '
+        git config --global --add safe.directory /app &&
+        . /opt/conda/etc/profile.d/conda.sh &&
+        conda activate zero &&
+        python experiments/continual/data_gen.py
+      '
+
   continual-trainer:
     build:
       context: .
       dockerfile: Dockerfile
     volumes:
-      - ./data:/data/countdown  # Mount data according to memory
+      - .:/app  # Mount entire project
+      - ./data:/data/countdown  # Mount data directory
       - ./wandb:/app/wandb  # For WandB logs
       - ./logs:/app/logs    # For training logs
       - ~/model/qwen0.5b:/app/models/qwen:ro  # Mount Qwen model as read-only
       - ./metrics:/app/metrics  # For metrics output
-      - ./scripts:/app/scripts  # Mount training scripts
     container_name: countdown-continual-trainer
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
@@ -38,6 +55,8 @@ services:
       bash -c '
         # Ensure all directories exist
         mkdir -p /app/models/qwen /app/metrics /app/logs /app/wandb &&
+        # Fix git ownership
+        git config --global --add safe.directory /app &&
         # Initialize conda and start training
         . /opt/conda/etc/profile.d/conda.sh &&
         conda activate zero &&

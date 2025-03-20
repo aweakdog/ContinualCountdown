@@ -8,7 +8,7 @@ from rich.progress import track
 from rich import print as rprint
 
 class DataGenerator:
-    def __init__(self, base_dir: str = "/data/continual"):
+    def __init__(self, base_dir: str = "/data/countdown/continual"):
         self.base_dir = base_dir
         self.operator_groups = [
             ["+"],
@@ -56,18 +56,46 @@ class DataGenerator:
         
         # Convert to dataset format
         def create_dataset(samples, split: str) -> Dataset:
+            # Convert samples to proper dataset format
             data = {
                 "target": [s[0] for s in samples],
                 "nums": [s[1] for s in samples]
             }
             dataset = Dataset.from_dict(data)
             
-            # Add prompts using the base template
-            def add_prompts(example):
-                example["prompt"] = make_prefix(example, template_type="base")
-                return example
+            def process_fn(example, idx):
+                # Create prompt with proper template
+                question = make_prefix(example, template_type="base")
+                
+                # Add solution for reward model
+                solution = {
+                    "target": example['target'],
+                    "numbers": example['nums']
+                }
+
+
+                data = {
+                    "data_source": "countdown_continual",
+                    "prompt": [{
+                        "role": "user",
+                        "content": question,
+                    }],
+                    "ability": "math",
+                    "reward_model": {
+                        "style": "rule",
+                        "ground_truth": solution
+                    },
+                    "extra_info": {
+                        'split': split,
+                        'index': idx,
+                        'operator_group': self.group_names[group_idx]
+                    }
+                }
+
+                return data
             
-            dataset = dataset.map(add_prompts)
+            # Map the processing function over the dataset
+            dataset = dataset.map(function=process_fn, with_indices=True)
             
             # Save dataset
             output_path = os.path.join(group_dir, f"{split}.parquet")
@@ -90,4 +118,4 @@ if __name__ == "__main__":
         rprint(f"\n[bold cyan]Processing operator group: {generator.operator_groups[group_idx]}[/bold cyan]")
         train_dataset, test_dataset = generator.generate_group_data(group_idx)
         rprint(f"[green]✓ Generated {len(train_dataset)} training samples and {len(test_dataset)} test samples[/green]")
-        rprint(f"[blue]  Saved in /data/continual/{generator.group_names[group_idx]}/[/blue]")
+        rprint(f"[blue]  Saved in /data/countdown/continual/{generator.group_names[group_idx]}/[/blue]")

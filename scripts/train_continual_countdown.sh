@@ -167,7 +167,7 @@ train_group() {
         data.train_files=$DATA_DIR/${group}/train.parquet \
         data.val_files=$DATA_DIR/${group}/test.parquet \
         data.train_batch_size=256 \
-        data.val_batch_size=1312 \
+        data.val_batch_size=1000 \
         data.max_prompt_length=256 \
         data.max_response_length=1024 \
         actor_rollout_ref.model.path=$BASE_MODEL \
@@ -185,10 +185,10 @@ train_group() {
         actor_rollout_ref.actor.ppo_micro_batch_size=8 \
         actor_rollout_ref.rollout.log_prob_micro_batch_size=8 \
         actor_rollout_ref.rollout.tensor_model_parallel_size=$ROLLOUT_TP_SIZE \
-        actor_rollout_ref.rollout.gpu_memory_utilization=0.4 \
+        actor_rollout_ref.rollout.gpu_memory_utilization=0.6 \
         actor_rollout_ref.rollout.enforce_eager=true \
         actor_rollout_ref.rollout.free_cache_engine=false \
-        actor_rollout_ref.ref.log_prob_micro_batch_size=4 \
+        actor_rollout_ref.ref.log_prob_micro_batch_size=8 \
         critic.optim.lr=1e-5 \
         critic.model.path=$BASE_MODEL \
         +critic.model.trust_remote_code=true \

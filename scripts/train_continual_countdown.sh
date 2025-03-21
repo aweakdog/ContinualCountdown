@@ -181,7 +181,7 @@ train_group() {
         +actor_rollout_ref.model.use_cache=false \
         +actor_rollout_ref.model.use_flash_attention_2=true \
         actor_rollout_ref.actor.optim.lr=1e-6 \
-        actor_rollout_ref.actor.ppo_mini_batch_size=64 \
+        actor_rollout_ref.actor.ppo_mini_batch_size=16 \
         actor_rollout_ref.actor.ppo_micro_batch_size=8 \
         actor_rollout_ref.rollout.log_prob_micro_batch_size=8 \
         actor_rollout_ref.rollout.tensor_model_parallel_size=$ROLLOUT_TP_SIZE \

@@ -3,7 +3,7 @@
 # Configuration
 export BASE_MODEL=${BASE_MODEL:-"/app/models/qwen"}  # Qwen 0.5B model mounted in container
 export N_GPUS=8  # Using all 8 3090 GPUs
-export ROLLOUT_TP_SIZE=${ROLLOUT_TP_SIZE:-2}  # Default to 2 for Qwen-0.5B's 14 attention heads
+export ROLLOUT_TP_SIZE=${ROLLOUT_TP_SIZE:2}  # Default to 2 for Qwen-0.5B's 14 attention heads
 export DATA_DIR="/data/countdown/continual"  # Match memory data structure
 
 # Training configuration
@@ -167,7 +167,7 @@ train_group() {
         data.train_files=$DATA_DIR/${group}/train.parquet \
         data.val_files=$DATA_DIR/${group}/test.parquet \
         data.train_batch_size=256 \
-        data.val_batch_size=1000 \
+        data.val_batch_size=100 \
         data.max_prompt_length=256 \
         data.max_response_length=1024 \
         actor_rollout_ref.model.path=$BASE_MODEL \

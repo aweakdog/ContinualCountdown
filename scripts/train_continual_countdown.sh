@@ -167,7 +167,7 @@ train_group() {
         data.train_files=$DATA_DIR/${group}/train.parquet \
         data.val_files=$DATA_DIR/${group}/test.parquet \
         data.train_batch_size=256 \
-        data.val_batch_size=100 \
+        data.val_batch_size=256 \
         data.max_prompt_length=256 \
         data.max_response_length=1024 \
         actor_rollout_ref.model.path=$BASE_MODEL \

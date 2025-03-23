@@ -128,8 +128,6 @@ class DataGenerator:
                 # Create prompt template
                 question = make_prefix(example, operators=["+", "-", "*", "/"])
 
-            
-                
                 # Add solution and metadata
                 data = {
                     "data_source": "countdown_continual",

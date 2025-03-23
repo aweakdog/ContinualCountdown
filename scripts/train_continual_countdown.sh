@@ -5,13 +5,19 @@ export BASE_MODEL=${BASE_MODEL:-"/app/models/qwen"}  # Qwen 0.5B model mounted i
 export N_GPUS=8  # Using all 8 3090 GPUs
 export ROLLOUT_TP_SIZE=${ROLLOUT_TP_SIZE:-2}  # Default to 2 for Qwen-0.5B's 14 attention heads
 export DATA_DIR="/data/countdown/continual"  # Match memory data structure
+export TRAINED_MODEL="/app/models/countdown_continual"  # Model being continually trained
 
 # Training configuration
 ROUNDS=3
 declare -a GROUPS=("plus" "plus_minus" "plus_minus_mul" "plus_minus_mul_div")
 
 # Create necessary directories
-mkdir -p metrics logs wandb
+mkdir -p metrics logs wandb plots
+
+# Copy initial model to trained model location if it doesn't exist
+if [ ! -d "$TRAINED_MODEL" ]; then
+    cp -r "$BASE_MODEL" "$TRAINED_MODEL"
+fi
 
 # Print configuration
 echo "Starting training with configuration:"
@@ -20,7 +26,7 @@ echo "DATA_DIR: $DATA_DIR"
 echo "Number of GPUs: $N_GPUS"
 echo "Tensor Parallel Size: $ROLLOUT_TP_SIZE"
 echo "Training Rounds: $ROUNDS"
-echo "Operator Groups: ${GROUPS[*]}"
+echo "Operator Groups: plus -> plus_minus -> plus_minus_mul -> plus_minus_mul_div"
 
 # Function to compute weight change
 compute_weight_change() {
@@ -48,6 +54,8 @@ extract_wandb_metrics() {
     local metrics_file=$2
     local round=$3
     local group=$4
+    
+    echo "Extracting metrics from $log_file for round $round, group $group"
     python3 -c "
 import re
 import json
@@ -148,8 +156,8 @@ train_group() {
     
     echo "Starting training for Round ${round}, Group ${group}"
     
-    # Store initial model for weight change calculation
-    cp -r "$BASE_MODEL" "metrics/initial_${round}_${group}"
+    # Store initial model state for weight change calculation
+    cp -r "$TRAINED_MODEL" "metrics/initial_${round}_${group}"
     
     # Run training with WandB configuration
     WANDB_RUN_NAME="ContinualCountdown_R${round}_${group}"
@@ -163,6 +171,10 @@ train_group() {
     export VLLM_USE_CUDA_GRAPH=0  # Disable CUDA graph due to cache engine
     export TRANSFORMERS_OFFLINE=1  # Prevent model downloads
     
+    echo "Training on data:"
+    echo "  Train: $DATA_DIR/$group/train.parquet"
+    echo "  Test:  $DATA_DIR/$group/test.parquet"
+    
     python3 -m verl.trainer.main_ppo \
         data.train_files=$DATA_DIR/${group}/train.parquet \
         data.val_files=$DATA_DIR/${group}/test.parquet \
@@ -170,7 +182,7 @@ train_group() {
         data.val_batch_size=256 \
         data.max_prompt_length=256 \
         data.max_response_length=1024 \
-        actor_rollout_ref.model.path=$BASE_MODEL \
+        actor_rollout_ref.model.path=$TRAINED_MODEL \
         actor_rollout_ref.model.use_remove_padding=True \
         actor_rollout_ref.actor.use_dynamic_bsz=True \
         +actor_rollout_ref.model.trust_remote_code=true \
@@ -190,7 +202,7 @@ train_group() {
         actor_rollout_ref.rollout.free_cache_engine=false \
         actor_rollout_ref.ref.log_prob_micro_batch_size=8 \
         critic.optim.lr=1e-5 \
-        critic.model.path=$BASE_MODEL \
+        critic.model.path=$TRAINED_MODEL \
         +critic.model.trust_remote_code=true \
         +critic.model.model_type=qwen2 \
         +critic.model.architectures=["Qwen2ForCausalLM"] \
@@ -243,8 +255,97 @@ with open('$metrics_file', 'w') as f:
 
 
 
+# Plot metrics function
+plot_metrics() {
+    python3 -c '
+import json
+import matplotlib.pyplot as plt
+import numpy as np
+
+# Load all metrics
+metrics = []
+for round in range(1, 4):
+    for group in ["plus", "plus_minus", "plus_minus_mul", "plus_minus_mul_div"]:
+        try:
+            with open(f"metrics/metrics_{round}_{group}.json") as f:
+                data = json.load(f)
+                metrics.append(data)
+        except:
+            continue
+
+# Create plots
+fig, ((ax1, ax2), (ax3, ax4), (ax5, ax6)) = plt.subplots(3, 2, figsize=(15, 15))
+
+# Success Rate
+ax1.plot([m["success_rate"] for m in metrics], "-o")
+ax1.set_title("Success Rate")
+ax1.set_ylim(0, 1)
+ax1.grid(True)
+
+# Normalized Weight Change
+ax2.plot([m["weight_change"] for m in metrics], "-o")
+ax2.set_title("Normalized Weight Change")
+ax2.grid(True)
+
+# Loss Function
+ax3.plot([m["avg_loss"] for m in metrics], "-o")
+ax3.set_title("Average Loss")
+ax3.grid(True)
+
+# Normalized Gradient
+ax4.plot([m["avg_grad_norm"] for m in metrics], "-o")
+ax4.set_title("Average Gradient Norm")
+ax4.grid(True)
+
+# Response Length
+ax5.plot([m["avg_response_length"] for m in metrics], "-o")
+ax5.set_title("Average Response Length")
+ax5.grid(True)
+
+# Add legend
+groups = np.array([[f"R{r}_{g}" for g in ["plus", "plus_minus", "plus_minus_mul", "plus_minus_mul_div"]] for r in range(1, 4)]).flatten()
+ax6.axis("off")
+ax6.legend([f"{i+1}: {g}" for i, g in enumerate(groups[:len(metrics)])], loc="center")
+
+plt.tight_layout()
+plt.savefig("plots/training_metrics.png")
+'
+}
+
 # Main training loop
 for ((round=1; round<=ROUNDS; round++)); do
+    echo "Starting Round $round"
+    
+    # Train on each group sequentially in specified order
+    for group in plus plus_minus plus_minus_mul plus_minus_mul_div; do
+        # Check if data exists
+        if [ ! -f "$DATA_DIR/$group/train.parquet" ] || [ ! -f "$DATA_DIR/$group/test.parquet" ]; then
+            echo "Error: Data files not found for group $group"
+            echo "Expected files:"
+            echo "  $DATA_DIR/$group/train.parquet"
+            echo "  $DATA_DIR/$group/test.parquet"
+            exit 1
+        fi
+        
+        train_group $round $group
+        
+        # Update trained model with latest weights if training was successful
+        if [ -d "metrics/final_${round}_${group}" ]; then
+            rm -rf "$TRAINED_MODEL"
+            cp -r "metrics/final_${round}_${group}" "$TRAINED_MODEL"
+        else
+            echo "Error: Training failed for round $round, group $group"
+            exit 1
+        fi
+    done
+    
+    # Plot metrics after each round
+    plot_metrics
+    
+    echo "Completed Round $round"
+done
+
+echo "Training completed. Metrics plots saved in plots/training_metrics.png"
     echo "Starting Round $round"
     for group in plus plus_minus plus_minus_mul plus_minus_mul_div; do
         echo "Processing operator group: $group"

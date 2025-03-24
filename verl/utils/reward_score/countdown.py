@@ -66,8 +66,15 @@ def compute_score(solution_str, ground_truth, method='strict', format_score=0.1,
         format_score: the score for correct format but wrong answer
         score: the score for the correct answer
     """
+    # Handle both simple and extended ground truth formats
+    if isinstance(ground_truth, dict) and 'ground_truth' in ground_truth:
+        ground_truth = ground_truth['ground_truth']
     target = ground_truth['target']
     numbers = ground_truth['numbers']
+    if isinstance(numbers, list):
+        numbers = list(numbers)
+    elif hasattr(numbers, 'tolist'):
+        numbers = numbers.tolist()
     
     equation = extract_solution(solution_str=solution_str)
     do_print = random.randint(1, 64) == 1

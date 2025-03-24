@@ -14,12 +14,51 @@ declare -a GROUPS=("plus" "plus_minus" "plus_minus_mul" "plus_minus_mul_div")
 # Create necessary directories
 mkdir -p metrics logs wandb plots
 
-# Copy initial model to trained model location if it doesn't exist
+# Initialize model directory if it doesn't exist
 if [ ! -d "$TRAINED_MODEL" ]; then
-    cp -r "$BASE_MODEL" "$TRAINED_MODEL"
+    echo "Creating trained model directory at $TRAINED_MODEL"
+    mkdir -p "$TRAINED_MODEL"
+    
+    # Check if base model exists
+    if [ ! -d "$BASE_MODEL" ]; then
+        echo "Error: Base model directory $BASE_MODEL does not exist"
+        exit 1
+    fi
+    
+    echo "\nChecking base model config.json:"
+    if [ ! -f "$BASE_MODEL/config.json" ]; then
+        echo "Error: No config.json found in base model"
+        exit 1
+    fi
+    echo "Base model config.json contents:"
+    cat "$BASE_MODEL/config.json"
+    
+    # Remove empty configuration.json if it exists
+    if [ -f "$BASE_MODEL/configuration.json" ]; then
+        echo "\nRemoving empty configuration.json"
+        rm "$BASE_MODEL/configuration.json"
+    fi
+    
+    echo "\nCopying base model files from $BASE_MODEL to $TRAINED_MODEL"
+    # First copy all files from base model, including hidden files
+    cp -rv "$BASE_MODEL/." "$TRAINED_MODEL/"
+    
+    echo "\nVerifying copied files:"
+    ls -la "$TRAINED_MODEL/"
+    
+    # Ensure config.json was copied correctly
+    if [ ! -f "$TRAINED_MODEL/config.json" ]; then
+        echo "Error: Failed to copy config.json from base model"
+        exit 1
+    fi
+    
+    echo "\nVerifying copied config.json contents:"
+    cat "$TRAINED_MODEL/config.json"
+    
+    echo "\nSuccessfully initialized model from $BASE_MODEL"
 fi
 
-# Print configuration
+# Print configuration and check directories
 echo "Starting training with configuration:"
 echo "BASE_MODEL: $BASE_MODEL"
 echo "DATA_DIR: $DATA_DIR"
@@ -28,148 +67,68 @@ echo "Tensor Parallel Size: $ROLLOUT_TP_SIZE"
 echo "Training Rounds: $ROUNDS"
 echo "Operator Groups: plus -> plus_minus -> plus_minus_mul -> plus_minus_mul_div"
 
-# Function to compute weight change
-compute_weight_change() {
-    local old_model=$1
-    local new_model=$2
-    python3 -c "
-import torch
-old = torch.load('$old_model')
-new = torch.load('$new_model')
-total_change = 0
-total_weights = 0
-for key in old['model'].keys():
-    if key in new['model']:
-        change = torch.norm(new['model'][key] - old['model'][key])
-        weights = torch.norm(old['model'][key])
-        total_change += change.item()
-        total_weights += weights.item()
-print(f'{total_change/total_weights:.6f}')
-"
+# Check base model directory
+echo "\nChecking base model directory:"
+ls -la "$BASE_MODEL"
+echo "\nBase model config.json contents:"
+cat "$BASE_MODEL/config.json"
+
+
+# Function to save model checkpoint
+save_checkpoint() {
+    local model_path=$1
+    local round=$2
+    local group=$3
+    local checkpoint_type=$4  # 'initial' or 'final'
+    
+    # Create checkpoint directory
+    local experiment_name="ContinualCountdown_R${round}_${group}"
+    local checkpoint_dir="checkpoints/ContinualCountdown/$experiment_name/actor"
+    
+    # Check if source model exists
+    if [ ! -d "$model_path" ]; then
+        echo "Warning: Model path $model_path does not exist"
+        return 1
+    fi
+    
+    echo "Creating checkpoint directory at $checkpoint_dir/global_step_0"
+    mkdir -p "$checkpoint_dir/global_step_0"
+    
+    echo "Copying model files from $model_path to checkpoint"
+    # Copy all files from the model path
+    cp -r "$model_path/." "$checkpoint_dir/global_step_0/"
+    
+    # Verify config.json was copied correctly
+    if [ ! -f "$checkpoint_dir/global_step_0/config.json" ]; then
+        echo "Error: Failed to copy config.json from model path"
+        return 1
+    fi
+    
+    echo "Successfully saved ${checkpoint_type} checkpoint for round $round, group $group"
 }
 
-# Function to extract metrics from WandB logs
-extract_wandb_metrics() {
-    local log_file=$1
-    local metrics_file=$2
-    local round=$3
-    local group=$4
-    
-    echo "Extracting metrics from $log_file for round $round, group $group"
-    python3 -c "
-import re
-import json
-import numpy as np
-
-with open('$log_file', 'r') as f:
-    content = f.read()
-
-# Extract metrics
-metrics = {
-    'response_lengths': [],
-    'rewards': [],
-    'losses': [],
-    'gradients': []
-}
-
-for line in content.split('\n'):
-    # Extract response length
-    if 'decoded output:' in line:
-        response = line.split('decoded output:')[1].strip()
-        metrics['response_lengths'].append(len(response.split()))
-    
-    # Extract reward scores
-    if 'Reward:' in line:
-        try:
-            reward = float(line.split('Reward:')[1].strip().split()[0])
-            metrics['rewards'].append(reward)
-        except:
-            pass
-    
-    # Extract loss values
-    if 'loss:' in line:
-        try:
-            loss = float(line.split('loss:')[1].strip().split()[0])
-            metrics['losses'].append(loss)
-        except:
-            pass
-    
-    # Extract gradient norms
-    if 'grad_norm:' in line:
-        try:
-            grad = float(line.split('grad_norm:')[1].strip().split()[0])
-            metrics['gradients'].append(grad)
-        except:
-            pass
-
-# Compute statistics
-stats = {}
-
-# Response length metrics
-if metrics['response_lengths']:
-    stats.update({
-        'avg_response_length': np.mean(metrics['response_lengths']),
-        'max_response_length': max(metrics['response_lengths']),
-        'min_response_length': min(metrics['response_lengths'])
-    })
-
-# Success rate and reward metrics
-if metrics['rewards']:
-    stats.update({
-        'avg_reward': np.mean(metrics['rewards']),
-        'success_rate': len([r for r in metrics['rewards'] if r > 0.9]) / len(metrics['rewards'])
-    })
-
-# Loss metrics
-if metrics['losses']:
-    stats.update({
-        'avg_loss': np.mean(metrics['losses']),
-        'final_loss': metrics['losses'][-1] if metrics['losses'] else None
-    })
-
-# Gradient metrics
-if metrics['gradients']:
-    stats.update({
-        'avg_grad_norm': np.mean(metrics['gradients']),
-        'max_grad_norm': max(metrics['gradients'])
-    })
-
-# Add round and group information
-stats.update({
-    'round': $round,
-    'group': '$group'
-})
-
-# Write metrics
-with open('$metrics_file', 'w') as f:
-    json.dump(stats, f, indent=2)
-"
-}
+# Create logs directory
+mkdir -p "logs"
 
 # Training function for a specific group
 train_group() {
     local round=$1
     local group=$2
     local experiment_name="ContinualCountdown_R${round}_${group}"
-    local metrics_file="metrics/metrics_${round}_${group}.json"
     local log_file="logs/${experiment_name}.log"
     
     echo "Starting training for Round ${round}, Group ${group}"
     
-    # Store initial model state for weight change calculation
-    cp -r "$TRAINED_MODEL" "metrics/initial_${round}_${group}"
+    # Save initial model state
+    save_checkpoint "$TRAINED_MODEL" "$round" "$group" "initial"
     
     # Run training with WandB configuration
     WANDB_RUN_NAME="ContinualCountdown_R${round}_${group}"
     
     echo "Starting training for Round ${round}, Group ${group}"
     
-    # Configure environment for bfloat16 and vLLM
-    export TORCH_CUDA_ARCH_LIST="8.0;8.6+PTX"  # For Ampere GPUs (RTX 3090)
-    export VLLM_TP_SIZE=$ROLLOUT_TP_SIZE  # Explicitly set tensor parallel size
-    export VLLM_DTYPE=bfloat16  # Force bfloat16 dtype
-    export VLLM_USE_CUDA_GRAPH=0  # Disable CUDA graph due to cache engine
-    export TRANSFORMERS_OFFLINE=1  # Prevent model downloads
+    # Prevent model downloads
+    export TRANSFORMERS_OFFLINE=1
     
     echo "Training on data:"
     echo "  Train: $DATA_DIR/$group/train.parquet"
@@ -191,7 +150,6 @@ train_group() {
         +actor_rollout_ref.model.device_map=auto \
         +actor_rollout_ref.model.attn_implementation=flash_attention_2 \
         +actor_rollout_ref.model.use_cache=false \
-        +actor_rollout_ref.model.use_flash_attention_2=true \
         actor_rollout_ref.actor.optim.lr=1e-6 \
         actor_rollout_ref.actor.ppo_mini_batch_size=16 \
         actor_rollout_ref.actor.ppo_micro_batch_size=8 \
@@ -204,17 +162,15 @@ train_group() {
         critic.optim.lr=1e-5 \
         critic.model.path=$TRAINED_MODEL \
         +critic.model.trust_remote_code=true \
-        +critic.model.model_type=qwen2 \
-        +critic.model.architectures=["Qwen2ForCausalLM"] \
-        +critic.model.config_overrides={"torch_dtype":"bfloat16"} \
         +critic.model.torch_dtype=bfloat16 \
         +critic.model.device_map=auto \
         +critic.model.attn_implementation=flash_attention_2 \
         +critic.model.use_cache=false \
         critic.ppo_micro_batch_size=8 \
         algorithm.kl_ctrl.kl_coef=0.001 \
-        trainer.logger=['wandb'] \
+        trainer.logger=['wandb','console'] \
         trainer.default_hdfs_dir=null \
+        trainer.default_local_dir=checkpoints/ContinualCountdown/$WANDB_RUN_NAME \
         trainer.n_gpus_per_node=$N_GPUS \
         trainer.nnodes=1 \
         trainer.save_freq=100 \
@@ -222,95 +178,48 @@ train_group() {
         trainer.project_name=ContinualCountdown \
         trainer.experiment_name=$WANDB_RUN_NAME \
         trainer.total_epochs=15 \
+        +trainer.val_before_train=True \
+        ++reward_model.enable=False \
+        ++reward_model.model.path=$TRAINED_MODEL \
         2>&1 | tee "$log_file"
     
-    # Update base model and compute metrics
-    latest_checkpoint=$(find wandb/latest-run/files -name "*.pt" | sort -V | tail -n 1)
-    if [ -n "$latest_checkpoint" ]; then
-        # Extract metrics from logs
-        extract_wandb_metrics "$log_file" "$metrics_file.tmp" "$round" "$group"
+    # Check if training was successful by looking for validation metrics
+    if grep -q "Final validation metrics" "$log_file"; then
+        echo "Training successful for round $round, group $group"
         
-        # Compute normalized weight change
-        weight_change=$(compute_weight_change "metrics/initial_${round}_${group}.pt" "$latest_checkpoint")
+        # Save final model checkpoint
+        latest_checkpoint="metrics/final_${round}_${group}"
+        mkdir -p "$latest_checkpoint"
         
-        # Combine metrics
-        python3 -c "
-import json
-with open('$metrics_file.tmp') as f:
-    metrics = json.load(f)
-metrics['weight_change'] = $weight_change
-with open('$metrics_file', 'w') as f:
-    json.dump(metrics, f, indent=2)
-"
-        rm "$metrics_file.tmp"
+        # Shutdown Ray and any lingering Python processes
+        echo "Shutting down Ray and Python processes before copying checkpoint..."
+        python3 -c 'import ray; ray.shutdown()'
+        pkill -f "ray::" || true
+        sleep 5  # Give time for processes to fully shut down
+        
+        # Copy final checkpoint for evaluation using rsync
+        echo "Copying final checkpoint to $latest_checkpoint"
+        if command -v rsync >/dev/null 2>&1; then
+            rsync -av "$TRAINED_MODEL/" "$latest_checkpoint/" || {
+                echo "Rsync failed, falling back to cp..."
+                cp -rv "$TRAINED_MODEL"/* "$latest_checkpoint/"
+            }
+        else
+            cp -rv "$TRAINED_MODEL"/* "$latest_checkpoint/"
+        fi
         
         # Update base model for next training
         export BASE_MODEL=$latest_checkpoint
         echo "Updated BASE_MODEL to $BASE_MODEL"
-        
-        # Clean up initial model
-        rm "metrics/initial_${round}_${group}.pt"
+    else
+        echo "Error: Training failed for round $round, group $group - no validation metrics found"
+        exit 1
     fi
 }
 
 
 
-# Plot metrics function
-plot_metrics() {
-    python3 -c '
-import json
-import matplotlib.pyplot as plt
-import numpy as np
 
-# Load all metrics
-metrics = []
-for round in range(1, 4):
-    for group in ["plus", "plus_minus", "plus_minus_mul", "plus_minus_mul_div"]:
-        try:
-            with open(f"metrics/metrics_{round}_{group}.json") as f:
-                data = json.load(f)
-                metrics.append(data)
-        except:
-            continue
-
-# Create plots
-fig, ((ax1, ax2), (ax3, ax4), (ax5, ax6)) = plt.subplots(3, 2, figsize=(15, 15))
-
-# Success Rate
-ax1.plot([m["success_rate"] for m in metrics], "-o")
-ax1.set_title("Success Rate")
-ax1.set_ylim(0, 1)
-ax1.grid(True)
-
-# Normalized Weight Change
-ax2.plot([m["weight_change"] for m in metrics], "-o")
-ax2.set_title("Normalized Weight Change")
-ax2.grid(True)
-
-# Loss Function
-ax3.plot([m["avg_loss"] for m in metrics], "-o")
-ax3.set_title("Average Loss")
-ax3.grid(True)
-
-# Normalized Gradient
-ax4.plot([m["avg_grad_norm"] for m in metrics], "-o")
-ax4.set_title("Average Gradient Norm")
-ax4.grid(True)
-
-# Response Length
-ax5.plot([m["avg_response_length"] for m in metrics], "-o")
-ax5.set_title("Average Response Length")
-ax5.grid(True)
-
-# Add legend
-groups = np.array([[f"R{r}_{g}" for g in ["plus", "plus_minus", "plus_minus_mul", "plus_minus_mul_div"]] for r in range(1, 4)]).flatten()
-ax6.axis("off")
-ax6.legend([f"{i+1}: {g}" for i, g in enumerate(groups[:len(metrics)])], loc="center")
-
-plt.tight_layout()
-plt.savefig("plots/training_metrics.png")
-'
-}
 
 # Main training loop
 for ((round=1; round<=ROUNDS; round++)); do
@@ -327,20 +236,64 @@ for ((round=1; round<=ROUNDS; round++)); do
             exit 1
         fi
         
+        # Create metrics and logs directories
+        mkdir -p "metrics" "logs"
+        
+        # Save initial model state
+        save_checkpoint "$TRAINED_MODEL" "$round" "$group" "initial"
+        
+        # Train on current group
         train_group $round $group
         
         # Update trained model with latest weights if training was successful
         if [ -d "metrics/final_${round}_${group}" ]; then
-            rm -rf "$TRAINED_MODEL"
-            cp -r "metrics/final_${round}_${group}" "$TRAINED_MODEL"
+            # Shutdown Ray and any lingering Python processes
+            echo "Shutting down Ray and Python processes..."
+            python3 -c 'import ray; ray.shutdown()'
+            pkill -f "ray::" || true
+            sleep 5  # Give time for processes to fully shut down
+            
+            # Get latest checkpoint from trainer
+            latest_checkpoint="checkpoints/ContinualCountdown/ContinualCountdown_R${round}_${group}/actor"
+            latest_step=$(ls "$latest_checkpoint" | grep -E '^global_step_[0-9]+$' | sort -V | tail -n 1)
+            
+            if [ -n "$latest_step" ]; then
+                echo "Copying checkpoint from $latest_checkpoint/$latest_step to $TRAINED_MODEL"
+                # First try rsync, fall back to cp if it fails
+                if command -v rsync >/dev/null 2>&1; then
+                    rsync -av --remove-source-files "$latest_checkpoint/$latest_step/" "$TRAINED_MODEL/" || {
+                        echo "Rsync failed, falling back to cp..."
+                        for file in "$latest_checkpoint/$latest_step"/*; do
+                            if [ -f "$file" ]; then
+                                cp -v "$file" "$TRAINED_MODEL/" || echo "Warning: Failed to copy $file"
+                            fi
+                        done
+                    }
+                else
+                    for file in "$latest_checkpoint/$latest_step"/*; do
+                        if [ -f "$file" ]; then
+                            cp -v "$file" "$TRAINED_MODEL/" || echo "Warning: Failed to copy $file"
+                        fi
+                    done
+                fi
+            
+                # Ensure config.json has model_type
+                if [ -f "$TRAINED_MODEL/config.json" ]; then
+                    if ! grep -q '"model_type"' "$TRAINED_MODEL/config.json"; then
+                        sed -i 's/{/{"model_type":"qwen2",/' "$TRAINED_MODEL/config.json"
+                    fi
+                else
+                    echo '{"model_type":"qwen2","architectures":["Qwen2ForCausalLM"]}' > "$TRAINED_MODEL/config.json"
+                fi
+            else
+                echo "Error: No checkpoint found in $latest_checkpoint"
+                exit 1
+            fi
         else
             echo "Error: Training failed for round $round, group $group"
             exit 1
         fi
     done
-    
-    # Plot metrics after each round
-    plot_metrics
     
     echo "Completed Round $round"
 done
@@ -368,71 +321,4 @@ echo "Training completed. Metrics plots saved in plots/training_metrics.png"
     echo "Completed Round $round"
 done
 
-# Generate final metrics summary
-python3 -c '
-import json
-import glob
-import pandas as pd
-
-# Load all metrics files
-metrics_data = []
-for f in glob.glob("metrics/metrics_*_*.json"):
-    try:
-        # Extract round and group from filename
-        parts = f.split("_")
-        round_num = int(parts[-2])
-        group_name = parts[-1].replace(".json", "")
-        
-        with open(f) as fp:
-            data = json.load(fp)
-            # Add round and group info
-            data["round"] = round_num
-            data["group"] = group_name
-            
-            # Ensure all required metrics are present
-            metrics_data.append({
-                "round": round_num,
-                "group": group_name,
-                "success_rate": data.get("success_rate", 0),
-                "weight_change": data.get("weight_change", 0),
-                "avg_loss": data.get("avg_loss", 0),
-                "avg_response_length": data.get("avg_response_length", 0),
-                "avg_reward": data.get("avg_reward", 0),
-                "avg_grad_norm": data.get("avg_grad_norm", 0),
-                "max_grad_norm": data.get("max_grad_norm", 0)
-            })
-    except Exception as e:
-        print(f"Error processing {f}: {e}")
-
-if not metrics_data:
-    print("No metrics data found")
-    exit(0)
-
-# Convert to DataFrame
-df = pd.DataFrame(metrics_data)
-
-# Calculate metrics by round and group
-summary = {
-    "overall": {
-        metric: df[metric].mean()
-        for metric in df.columns if metric not in ["round", "group"]
-    },
-    "by_round": df.groupby("round").mean().to_dict(),
-    "by_group": df.groupby("group").mean().to_dict(),
-    "by_round_and_group": df.set_index(["round", "group"]).to_dict()
-}
-
-# Save summary
-with open("metrics/summary.json", "w") as f:
-    json.dump(summary, f, indent=2)
-
-print("Metrics summary saved to metrics/summary.json")
-print("\nOverall metrics:")
-for metric, value in summary["overall"].items():
-    print(f"{metric}: {value:.4f}")
-'
-
-echo "Training completed for all rounds and groups. See metrics/summary.json for final results."
-
-echo "Training completed for all rounds and groups. See metrics/summary.json for final results."
-
+echo "Training completed for all rounds and groups."

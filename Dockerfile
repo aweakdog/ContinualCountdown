@@ -24,6 +24,7 @@ RUN apt-get update && apt-get install -y \
     ca-certificates \
     ninja-build \
     build-essential \
+    jq \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Miniconda

@@ -5,7 +5,7 @@ import random
 import itertools
 
 import tiktoken
-
+from copy import deepcopy
 from .countdown_utils import combine_nums, sum_heuristic, mult_heuristic, great_prune, mult_prune
 
 class CountDownDirectly(object):
@@ -23,17 +23,17 @@ class CountDownDirectly(object):
         while True:
             # nums in question can go up to max target
             nums = [random.randint(1, self.max_target-1) for _ in range(self.start_size)]
-            target, solution = self.random_countdown()
+            target, solution = self.random_countdown(nums)
             if (self.min_target <= target) and (target <=self.max_target):
                 break
-        return nums, solution
+        return nums, target, solution
     def random_countdown(self, nums):
         remain_nums = deepcopy(nums)
         operations = []
         while (len(remain_nums)>1):
-            i, j = random.sample(range(1, self.max_target), 2)
-            possible = combine_nums(i,j, self.operators)
-            choice = random.sample(possible)
+            i, j = random.sample(range(len(remain_nums)), 2)
+            possible = combine_nums(remain_nums[i], remain_nums[j], self.operators)
+            choice = random.sample(possible, 1)[0]
             remain_nums = [remain_nums[k] for k in range(len(remain_nums)) if k != i and k != j] + [choice[0]]
             operations+=[choice[1]]
         return remain_nums[0], operations

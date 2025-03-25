@@ -82,68 +82,27 @@ The training process uses the veRL framework to train the model through multiple
 - 3 complete rounds of training
 - Each group trained for 15 epochs
 
-#### Metrics System
+#### Training Output
 
-The experiment tracks the following key metrics across all operator groups:
+During training, the following artifacts are generated:
 
-1. **Success Rate**
-   - Definition: Percentage of correctly solved equations
-   - Tracked per group and round via veRL's reward system
-   - Available in:
-     - WandB dashboard (real-time)
-     - Training logs
+1. **Model Checkpoints**
+   - Initial state: `metrics/initial_{round}_{group}/`
+   - Final state: `metrics/final_{round}_{group}/`
+   - Used to track model evolution across training
 
-2. **Normalized Weight Change**
-   - Definition: `||W_new - W_old|| / ||W_old||`
-   - Computed between checkpoints for each group
-   - Available in:
-     - `metrics/metrics_{round}_{group}.json`
-
-3. **Loss Function**
-   - Definition: Training loss values
-   - Tracked per batch and epoch via veRL's trainer
-   - Available in:
-     - WandB dashboard (real-time)
-     - Training logs
-
-4. **Response Length**
-   - Definition: Statistics of generated solution lengths
-   - Computed from training logs
-   - Metrics include:
-     - Average response length
-     - Maximum response length
-     - Minimum response length
-   - Available in:
-     - `metrics/metrics_{round}_{group}.json`
-
-#### Metrics Analysis
-
-Metrics are analyzed at three levels:
-
-1. **Per Training Segment**
-   - File: `metrics/metrics_{round}_{group}.json`
-   - Contains: Raw metrics for each training segment
-
-2. **Summary Statistics**
-   - File: `metrics/summary.json`
+2. **Training Logs**
+   - Location: `logs/ContinualCountdown_R{round}_{group}.log`
    - Contains:
-     ```json
-     {
-       "per_round": {
-         // Average metrics for each round
-       },
-       "per_group": {
-         // Average metrics for each operator group
-       },
-       "overall": {
-         // Overall averages across all rounds and groups
-       }
-     }
-     ```
+     - Success rates
+     - Loss values
+     - Gradient norms
+     - Response lengths
 
-3. **Real-time Monitoring**
-   - WandB Dashboard: Real-time metrics visualization
-   - Log Files: `logs/ContinualCountdown_R{round}_{group}.log`
+3. **WandB Dashboard**
+   - Real-time training metrics
+   - Interactive visualizations
+   - Experiment tracking
 
 #### Running Training
 
@@ -162,16 +121,44 @@ mkdir -p wandb logs metrics
 
 3. Launch training:
 ```bash
-# Build the training image
+# Build and start training
 docker compose build continual-trainer
-
-# Start training
 docker compose run --rm continual-trainer
+```
+
+### 3. Evaluation
+
+The evaluation process is decoupled from training and runs in a separate container.
+
+#### Evaluation Process
+
+1. **Metrics Extraction**
+   - Processes training logs
+   - Computes weight changes between checkpoints
+   - Generates consolidated metrics
+
+2. **Tracked Metrics**
+   - Success Rate: Percentage of correctly solved equations
+   - Weight Change: Normalized difference between model states
+   - Loss Values: Training loss progression
+   - Gradient Norms: Training stability indicators
+   - Response Lengths: Solution complexity analysis
+
+3. **Output Files**
+   - Individual metrics: `metrics/metrics_{round}_{group}.json`
+   - Consolidated metrics: `metrics/consolidated_metrics.json`
+   - Visualizations: `plots/training_metrics.png`
+
+#### Running Evaluation
+
+```bash
+# After training completes
+docker compose run --rm evaluator
 ```
 
 ### GPU Requirements
 
-The training container is configured to use all available GPUs. You can modify the GPU configuration in `docker-compose.yml`:
+The containers are configured to use all available GPUs. You can modify the GPU configuration in `docker-compose.yml`:
 ```yaml
 environment:
   - NVIDIA_VISIBLE_DEVICES=all  # Specify GPU indices (e.g., "0,1,2,3")

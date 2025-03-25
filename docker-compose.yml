@@ -1,5 +1,44 @@
 version: '3'
 services:
+  evaluator:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    volumes:
+      - .:/app  # Mount entire project
+      - ./data:/data/countdown  # Mount data directory
+      - ./metrics:/app/metrics  # For metrics input
+      - ./plots:/app/plots    # For evaluation plots
+      - ./logs:/app/logs    # For training logs
+    container_name: countdown-evaluator
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - CUDA_VISIBLE_DEVICES=0  # Only need one GPU for evaluation
+      - METRICS_DIR=/app/metrics
+      - PLOTS_DIR=/app/plots
+      - LOGS_DIR=/app/logs
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    shm_size: '8gb'  # Reduced shared memory since we only need one GPU
+    ulimits:
+      memlock: -1
+      stack: 67108864
+    ipc: host
+    working_dir: /app
+    command: >
+      bash -c '
+        git config --global --add safe.directory /app &&
+        . /opt/conda/etc/profile.d/conda.sh &&
+        conda activate zero &&
+        mkdir -p /app/metrics /app/plots /app/logs &&
+        bash scripts/eval_continual_countdown.sh
+      '
+
   data-generator:
     build:
       context: .
@@ -27,6 +66,7 @@ services:
       - ./wandb:/app/wandb  # For WandB logs
       - ./logs:/app/logs    # For training logs
       - ~/model/qwen0.5b:/app/models/qwen:ro  # Mount Qwen model as read-only
+      - ./models/countdown_continual:/app/models/countdown_continual  # Mount trained model directory
       - ./metrics:/app/metrics  # For metrics output
     container_name: countdown-continual-trainer
     environment:
@@ -54,9 +94,16 @@ services:
     command: >
       bash -c '
         # Ensure all directories exist
-        mkdir -p /app/models/qwen /app/metrics /app/logs /app/wandb &&
+        mkdir -p /app/models/qwen /app/metrics /app/logs /app/wandb /app/models/countdown_continual &&
         # Fix git ownership
         git config --global --add safe.directory /app &&
+        # Initialize trained model from base model if needed
+        if [ ! -f /app/models/countdown_continual/config.json ]; then
+          echo "Initializing trained model from base model..."
+          cp -r /app/models/qwen/* /app/models/countdown_continual/
+          echo "Verifying config.json..."
+          cat /app/models/countdown_continual/config.json
+        fi &&
         # Initialize conda and start training
         . /opt/conda/etc/profile.d/conda.sh &&
         conda activate zero &&

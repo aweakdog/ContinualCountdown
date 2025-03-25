@@ -13,55 +13,55 @@ from pathlib import Path
 # Disable WandB logging
 os.environ['WANDB_MODE'] = 'disabled'
 
-def extract_metrics_from_log(log_file: str) -> Dict[str, float]:
-    """Extract metrics from a training log file.
+def extract_metrics_from_log(log_file: str) -> List[Dict[str, float]]:
+    """Extract metrics from a training log file after each step.
     
     Args:
         log_file: Path to the log file, e.g. 'logs/ContinualCountdown_R1_plus_minus.log'
         
     Returns:
-        Dictionary containing metrics
+        List of dictionaries containing metrics for each step
     """
     if not os.path.exists(log_file):
         print(f"Warning: Log file not found: {log_file}")
-        return {
+        return [{
+            'step': 0,
             'success_rate': 0.0,
             'avg_loss': 0.0,
             'avg_grad_norm': 0.0,
             'avg_response_length': 0.0
-        }
+        }]
     
     with open(log_file, 'r') as f:
         content = f.read()
     
-    def extract_metric(pattern: str) -> float:
-        matches = re.findall(pattern, content)
-        return float(matches[-1]) if matches else 0.0
+    # Extract all step metrics
+    step_metrics = []
+    step_pattern = r'step:([0-9]+).*?critic/score/mean:([0-9.]+).*?actor/pg_loss:([-.0-9]+).*?actor/grad_norm:([0-9.]+).*?response_length/mean:([0-9.]+)'
     
-    # Get final validation metrics
-    success_rate = 0.0
-    final_metrics_match = re.search(r'Final validation metrics.*?val/test_score/countdown_continual.*?step:4 - val/test_score/countdown_continual:([0-9.]+)', content, re.DOTALL)
-    if final_metrics_match:
-        success_rate = float(final_metrics_match.group(1))
+    # Extract metrics for each step
+    for match in re.finditer(step_pattern, content, re.DOTALL):
+        step = int(match.group(1))
+        metrics = {
+            'step': step,
+            'success_rate': float(match.group(2)),  # Using critic/score/mean for success rate
+            'avg_loss': float(match.group(3)),      # Using actor/pg_loss for loss
+            'avg_grad_norm': float(match.group(4)),
+            'avg_response_length': float(match.group(5))
+        }
+        step_metrics.append(metrics)
     
-    # Get final step metrics
-    final_step_match = re.search(r'step:([0-9]+).*?critic/returns/mean:([0-9.]+).*?actor/grad_norm:([0-9.]+).*?response_length/mean:([0-9.]+)', content, re.DOTALL)
+    if not step_metrics:
+        print(f"Warning: No metrics found in {log_file}")
+        return [{
+            'step': 0,
+            'success_rate': 0.0,
+            'avg_loss': 0.0,
+            'avg_grad_norm': 0.0,
+            'avg_response_length': 0.0
+        }]
     
-    avg_loss = 0.0
-    avg_grad_norm = 0.0
-    avg_response_length = 0.0
-    
-    if final_step_match:
-        avg_loss = float(final_step_match.group(2))
-        avg_grad_norm = float(final_step_match.group(3))
-        avg_response_length = float(final_step_match.group(4))
-    
-    return {
-        'success_rate': success_rate,
-        'avg_loss': avg_loss,
-        'avg_grad_norm': avg_grad_norm,
-        'avg_response_length': avg_response_length
-    }
+    return step_metrics
 
 
 class ContinualEvaluator:
@@ -155,7 +155,7 @@ class ContinualEvaluator:
 
     def process_metrics(self) -> List[Dict]:
         """Process metrics from logs and model checkpoints."""
-        metrics = []
+        all_metrics = []
         
         for round_num in range(1, self.rounds + 1):
             for group in self.groups:
@@ -167,26 +167,27 @@ class ContinualEvaluator:
                     print(f"Warning: Missing log file for round {round_num}, group {group}")
                     continue
                 
-                # Extract metrics from log
-                data = extract_metrics_from_log(str(log_file))
+                # Extract metrics from log for each step
+                step_metrics = extract_metrics_from_log(str(log_file))
                 
-                # Add weight change
-                data['weight_change'] = self.compute_weight_change(round_num, group)
+                # Get weight change
+                weight_change = self.compute_weight_change(round_num, group)
                 
-                # Add metadata
-                data.update({
-                    'round': round_num,
-                    'group': group
-                })
-                
-                metrics.append(data)
+                # Add metadata and weight change to each step's metrics
+                for metrics in step_metrics:
+                    metrics.update({
+                        'round': round_num,
+                        'group': group,
+                        'weight_change': weight_change
+                    })
+                    all_metrics.append(metrics)
                 
                 # Save individual metrics file
                 metrics_file = self.metrics_dir / f"metrics_{round_num}_{group}.json"
                 with open(metrics_file, 'w') as f:
-                    json.dump(data, f, indent=2)
+                    json.dump(step_metrics, f, indent=2)
         
-        return metrics
+        return all_metrics
 
     def plot_metrics(self, metrics: List[Dict], save_path: Optional[str] = None):
         """Create plots for all metrics."""

@@ -17,7 +17,7 @@ class CountDown(object):
         if len(self.operators) == 1 :
             self.max_cnt_limit = 10
         else:
-            self.max_cnt_limit = 10000
+            self.max_cnt_limit = 100000
     
     def generate(self, target):
         if target > self.max_target:
@@ -39,7 +39,7 @@ class CountDown(object):
         return nums, solution
 
     def search(self, target, nums, operations=[]):
-        if self.max_cnt >= 10000:
+        if self.max_cnt >= self.max_cnt_limit:
             return None
         # Navigate the entire solution tree, implemented with DFS
         if len(nums) == 1:

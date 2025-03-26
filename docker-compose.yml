@@ -56,7 +56,7 @@ services:
         python experiments/continual/data_gen.py
       '
 
-  continual-trainer:
+  continual-trainer-0.5b:
     build:
       context: .
       dockerfile: Dockerfile
@@ -68,7 +68,7 @@ services:
       - ~/model/qwen0.5b:/app/models/qwen:ro  # Mount Qwen model as read-only
       - ./models/countdown_continual:/app/models/countdown_continual  # Mount trained model directory
       - ./metrics:/app/metrics  # For metrics output
-    container_name: countdown-continual-trainer
+    container_name: countdown-continual-trainer-0.5b
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - BASE_MODEL=/app/models/qwen  # Path to mounted Qwen model
@@ -91,21 +91,50 @@ services:
       stack: 67108864  # Increase stack size
     ipc: host  # Use host IPC namespace for better inter-process communication
     working_dir: /app
+
+  continual-trainer-1.5b:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    volumes:
+      - .:/app  # Mount entire project
+      - ./data:/data/countdown  # Mount data directory
+      - ./wandb:/app/wandb  # For WandB logs
+      - ./logs:/app/logs    # For training logs
+      - ~/model/qwen1.5b/snapshots/8faed761d45a263340a0528343f099c05c9a4323:/app/models/qwen1.5b:ro  # Mount Qwen 1.5B model as read-only
+      - ./models/countdown_continual_1.5b:/app/models/countdown_continual_1.5b  # Mount trained model directory
+      - ./metrics:/app/metrics  # For metrics output
+    container_name: countdown-continual-trainer-1.5b
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - BASE_MODEL=/app/models/qwen1.5b  # Path to mounted Qwen model
+      - N_GPUS=8  # Using all 8 3090 GPUs
+      - ROLLOUT_TP_SIZE=2  # Using tensor parallel size 4 for Qwen-1.5B
+      - DATA_DIR=/data/countdown/continual  # Match the mounted data path
+      - WANDB_MODE=offline  # Run WandB in offline mode to avoid API key requirement
+      - VLLM_ATTENTION_BACKEND=XFORMERS  # As specified in OLD_README.md
+      - CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 8
+              capabilities: [gpu]
+    shm_size: '64gb'  # Increased shared memory for multi-GPU training
+    ulimits:
+      memlock: -1  # Remove memory lock limits
+      stack: 67108864  # Increase stack size
+    ipc: host  # Use host IPC namespace for better inter-process communication
+    working_dir: /app
     command: >
       bash -c '
         # Ensure all directories exist
-        mkdir -p /app/models/qwen /app/metrics /app/logs /app/wandb /app/models/countdown_continual &&
+        mkdir -p /app/metrics /app/logs /app/wandb /app/models/countdown_continual_1.5b &&
         # Fix git ownership
         git config --global --add safe.directory /app &&
-        # Initialize trained model from base model if needed
-        if [ ! -f /app/models/countdown_continual/config.json ]; then
-          echo "Initializing trained model from base model..."
-          cp -r /app/models/qwen/* /app/models/countdown_continual/
-          echo "Verifying config.json..."
-          cat /app/models/countdown_continual/config.json
-        fi &&
         # Initialize conda and start training
         . /opt/conda/etc/profile.d/conda.sh &&
         conda activate zero &&
-        bash scripts/train_continual_countdown.sh
+        bash scripts/train_continual_countdown_1.5b.sh
       '

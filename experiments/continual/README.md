@@ -46,8 +46,9 @@ All experiments are containerized using Docker for reproducibility. The setup in
 2. Python Environment: Conda environment with required packages
 3. Services:
    - `data-generator`: Generates training and test data
-   - `continual-trainer`: Runs continual learning experiments
-   - `countdown-viewer`: Interactive data viewer
+   - `continual-trainer-0.5b`: Runs continual learning experiments with Qwen 0.5B
+   - `continual-trainer-1.5b`: Runs continual learning experiments with Qwen 1.5B
+   - `evaluator`: Evaluates training results
 
 ### Directory Mapping
 
@@ -120,11 +121,44 @@ mkdir -p wandb logs metrics
 ```
 
 3. Launch training:
+
+#### For Qwen 0.5B Model
 ```bash
 # Build and start training
-docker compose build continual-trainer
-docker compose run --rm continual-trainer
+docker compose build continual-trainer-0.5b
+docker compose run --rm continual-trainer-0.5b ./scripts/train_continual_countdown.sh
 ```
+
+#### For Qwen 1.5B Model
+```bash
+# Build and start training
+docker compose build continual-trainer-1.5b
+docker compose run --rm continual-trainer-1.5b ./scripts/train_continual_countdown_1.5b.sh
+```
+
+### Model Configurations
+
+#### Qwen 0.5B
+- Base model path: `/app/models/qwen`
+- Trained model path: `/app/models/countdown_continual`
+- Tensor parallel size: 2
+- Training batch size: 256
+- PPO mini batch size: 16
+- PPO micro batch size: 8
+
+#### Qwen 1.5B
+- Base model path: `/app/models/qwen1.5b`
+- Trained model path: `/app/models/countdown_continual_1.5b`
+- Tensor parallel size: 4
+- Training batch size: 128
+- PPO mini batch size: 8
+- PPO micro batch size: 4
+
+Both models follow the same training flow:
+- Sequential training through operator groups
+- 3 complete rounds of training
+- 15 epochs per group
+- Metrics tracking and logging via WandB
 
 ### 3. Evaluation
 

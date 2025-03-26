@@ -36,7 +36,10 @@ services:
         . /opt/conda/etc/profile.d/conda.sh &&
         conda activate zero &&
         mkdir -p /app/metrics /app/plots /app/logs &&
-        bash scripts/eval_continual_countdown.sh
+        # First evaluate 0.5B model
+        conda run -n zero bash scripts/eval_continual_countdown.sh --model-size 0.5b &&
+        # Then evaluate 1.5B model
+        conda run -n zero bash scripts/eval_continual_countdown.sh --model-size 1.5b
       '
 
   data-generator:

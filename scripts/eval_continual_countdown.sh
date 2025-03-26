@@ -1,9 +1,17 @@
 #!/bin/bash
 
+# Activate conda environment
+. /opt/conda/etc/profile.d/conda.sh
+conda activate zero
+
 # Default paths - These should match Docker volume mounts
 METRICS_DIR=${METRICS_DIR:-"/app/metrics"}
 PLOTS_DIR=${PLOTS_DIR:-"/app/plots"}
 LOGS_DIR=${LOGS_DIR:-"/app/logs"}
+
+# Default to evaluating both models
+EVAL_0_5B=1
+EVAL_1_5B=1
 
 # Parse command line arguments
 while [[ $# -gt 0 ]]; do
@@ -18,6 +26,23 @@ while [[ $# -gt 0 ]]; do
             ;;
         --logs-dir)
             LOGS_DIR="$2"
+            shift 2
+            ;;
+        --model-size)
+            case "$2" in
+                0.5b)
+                    EVAL_0_5B=1
+                    EVAL_1_5B=0
+                    ;;
+                1.5b)
+                    EVAL_0_5B=0
+                    EVAL_1_5B=1
+                    ;;
+                *)
+                    echo "Invalid model size: $2. Must be '0.5b' or '1.5b'"
+                    exit 1
+                    ;;
+            esac
             shift 2
             ;;
         *)
@@ -51,28 +76,59 @@ if [ "$checkpoint_count" -eq 0 ]; then
     exit 1
 fi
 
-# Run evaluation
-python3 experiments/continual/eval.py \
-    --metrics-dir "$METRICS_DIR" \
-    --plots-dir "$PLOTS_DIR" \
-    --logs-dir "$LOGS_DIR"
-
-# Check if evaluation was successful
-if [ $? -eq 0 ]; then
+# Run evaluation for each model size
+if [ "$EVAL_0_5B" -eq 1 ]; then
+    echo "\nEvaluating Qwen 0.5B model..."
+    python3 experiments/continual/eval.py \
+        --model-size 0.5b \
+        --metrics-dir "$METRICS_DIR" \
+        --plots-dir "$PLOTS_DIR" \
+        --logs-dir "$LOGS_DIR"
+    
+    if [ $? -ne 0 ]; then
+        echo "Error evaluating 0.5B model"
+        exit 1
+    fi
+    
     # Fix permissions for generated files
     chmod -R 777 "$PLOTS_DIR" "$METRICS_DIR"
     
     # Check if files were generated
-    if [ -f "$PLOTS_DIR/training_metrics.png" ] && [ -f "$METRICS_DIR/consolidated_metrics.json" ]; then
-        echo "Evaluation completed successfully!"
+    if [ -f "$PLOTS_DIR/training_metrics_0.5b.png" ] && [ -f "$METRICS_DIR/consolidated_metrics_0.5b.json" ]; then
+        echo "Qwen 0.5B evaluation completed successfully!"
         echo "Results can be found in:"
-        echo "  - Plots: $PLOTS_DIR/training_metrics.png"
-        echo "  - Metrics: $METRICS_DIR/consolidated_metrics.json"
+        echo "  - Plots: $PLOTS_DIR/training_metrics_0.5b.png"
+        echo "  - Metrics: $METRICS_DIR/consolidated_metrics_0.5b.json"
     else
-        echo "Warning: Evaluation completed but some output files are missing."
+        echo "Warning: Qwen 0.5B evaluation completed but some output files are missing."
         echo "Please check the evaluation logs for details."
     fi
-else
-    echo "Error: Evaluation failed!"
-    exit 1
+fi
+
+if [ "$EVAL_1_5B" -eq 1 ]; then
+    echo "\nEvaluating Qwen 1.5B model..."
+    python3 experiments/continual/eval.py \
+        --model-size 1.5b \
+        --metrics-dir "$METRICS_DIR" \
+        --plots-dir "$PLOTS_DIR" \
+        --logs-dir "$LOGS_DIR"
+    
+    if [ $? -ne 0 ]; then
+        echo "Error evaluating 1.5B model"
+        exit 1
+    fi
+    
+    # Fix permissions for generated files
+    chmod -R 777 "$PLOTS_DIR" "$METRICS_DIR"
+    
+    # Check if files were generated
+    if [ -f "$PLOTS_DIR/training_metrics_1.5b.png" ] && [ -f "$METRICS_DIR/consolidated_metrics_1.5b.json" ]; then
+        echo "Qwen 1.5B evaluation completed successfully!"
+        echo "Results can be found in:"
+        echo "  - Plots: $PLOTS_DIR/training_metrics_1.5b.png"
+        echo "  - Metrics: $METRICS_DIR/consolidated_metrics_1.5b.json"
+    else
+        echo "Warning: Qwen 1.5B evaluation completed but some output files are missing."
+        echo "Please check the evaluation logs for details."
+    fi
 fi

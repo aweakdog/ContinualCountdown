@@ -179,16 +179,23 @@ The evaluation process is decoupled from training and runs in a separate contain
    - Response Lengths: Solution complexity analysis
 
 3. **Output Files**
-   - Individual metrics: `metrics/metrics_{round}_{group}.json`
-   - Consolidated metrics: `metrics/consolidated_metrics.json`
-   - Visualizations: `plots/training_metrics.png`
+   For each model size (0.5B and 1.5B):
+   - Individual metrics: `metrics/metrics_{round}_{group}_{size}.json`
+   - Consolidated metrics: `metrics/consolidated_metrics_{size}.json`
+   - Visualizations: `plots/training_metrics_{size}.png`
 
 #### Running Evaluation
 
 ```bash
-# After training completes
+# Evaluate both models
 docker compose run --rm evaluator
+
+# Evaluate specific model size
+docker compose run --rm evaluator conda run -n zero bash scripts/eval_continual_countdown.sh --model-size 0.5b
+docker compose run --rm evaluator conda run -n zero bash scripts/eval_continual_countdown.sh --model-size 1.5b
 ```
+
+The evaluator will process each model's training logs and checkpoints separately, generating model-specific plots and metrics files.
 
 ### GPU Requirements
 

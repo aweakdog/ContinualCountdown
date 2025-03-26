@@ -65,10 +65,11 @@ def extract_metrics_from_log(log_file: str) -> List[Dict[str, float]]:
 
 
 class ContinualEvaluator:
-    def __init__(self, metrics_dir: str = "./metrics", plots_dir: str = "./plots", logs_dir: str = "./logs"):
+    def __init__(self, model_size: str = "0.5b", metrics_dir: str = "./metrics", plots_dir: str = "./plots", logs_dir: str = "./logs"):
         self.metrics_dir = Path(metrics_dir)
         self.plots_dir = Path(plots_dir)
         self.logs_dir = Path(logs_dir)
+        self.model_size = model_size.lower()
         
         # Create directories
         self.plots_dir.mkdir(parents=True, exist_ok=True)
@@ -79,6 +80,10 @@ class ContinualEvaluator:
         self.rounds = 3
         self.metrics = []
         
+        # Model paths based on size
+        self.base_model = "/app/models/qwen" if model_size == "0.5b" else "/app/models/countdown_continual_1.5b"
+        self.project_name = "ContinualCountdown" if model_size == "0.5b" else "ContinualCountdown1.5B"
+        
     def compute_weight_change(self, round_num: int, group: str) -> float:
         """Compute normalized weight change between initial and final model states."""
         # For initial state:
@@ -86,15 +91,15 @@ class ContinualEvaluator:
         # - For round 1 other groups: use previous group's final state
         # - For round 2+ all groups: use same group's final state from previous round
         if round_num == 1 and group == "plus":
-            initial_path = Path("/app/models/qwen") / "model.safetensors"
+            initial_path = Path(self.base_model) / "model.safetensors"
         elif round_num == 1:
             prev_group = self.groups[self.groups.index(group) - 1]
-            initial_path = Path("checkpoints/ContinualCountdown") / f"ContinualCountdown_R{round_num}_{prev_group}/actor/global_step_0/model.safetensors"
+            initial_path = Path(f"checkpoints/{self.project_name}") / f"{self.project_name}_R{round_num}_{prev_group}/actor/global_step_0/model.safetensors"
         else:
-            initial_path = Path("checkpoints/ContinualCountdown") / f"ContinualCountdown_R{round_num-1}_{group}/actor/global_step_0/model.safetensors"
+            initial_path = Path(f"checkpoints/{self.project_name}") / f"{self.project_name}_R{round_num-1}_{group}/actor/global_step_0/model.safetensors"
         
         # For final state, use current group's final state
-        final_path = Path("checkpoints/ContinualCountdown") / f"ContinualCountdown_R{round_num}_{group}/actor/global_step_0/model.safetensors"
+        final_path = Path(f"checkpoints/{self.project_name}") / f"{self.project_name}_R{round_num}_{group}/actor/global_step_0/model.safetensors"
         
         print(f"Comparing models for round {round_num}, group {group}:")
         print(f"  - Initial: {initial_path}")
@@ -160,7 +165,7 @@ class ContinualEvaluator:
         for round_num in range(1, self.rounds + 1):
             for group in self.groups:
                 # Get log file path
-                log_file = self.logs_dir / f"ContinualCountdown_R{round_num}_{group}.log"
+                log_file = self.logs_dir / f"{self.project_name}_R{round_num}_{group}.log"
                 print(f"Processing log file: {log_file}")
                 
                 if not log_file.exists():
@@ -250,11 +255,11 @@ class ContinualEvaluator:
             return
         
         # Generate plots
-        plot_path = self.plots_dir / "training_metrics.png"
+        plot_path = self.plots_dir / f"training_metrics_{self.model_size}.png"
         self.plot_metrics(metrics, str(plot_path))
         
         # Save consolidated metrics
-        consolidated_path = self.metrics_dir / "consolidated_metrics.json"
+        consolidated_path = self.metrics_dir / f"consolidated_metrics_{self.model_size}.json"
         with open(consolidated_path, 'w') as f:
             json.dump(metrics, f, indent=2)
         
@@ -290,6 +295,7 @@ if __name__ == "__main__":
     import argparse
     
     parser = argparse.ArgumentParser(description="Evaluate continual learning results")
+    parser.add_argument("--model-size", choices=["0.5b", "1.5b"], default="0.5b", help="Model size to evaluate")
     parser.add_argument("--metrics-dir", default="./metrics", help="Directory containing metrics files")
     parser.add_argument("--plots-dir", default="./plots", help="Directory to save plots")
     parser.add_argument("--logs-dir", default="./logs", help="Directory containing training logs")
@@ -297,6 +303,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
     
     evaluator = ContinualEvaluator(
+        model_size=args.model_size,
         metrics_dir=args.metrics_dir,
         plots_dir=args.plots_dir,
         logs_dir=args.logs_dir

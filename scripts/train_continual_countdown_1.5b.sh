@@ -180,7 +180,7 @@ train_group() {
         trainer.test_freq=100 \
         trainer.project_name=ContinualCountdown1.5B \
         trainer.experiment_name=$WANDB_RUN_NAME \
-        trainer.total_epochs=15 \
+        trainer.total_epochs=25 \
         +trainer.val_before_train=True \
         ++reward_model.enable=False \
         ++reward_model.model.path=$TRAINED_MODEL \

@@ -63,7 +63,7 @@ class CountDownReverse(object):
                 parent = nodes[node.parent_id]
                 if parent.is_lowest_operator():
                     lowest_operator_nodes.append(parent)
-        return nums, target, operations
+        return target, nums, operations
                 
     def generate_operation_tree(self, start_size):
         all_nodes: List[Node] = [Node(None) for _ in range(start_size)]

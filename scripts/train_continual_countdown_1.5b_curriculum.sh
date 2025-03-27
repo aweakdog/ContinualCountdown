@@ -58,8 +58,16 @@ echo "Training Rounds: $ROUNDS"
 echo "Operator Groups: ${GROUPS[*]}"
 
 # Prepare training and validation file lists in specific order to maintain optimizer state
-TRAIN_FILES="$DATA_DIR/plus/train.parquet,$DATA_DIR/plus_minus/train.parquet,$DATA_DIR/plus_minus_mul/train.parquet,$DATA_DIR/plus_minus_mul_div/train.parquet"
-VAL_FILES="$DATA_DIR/plus/test.parquet,$DATA_DIR/plus_minus/test.parquet,$DATA_DIR/plus_minus_mul/test.parquet,$DATA_DIR/plus_minus_mul_div/test.parquet"
+TRAIN_FILES=("$DATA_DIR/plus/train.parquet" "$DATA_DIR/plus_minus/train.parquet" "$DATA_DIR/plus_minus_mul/train.parquet" "$DATA_DIR/plus_minus_mul_div/train.parquet")
+VAL_FILES=("$DATA_DIR/plus/test.parquet" "$DATA_DIR/plus_minus/test.parquet" "$DATA_DIR/plus_minus_mul/test.parquet" "$DATA_DIR/plus_minus_mul_div/test.parquet")
+
+# Convert arrays to Hydra list format
+TRAIN_FILES_STR="[\"${TRAIN_FILES[0]}\",\"${TRAIN_FILES[1]}\",\"${TRAIN_FILES[2]}\",\"${TRAIN_FILES[3]}\"]"
+VAL_FILES_STR="[\"${VAL_FILES[0]}\",\"${VAL_FILES[1]}\",\"${VAL_FILES[2]}\",\"${VAL_FILES[3]}\"]"
+
+# Print the file lists for debugging
+echo "Train files list: $TRAIN_FILES_STR"
+echo "Val files list: $VAL_FILES_STR"
 
 echo "Training files order (this order guarantees progression through operator groups):"
 echo "1. $DATA_DIR/plus/train.parquet"
@@ -78,8 +86,8 @@ WANDB_RUN_NAME="ContinualCountdown1.5B_SingleRun"
 log_file="logs/${WANDB_RUN_NAME}.log"
 
 python3 -m verl.trainer.main_ppo \
-    data.train_files=$TRAIN_FILES \
-    data.val_files=$VAL_FILES \
+    data.train_files="$TRAIN_FILES_STR" \
+    data.val_files="$VAL_FILES_STR" \
     data.train_batch_size=128 \
     data.val_batch_size=128 \
     data.max_prompt_length=256 \

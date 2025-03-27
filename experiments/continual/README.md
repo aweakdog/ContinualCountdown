@@ -48,7 +48,66 @@ All experiments are containerized using Docker for reproducibility. The setup in
    - `data-generator`: Generates training and test data
    - `continual-trainer-0.5b`: Runs continual learning experiments with Qwen 0.5B
    - `continual-trainer-1.5b`: Runs continual learning experiments with Qwen 1.5B
+   - `curriculum-trainer-1.5b`: Runs curriculum learning experiments with Qwen 1.5B
    - `evaluator`: Evaluates training results
+
+## Curriculum Learning
+
+The curriculum learning approach trains the model on operator groups in a progressive manner, from simple to complex operations. This is implemented using a single training run that processes files in a specific order.
+
+### Training Process
+
+1. **Data Organization**
+   - Training data is organized in order of increasing complexity
+   - Files are processed in sequence: plus → plus_minus → plus_minus_mul → plus_minus_mul_div
+
+2. **Configuration**
+   - Uses tensor parallel size of 2 across 8 GPUs
+   - Batch sizes: 128 for both training and validation
+   - Learning rates:
+     - Actor: 1e-6
+     - Critic: 1e-5
+   - Uses Flash Attention 2 for improved performance
+   - Enables dynamic batch sizing for optimal GPU utilization
+
+3. **Running Training**
+
+   a. First, ensure data is generated:
+   ```bash
+   # Generate training and test data for all operator groups
+   docker compose up data-generator
+   ```
+
+   b. Verify data exists in the expected locations:
+   ```bash
+   # Check data directory structure
+   ls -R data/countdown/continual/
+   ```
+
+   c. Start curriculum training:
+   ```bash
+   # Start curriculum training with Qwen 1.5B
+   docker compose up curriculum-trainer-1.5b
+   ```
+
+   d. Monitor training progress:
+   ```bash
+   # View live logs
+   tail -f logs/ContinualCountdown1.5B_SingleRun.log
+   ```
+
+   The training will automatically process all operator groups in sequence:
+   1. Addition only
+   2. Addition + Subtraction
+   3. Addition + Subtraction + Multiplication
+   4. All operations (including Division)
+
+   Training progress can be monitored through WandB UI or the console logs.
+
+4. **Monitoring**
+   - Training progress is logged to WandB under project 'ContinualCountdown1.5B'
+   - Checkpoints saved every 100 steps in 'checkpoints/ContinualCountdown1.5B'
+   - Console logs available in 'logs/ContinualCountdown1.5B_SingleRun.log'
 
 ### Directory Mapping
 
@@ -192,7 +251,7 @@ docker compose run --rm evaluator
 
 # Evaluate specific model size
 docker compose run --rm evaluator conda run -n zero bash scripts/eval_continual_countdown.sh --model-size 0.5b
-docker compose run --rm evaluator conda run -n zero bash scripts/eval_continual_countdown.sh --model-size 1.5b
+docker compose run --rm evaluator conda run -n zero bash scripts/eval_continual_countdown.sh --model-size 1.5bdocker compose run --rm evaluator conda run -n zero bash scripts/eval_continual_countdown.sh --model-size 1.5b
 ```
 
 The evaluator will process each model's training logs and checkpoints separately, generating model-specific plots and metrics files.

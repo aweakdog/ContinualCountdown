@@ -77,7 +77,7 @@ services:
       - BASE_MODEL=/app/models/qwen  # Path to mounted Qwen model
       - N_GPUS=8  # Using all 8 3090 GPUs
       - ROLLOUT_TP_SIZE=2  # Using tensor parallel size 2 for Qwen-0.5B's 14 attention heads
-      - DATA_DIR=/data/countdown/continual  # Match the mounted data path
+      - DATA_DIR=/data/continual  # Match the mounted data path
       - WANDB_MODE=offline  # Run WandB in offline mode to avoid API key requirement
       - VLLM_ATTENTION_BACKEND=XFORMERS  # As specified in OLD_README.md
       - CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
@@ -151,7 +151,7 @@ services:
       - BASE_MODEL=/app/models/qwen1.5b
       - N_GPUS=8
       - ROLLOUT_TP_SIZE=2
-      - DATA_DIR=/data/countdown/continual
+      - DATA_DIR=/data/continual
       - WANDB_MODE=offline
       - VLLM_ATTENTION_BACKEND=XFORMERS
       - WANDB_PROJECT=ContinualCountdown1.5B

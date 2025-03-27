@@ -45,7 +45,7 @@ class DataGenerator:
         ]
         os.makedirs(base_dir, exist_ok=True)
 
-    def generate_group_data(self, group_idx: int, train_size: int = 7680, test_size: int = 7680) -> Tuple[Dataset, Dataset]:
+    def generate_group_data(self, group_idx: int, train_size: int = 640, test_size: int = 7680) -> Tuple[Dataset, Dataset]:
         """Generate train and test data for a specific operator group"""
         operators = self.operator_groups[group_idx]
         group_name = self.group_names[group_idx]

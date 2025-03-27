@@ -21,6 +21,7 @@ class CountDownDirectly(object):
     
     def generate(self):
         while True:
+            target = random.randint(self.min_target, self.max_target)
             # nums in question can go up to max target
             nums = [random.randint(1, self.max_target-1) for _ in range(self.start_size)]
             target, solution = self.random_countdown(nums)

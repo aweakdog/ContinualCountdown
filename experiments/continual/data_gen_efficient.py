@@ -7,6 +7,7 @@ from datasets import Dataset
 import sys
 sys.path.append('.')
 from examples.data_preprocess.countdown_directly import CountDownDirectly
+from examples.data_preprocess.countdown_reverse import CountDownReverse
 from tqdm import tqdm
 from rich import print as rprint
 
@@ -44,7 +45,7 @@ class DataGenerator:
         ]
         os.makedirs(base_dir, exist_ok=True)
 
-    def generate_group_data(self, group_idx: int, train_size: int = 640, test_size: int = 640) -> Tuple[Dataset, Dataset]:
+    def generate_group_data(self, group_idx: int, train_size: int = 10000, test_size: int = 640) -> Tuple[Dataset, Dataset]:
         """Generate train and test data for a specific operator group"""
         operators = self.operator_groups[group_idx]
         group_name = self.group_names[group_idx]
@@ -58,9 +59,10 @@ class DataGenerator:
             for _ in tqdm(range(num_samples), desc=f"Generating {num_samples} samples"):
                 # Initialize countdown with random start size between 3 and 4
                 start_size = random.randint(3, 4)
-                cd = CountDownDirectly(max_target=1000, start_size=start_size, operators=operators)
+                cd = CountDownReverse(min_target = 0, max_target=1000,  start_size=start_size, max_internal_value=1000,operators=operators)
                 target, nums, solution = cd.generate()
                 rating = 1.0
+                print('new_data:', target, nums, solution)
                 samples.append({
                     "target": target,
                     "nums": nums,

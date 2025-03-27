@@ -56,7 +56,7 @@ services:
         git config --global --add safe.directory /app &&
         . /opt/conda/etc/profile.d/conda.sh &&
         conda activate zero &&
-        python experiments/continual/data_gen.py
+        python experiments/continual/data_gen_efficient.py
       '
 
   continual-trainer-0.5b:

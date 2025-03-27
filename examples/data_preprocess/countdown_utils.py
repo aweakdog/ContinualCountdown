@@ -26,12 +26,10 @@ def combine_nums(a, b, operators=None):
         possible.append([a*b, f"{a}*{b}={a*b}"])
     
     if "/" in operators:
-        if a <= b:
-            if a != 0 and b % a == 0:
-                possible.append([b//a, f"{b}/{a}={round(b//a,0)}"])
-        else:
-            if b != 0 and a % b == 0:
-                possible.append([a//b, f"{a}/{b}={round(a//b,0)}"])
+        if a != 0 and b % a == 0:
+          possible.append([b//a, f"{b}/{a}={round(b//a,0)}"])
+        if b != 0 and a % b == 0:
+          possible.append([a//b, f"{a}/{b}={round(a//b,0)}"])
     return possible
 
 class CountdownNode:

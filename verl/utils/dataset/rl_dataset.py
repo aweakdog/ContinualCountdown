@@ -98,8 +98,11 @@ class RLHFDataset(Dataset):
         for parquet_file in self.parquet_files:
             # read parquet files and cache
             dataframe = pd.read_parquet(parquet_file)
+            # Add source file as a column to track curriculum progression
+            dataframe['_source_file'] = parquet_file
             dataframes.append(dataframe)
-        self.dataframe = pd.concat(dataframes)
+        # Reset index to maintain order of files
+        self.dataframe = pd.concat(dataframes, ignore_index=True)
 
         print(f'original dataset len: {len(self.dataframe)}')
 

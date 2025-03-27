@@ -184,6 +184,8 @@ train_group() {
         +trainer.val_before_train=True \
         ++reward_model.enable=False \
         ++reward_model.model.path=$TRAINED_MODEL \
+        # Enable curriculum learning for consistent data processing within each group
+        data.curriculum_learning=True \
         2>&1 | tee "$log_file"
     
     # Check if training was successful by looking for validation metrics

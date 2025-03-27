@@ -29,6 +29,7 @@ from codetiming import Timer
 from omegaconf import OmegaConf, open_dict
 from verl import DataProto
 from verl.protocol import pad_dataproto_to_divisor, unpad_dataproto
+from verl.utils.dataset.curriculum_sampler import CurriculumSampler
 from verl.single_controller.base import Worker
 from verl.single_controller.ray import RayResourcePool, RayWorkerGroup, RayClassWithInitArgs
 from verl.single_controller.ray.base import create_colocated_worker_cls
@@ -350,9 +351,19 @@ class RayPPOTrainer(object):
                                          filter_prompts=True,
                                          return_raw_chat=self.config.data.get('return_raw_chat', False),
                                          truncation='error')
+        # Use curriculum sampler if curriculum learning is enabled
+        if self.config.data.get('curriculum_learning', False):
+            sampler = CurriculumSampler(self.train_dataset)
+            shuffle = False
+            print('Curriculum learning enabled - data will be processed in order of files')
+        else:
+            sampler = None
+            shuffle = True
+
         self.train_dataloader = DataLoader(dataset=self.train_dataset,
                                            batch_size=self.config.data.train_batch_size,
-                                           shuffle=True,
+                                           shuffle=shuffle,
+                                           sampler=sampler,
                                            drop_last=True,
                                            collate_fn=collate_fn)
 

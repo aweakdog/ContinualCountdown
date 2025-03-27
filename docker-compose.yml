@@ -100,22 +100,61 @@ services:
       context: .
       dockerfile: Dockerfile
     volumes:
-      - .:/app  # Mount entire project
-      - ./data:/data/countdown  # Mount data directory
-      - ./wandb:/app/wandb  # For WandB logs
-      - ./logs:/app/logs    # For training logs
-      - ~/model/qwen1.5b/snapshots/8faed761d45a263340a0528343f099c05c9a4323:/app/models/qwen1.5b:ro  # Mount Qwen 1.5B model as read-only
-      - ./models/countdown_continual_1.5b:/app/models/countdown_continual_1.5b  # Mount trained model directory
-      - ./metrics:/app/metrics  # For metrics output
-    container_name: countdown-continual-trainer-1.5b
+      - .:/app
+      - ./data:/data/countdown
+      - ./checkpoints:/app/checkpoints
+      - ./metrics:/app/metrics
+      - ./logs:/app/logs
+      - ./wandb:/app/wandb
+    container_name: countdown-trainer-1.5b
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
-      - BASE_MODEL=/app/models/qwen1.5b  # Path to mounted Qwen model
-      - N_GPUS=8  # Using all 8 3090 GPUs
-      - ROLLOUT_TP_SIZE=2  # Using tensor parallel size 4 for Qwen-1.5B
-      - DATA_DIR=/data/countdown/continual  # Match the mounted data path
-      - WANDB_MODE=offline  # Run WandB in offline mode to avoid API key requirement
-      - VLLM_ATTENTION_BACKEND=XFORMERS  # As specified in OLD_README.md
+      - WANDB_PROJECT=ContinualCountdown1.5B
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    shm_size: '64gb'
+    ulimits:
+      memlock: -1
+      stack: 67108864
+    ipc: host
+    working_dir: /app
+    command: >
+      bash -c '
+        git config --global --add safe.directory /app &&
+        . /opt/conda/etc/profile.d/conda.sh &&
+        conda activate zero &&
+        mkdir -p /app/checkpoints /app/metrics /app/logs /app/wandb &&
+        conda run -n zero bash scripts/train_continual_countdown_1.5b.sh
+      '
+
+  curriculum-trainer-1.5b:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    volumes:
+      - .:/app
+      - ./data:/data/countdown
+      - ./checkpoints:/app/checkpoints
+      - ./metrics:/app/metrics
+      - ./logs:/app/logs
+      - ./wandb:/app/wandb
+      - ~/model/qwen1.5b/snapshots/8faed761d45a263340a0528343f099c05c9a4323:/app/models/qwen1.5b:ro
+      - ./models/countdown_continual_1.5b:/app/models/countdown_continual_1.5b
+    container_name: countdown-curriculum-1.5b
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - BASE_MODEL=/app/models/qwen1.5b
+      - N_GPUS=8
+      - ROLLOUT_TP_SIZE=2
+      - DATA_DIR=/data/countdown/continual
+      - WANDB_MODE=offline
+      - VLLM_ATTENTION_BACKEND=XFORMERS
+      - WANDB_PROJECT=ContinualCountdown1.5B
       - CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
     deploy:
       resources:
@@ -124,20 +163,17 @@ services:
             - driver: nvidia
               count: 8
               capabilities: [gpu]
-    shm_size: '64gb'  # Increased shared memory for multi-GPU training
+    shm_size: '64gb'
     ulimits:
-      memlock: -1  # Remove memory lock limits
-      stack: 67108864  # Increase stack size
-    ipc: host  # Use host IPC namespace for better inter-process communication
+      memlock: -1
+      stack: 67108864
+    ipc: host
     working_dir: /app
     command: >
       bash -c '
-        # Ensure all directories exist
-        mkdir -p /app/metrics /app/logs /app/wandb /app/models/countdown_continual_1.5b &&
-        # Fix git ownership
         git config --global --add safe.directory /app &&
-        # Initialize conda and start training
         . /opt/conda/etc/profile.d/conda.sh &&
         conda activate zero &&
-        bash scripts/train_continual_countdown_1.5b.sh
+        mkdir -p /app/checkpoints /app/metrics /app/logs /app/wandb &&
+        conda run -n zero bash scripts/train_continual_countdown_1.5b_curriculum.sh
       '

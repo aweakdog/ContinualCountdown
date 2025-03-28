@@ -344,34 +344,68 @@ class RayPPOTrainer(object):
         from torch.utils.data import DataLoader
         # TODO: we have to make sure the batch size is divisible by the dp size
         from verl.utils.dataset.rl_dataset import RLHFDataset, collate_fn
-        self.train_dataset = RLHFDataset(parquet_files=self.config.data.train_files,
-                                         tokenizer=self.tokenizer,
-                                         prompt_key=self.config.data.prompt_key,
-                                         max_prompt_length=self.config.data.max_prompt_length,
-                                         filter_prompts=True,
-                                         return_raw_chat=self.config.data.get('return_raw_chat', False),
-                                         truncation='error')
-        # Use curriculum sampler if curriculum learning is enabled
+        
         if self.config.data.get('curriculum_learning', False):
-            sampler = CurriculumSampler(self.train_dataset)
-            shuffle = False
-            print('Curriculum learning enabled - data will be processed in order of files')
+            # Create separate datasets and dataloaders for each operator group
+            self.train_datasets = {}
+            self.train_dataloaders = {}
+            
+            # Map of group to its file pattern
+            group_files = {
+                'plus': [f for f in self.config.data.train_files if 'plus/train' in f],
+                'plus_minus': [f for f in self.config.data.train_files if 'plus_minus/train' in f],
+                'plus_minus_mul': [f for f in self.config.data.train_files if 'plus_minus_mul/train' in f],
+                'plus_minus_mul_div': [f for f in self.config.data.train_files if 'plus_minus_mul_div/train' in f]
+            }
+            
+            for group in ['plus', 'plus_minus', 'plus_minus_mul', 'plus_minus_mul_div']:
+                # Create dataset for this group using only its files
+                self.train_datasets[group] = RLHFDataset(
+                    parquet_files=group_files[group],
+                    tokenizer=self.tokenizer,
+                    prompt_key=self.config.data.prompt_key,
+                    max_prompt_length=self.config.data.max_prompt_length,
+                    filter_prompts=True,
+                    return_raw_chat=self.config.data.get('return_raw_chat', False),
+                    truncation='error',
+                    config=self.config)
+                # Create dataloader for this group
+                self.train_dataloaders[group] = DataLoader(
+                    dataset=self.train_datasets[group],
+                    batch_size=self.config.data.train_batch_size,
+                    shuffle=False,  # No shuffle in curriculum learning
+                    drop_last=True,
+                    collate_fn=collate_fn)
+                
+            # For validation purposes, set train_dataset to last group's dataset
+            self.train_dataset = self.train_datasets['plus_minus_mul_div']
+            # For length checks, use last group's dataloader
+            self.train_dataloader = self.train_dataloaders['plus_minus_mul_div']
         else:
-            sampler = None
-            shuffle = True
-
-        self.train_dataloader = DataLoader(dataset=self.train_dataset,
-                                           batch_size=self.config.data.train_batch_size,
-                                           shuffle=shuffle,
-                                           sampler=sampler,
-                                           drop_last=True,
-                                           collate_fn=collate_fn)
+            # Regular training without curriculum
+            self.train_dataset = RLHFDataset(
+                parquet_files=self.config.data.train_files,
+                tokenizer=self.tokenizer,
+                prompt_key=self.config.data.prompt_key,
+                max_prompt_length=self.config.data.max_prompt_length,
+                filter_prompts=True,
+                return_raw_chat=self.config.data.get('return_raw_chat', False),
+                truncation='error',
+                config=self.config)
+            
+            self.train_dataloader = DataLoader(
+                dataset=self.train_dataset,
+                batch_size=self.config.data.train_batch_size,
+                shuffle=True,
+                drop_last=True,
+                collate_fn=collate_fn)
 
         self.val_dataset = RLHFDataset(parquet_files=self.config.data.val_files,
                                        tokenizer=self.tokenizer,
                                        prompt_key=self.config.data.prompt_key,
                                        max_prompt_length=self.config.data.max_prompt_length,
                                        filter_prompts=True,
+                                       config=self.config,
                                        return_raw_chat=self.config.data.get('return_raw_chat', False),
                                        truncation='error')
         self.val_dataloader = DataLoader(dataset=self.val_dataset,
@@ -387,7 +421,10 @@ class RayPPOTrainer(object):
         print(f'Size of val dataloader: {len(self.val_dataloader)}')
 
         # inject total_training_steps to actor/critic optim_config. This is hacky.
-        total_training_steps = len(self.train_dataloader) * self.config.trainer.total_epochs
+        if self.config.data.get('curriculum_learning', False):
+            total_training_steps = len(self.train_dataloader) * len(self.train_dataset.operator_groups) * self.config.data.epochs_per_group * self.config.data.total_rounds
+        else:
+            total_training_steps = len(self.train_dataloader) * self.config.trainer.total_epochs
 
         if self.config.trainer.total_training_steps is not None:
             total_training_steps = self.config.trainer.total_training_steps
@@ -583,35 +620,150 @@ class RayPPOTrainer(object):
         # we start from step 1
         self.global_steps += 1
 
-        for epoch in range(self.config.trainer.total_epochs):
-            for batch_dict in self.train_dataloader:
-                print(f'epoch {epoch}, step {self.global_steps}')
-                metrics = {}
-                timing_raw = {}
+        if self.config.data.get('curriculum_learning', False):
+            for round_num in range(self.config.data.total_rounds):
+                for group in ['plus', 'plus_minus', 'plus_minus_mul', 'plus_minus_mul_div']:
+                    print(f'Starting training on group: {group}')
+                    for epoch in range(self.config.data.epochs_per_group):
+                        for batch_dict in self.train_dataloaders[group]:
+                            print(f'Round {round_num}, Group {group}, Epoch {epoch}, Step {self.global_steps}')
+                            metrics = {}
+                            timing_raw = {}
+                            
+                            batch: DataProto = DataProto.from_single_dict(batch_dict)
+                            
+                            # pop those keys for generation
+                            gen_batch = batch.pop(batch_keys=['input_ids', 'attention_mask', 'position_ids'])
 
-                batch: DataProto = DataProto.from_single_dict(batch_dict)
+                            with _timer('step', timing_raw):
+                                # generate a batch
+                                with _timer('gen', timing_raw):
+                                    gen_batch_output = self.actor_rollout_wg.generate_sequences(gen_batch)
 
-                # pop those keys for generation
-                gen_batch = batch.pop(batch_keys=['input_ids', 'attention_mask', 'position_ids'])
+                                batch.non_tensor_batch['uid'] = np.array([str(uuid.uuid4()) for _ in range(len(batch.batch))],
+                                                                         dtype=object)
+                                # repeat to align with repeated responses in rollout
+                                batch = batch.repeat(repeat_times=self.config.actor_rollout_ref.rollout.n, interleave=True)
+                                batch = batch.union(gen_batch_output)
 
-                with _timer('step', timing_raw):
-                    # generate a batch
-                    with _timer('gen', timing_raw):
-                        gen_batch_output = self.actor_rollout_wg.generate_sequences(gen_batch)
+                                # balance the number of valid tokens on each dp rank.
+                                # Note that this breaks the order of data inside the batch.
+                                # Please take care when you implement group based adv computation such as GRPO and rloo
+                                self._balance_batch(batch, metrics=metrics)
 
-                    batch.non_tensor_batch['uid'] = np.array([str(uuid.uuid4()) for _ in range(len(batch.batch))],
-                                                             dtype=object)
-                    # repeat to align with repeated responses in rollout
-                    batch = batch.repeat(repeat_times=self.config.actor_rollout_ref.rollout.n, interleave=True)
-                    batch = batch.union(gen_batch_output)
+                                # compute global_valid tokens
+                                batch.meta_info['global_token_num'] = torch.sum(batch.batch['attention_mask'], dim=-1).tolist()
 
-                    # balance the number of valid tokens on each dp rank.
-                    # Note that this breaks the order of data inside the batch.
-                    # Please take care when you implement group based adv computation such as GRPO and rloo
-                    self._balance_batch(batch, metrics=metrics)
+                            if self.use_reference_policy:
+                                # compute reference log_prob
+                                with _timer('ref', timing_raw):
+                                    ref_log_prob = self.ref_policy_wg.compute_ref_log_prob(batch)
+                                    batch = batch.union(ref_log_prob)
 
-                    # compute global_valid tokens
-                    batch.meta_info['global_token_num'] = torch.sum(batch.batch['attention_mask'], dim=-1).tolist()
+                            # compute values
+                            if self.use_critic:
+                                with _timer('values', timing_raw):
+                                    values = self.critic_wg.compute_values(batch)
+                                    batch = batch.union(values)
+
+                            with _timer('adv', timing_raw):
+                                # compute scores. Support both model and function-based.
+                                # We first compute the scores using reward model. Then, we call reward_fn to combine
+                                # the results from reward model and rule-based results.
+                                if self.use_rm:
+                                    # we first compute reward model score
+                                    reward_tensor = self.rm_wg.compute_rm_score(batch)
+                                    batch = batch.union(reward_tensor)
+
+                                # we combine with rule-based rm
+                                reward_tensor = self.reward_fn(batch)
+                                batch.batch['token_level_scores'] = reward_tensor
+
+                                # compute rewards. apply_kl_penalty if available
+                                if not self.config.actor_rollout_ref.actor.use_kl_loss:
+                                    batch, kl_metrics = apply_kl_penalty(batch,
+                                                                         kl_ctrl=self.kl_ctrl,
+                                                                         kl_penalty=self.config.algorithm.kl_penalty)
+                                    metrics.update(kl_metrics)
+                                else:
+                                    batch.batch['token_level_rewards'] = batch.batch['token_level_scores']
+
+                                # compute advantages, executed on the driver process
+                                batch = compute_advantage(batch,
+                                                          adv_estimator=self.config.algorithm.adv_estimator,
+                                                          gamma=self.config.algorithm.gamma,
+                                                          lam=self.config.algorithm.lam,
+                                                          num_repeat=self.config.actor_rollout_ref.rollout.n)
+
+                            # update critic
+                            if self.use_critic:
+                                with _timer('update_critic', timing_raw):
+                                    critic_output = self.critic_wg.update_critic(batch)
+                                critic_output_metrics = reduce_metrics(critic_output.meta_info['metrics'])
+                                metrics.update(critic_output_metrics)
+
+                            # implement critic warmup
+                            if self.config.trainer.critic_warmup <= self.global_steps:
+                                # update actor
+                                with _timer('update_actor', timing_raw):
+                                    actor_output = self.actor_rollout_wg.update_actor(batch)
+                                actor_output_metrics = reduce_metrics(actor_output.meta_info['metrics'])
+                                metrics.update(actor_output_metrics)
+
+                            # validate
+                            if self.val_reward_fn is not None and self.config.trainer.test_freq > 0 and \
+                                self.global_steps % self.config.trainer.test_freq == 0:
+                                with _timer('testing', timing_raw):
+                                    val_metrics: dict = self._validate()
+                                metrics.update(val_metrics)
+
+                            if self.config.trainer.save_freq > 0 and \
+                                    self.global_steps % self.config.trainer.save_freq == 0:
+                                with _timer('save_checkpoint', timing_raw):
+                                    self._save_checkpoint()
+
+                            # collect metrics
+                            metrics.update(compute_data_metrics(batch=batch, use_critic=self.use_critic))
+                            metrics.update(compute_timing_metrics(batch=batch, timing_raw=timing_raw))
+
+                            # TODO: make a canonical logger that supports various backend
+                            logger.log(data=metrics, step=self.global_steps)
+
+                            self.global_steps += 1
+
+                            # update kl control
+                            if self.use_reference_policy and 'kl_mean' in metrics:
+                                self.kl_ctrl.update(metrics['kl_mean'], n_steps=1)
+        else:
+            for epoch in range(self.config.trainer.total_epochs):
+                for batch_dict in self.train_dataloader:
+                    print(f'epoch {epoch}, step {self.global_steps}')
+                    metrics = {}
+                    timing_raw = {}
+                    
+                    batch: DataProto = DataProto.from_single_dict(batch_dict)
+
+                    # pop those keys for generation
+                    gen_batch = batch.pop(batch_keys=['input_ids', 'attention_mask', 'position_ids'])
+
+                    with _timer('step', timing_raw):
+                        # generate a batch
+                        with _timer('gen', timing_raw):
+                            gen_batch_output = self.actor_rollout_wg.generate_sequences(gen_batch)
+
+                        batch.non_tensor_batch['uid'] = np.array([str(uuid.uuid4()) for _ in range(len(batch.batch))],
+                                                                 dtype=object)
+                        # repeat to align with repeated responses in rollout
+                        batch = batch.repeat(repeat_times=self.config.actor_rollout_ref.rollout.n, interleave=True)
+                        batch = batch.union(gen_batch_output)
+
+                        # balance the number of valid tokens on each dp rank.
+                        # Note that this breaks the order of data inside the batch.
+                        # Please take care when you implement group based adv computation such as GRPO and rloo
+                        self._balance_batch(batch, metrics=metrics)
+
+                        # compute global_valid tokens
+                        batch.meta_info['global_token_num'] = torch.sum(batch.batch['attention_mask'], dim=-1).tolist()
 
                     if self.use_reference_policy:
                         # compute reference log_prob

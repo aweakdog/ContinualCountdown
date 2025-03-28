@@ -11,12 +11,6 @@ export ROLLOUT_TP_SIZE=${ROLLOUT_TP_SIZE:-2}  # Tensor parallel size
 export DATA_DIR="./data/continual"  # Match actual data location
 export TRAINED_MODEL="/app/models/countdown_continual_1.5b"  # Model being continually trained
 
-# Training configuration
-ROUNDS=3  # Number of complete training rounds
-EPOCHS_PER_GROUP=15  # Number of epochs to train each group
-GROUPS=("plus" "plus_minus" "plus_minus_mul" "plus_minus_mul_div")
-
-
 # Create necessary directories
 mkdir -p /app/metrics /app/logs /app/wandb /app/plots "$DATA_DIR/plus" "$DATA_DIR/plus_minus" "$DATA_DIR/plus_minus_mul" "$DATA_DIR/plus_minus_mul_div"
 
@@ -53,77 +47,16 @@ echo "BASE_MODEL: $BASE_MODEL"
 echo "DATA_DIR: $DATA_DIR"
 echo "Number of GPUs: $N_GPUS"
 echo "Tensor Parallel Size: $ROLLOUT_TP_SIZE"
-echo "Training Rounds: $ROUNDS"
-echo "Operator Groups: ${GROUPS[*]}"
 
-# Prepare training and validation file lists for all rounds in order
-declare -a TRAIN_FILES=()
-declare -a VAL_FILES=()
+# Prepare training and validation files
+TRAIN_FILES_STR="[\"/app/data/continual/plus/train.parquet\",\"/app/data/continual/plus_minus/train.parquet\",\"/app/data/continual/plus_minus_mul/train.parquet\",\"/app/data/continual/plus_minus_mul_div/train.parquet\"]"
 
-for ((round=1; round<=ROUNDS; round++)); do
-    echo "Round $round:"
-    for ((group_idx=0; group_idx<4; group_idx++)); do
-        case $group_idx in
-            0) group_name="plus" ;;
-            1) group_name="plus_minus" ;;
-            2) group_name="plus_minus_mul" ;;
-            3) group_name="plus_minus_mul_div" ;;
-        esac
-        echo "  Processing group: $group_name"
-        for ((epoch=1; epoch<=EPOCHS_PER_GROUP; epoch++)); do
-            TRAIN_FILES+=("$DATA_DIR/$group_name/train.parquet")
-            VAL_FILES+=("$DATA_DIR/$group_name/test.parquet")
-        done
-    done
-done
-
-# Convert arrays to Hydra list format
-TRAIN_FILES_STR="["
-for file in "${TRAIN_FILES[@]}"; do
-    if [ "$TRAIN_FILES_STR" != "[" ]; then
-        TRAIN_FILES_STR+=","
-    fi
-    # Ensure proper path formatting
-    TRAIN_FILES_STR+="\"$file\""
-done
-TRAIN_FILES_STR+="]"
-
-VAL_FILES_STR="["
-for file in "${VAL_FILES[@]}"; do
-    if [ "$VAL_FILES_STR" != "[" ]; then
-        VAL_FILES_STR+=","
-    fi
-    # Ensure proper path formatting
-    VAL_FILES_STR+="\"$file\""
-done
-VAL_FILES_STR+="]"
-
-# Print the file lists for debugging
-echo "\nFirst few train files:"
-for ((i=0; i<5; i++)); do
-    echo "  ${TRAIN_FILES[$i]}"
-done
-echo "Total train files: ${#TRAIN_FILES[@]}"
-
-echo "\nFirst few validation files:"
-for ((i=0; i<5; i++)); do
-    echo "  ${VAL_FILES[$i]}"
-done
-echo "Total validation files: ${#VAL_FILES[@]}"
+VAL_FILES_STR="[\"/app/data/continual/plus/test.parquet\",\"/app/data/continual/plus_minus/test.parquet\",\"/app/data/continual/plus_minus_mul/test.parquet\",\"/app/data/continual/plus_minus_mul_div/test.parquet\"]"
 
 echo "\nFirst 100 chars of train files list:"
 echo "${TRAIN_FILES_STR:0:100}..."
 echo "\nFirst 100 chars of val files list:"
 echo "${VAL_FILES_STR:0:100}..."
-
-echo "Training structure:"
-echo "3 rounds total, each round:"
-for group in "${GROUPS[@]}"; do
-    echo "- $group: 15 epochs with $DATA_DIR/$group/train.parquet"
-done
-
-echo "Training files: $TRAIN_FILES"
-echo "Validation files: $VAL_FILES"
 
 # Prevent model downloads
 export TRANSFORMERS_OFFLINE=1
@@ -164,7 +97,9 @@ python3 -m verl.trainer.main_ppo \
     data.val_batch_size=128 \
     data.max_prompt_length=256 \
     data.max_response_length=1024 \
-    +data.curriculum_learning=true \
+    ++data.curriculum_learning=true \
+    ++data.epochs_per_group=2 \
+    ++data.total_rounds=3 \
     actor_rollout_ref.model.path=$TRAINED_MODEL \
     actor_rollout_ref.model.use_remove_padding=True \
     actor_rollout_ref.actor.use_dynamic_bsz=True \

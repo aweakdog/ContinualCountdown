@@ -69,13 +69,22 @@ class RLHFDataset(Dataset):
                  cache_dir='~/.cache/verl/rlhf',
                  chat_template_func=None,
                  return_raw_chat=False,
-                 truncation='error'):
+                 truncation='error',
+                 config=None,
+                 operator_group=None):
         if not isinstance(parquet_files, (List, ListConfig)):
             parquet_files = [parquet_files]
 
         self.parquet_files = parquet_files
         self.cache_dir = os.path.expanduser(cache_dir)
         self.tokenizer = tokenizer
+        self.operator_group = operator_group
+
+        # Filter files by operator group if specified
+        if operator_group:
+            self.parquet_files = [f for f in self.parquet_files if operator_group in f]
+            if not self.parquet_files:
+                raise ValueError(f'No parquet files found for operator group: {operator_group}')
 
         self.prompt_key = prompt_key
         self.max_prompt_length = max_prompt_length
@@ -84,6 +93,7 @@ class RLHFDataset(Dataset):
         self.return_raw_chat = return_raw_chat
         self.chat_template_func = chat_template_func
         self.truncation = truncation
+        self.config = config
 
         self._download()
         self._read_files_and_tokenize()
@@ -99,6 +109,45 @@ class RLHFDataset(Dataset):
             # read parquet files and cache
             dataframe = pd.read_parquet(parquet_file)
             # Add source file as a column to track curriculum progression
+            dataframe['_source_file'] = parquet_file
+            dataframes.append(dataframe)
+
+        # Combine all dataframes
+        self.dataframe = pd.concat(dataframes, ignore_index=True)
+
+        # Get unique operator groups from file paths
+        self.operator_groups = sorted(list(set(
+            os.path.basename(os.path.dirname(f)) for f in self.parquet_files
+        )))
+
+        # Add group and round information
+        self.dataframe['_group'] = self.dataframe['_source_file'].apply(
+            lambda x: os.path.basename(os.path.dirname(x))
+        )
+        
+        # Add epoch information if provided in config
+        self.epochs_per_group = None
+        self.total_rounds = None
+        if hasattr(self, 'config') and hasattr(self.config, 'data'):
+            self.epochs_per_group = self.config.data.get('epochs_per_group')
+            self.total_rounds = self.config.data.get('total_rounds')
+            
+            if self.epochs_per_group and self.total_rounds:
+                # Calculate total samples needed for each group
+                samples_per_group = len(self.dataframe) // (len(self.operator_groups) * self.total_rounds)
+                
+                # Replicate data for each round and epoch
+                new_dataframes = []
+                for round_num in range(self.total_rounds):
+                    for group in self.operator_groups:
+                        group_data = self.dataframe[self.dataframe['_group'] == group]
+                        for epoch in range(self.epochs_per_group):
+                            epoch_data = group_data.copy()
+                            epoch_data['_round'] = round_num
+                            epoch_data['_epoch'] = epoch
+                            new_dataframes.append(epoch_data)
+                
+                self.dataframe = pd.concat(new_dataframes, ignore_index=True)
             dataframe['_source_file'] = parquet_file
             dataframes.append(dataframe)
         # Reset index to maintain order of files

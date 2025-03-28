@@ -8,18 +8,17 @@ conda activate zero
 export BASE_MODEL=${BASE_MODEL:-"/home/yliog/model/qwen1.5b/snapshots/8faed761d45a263340a0528343f099c05c9a4323"}  # Qwen 1.5B model path
 export N_GPUS=8  # Using all 8 3090 GPUs
 export ROLLOUT_TP_SIZE=${ROLLOUT_TP_SIZE:-2}  # Tensor parallel size
-export DATA_DIR="/data/countdown/continual"  # Match memory data structure
+export DATA_DIR="./data/continual"  # Match actual data location
 export TRAINED_MODEL="/app/models/countdown_continual_1.5b"  # Model being continually trained
 
 # Training configuration
-ROUNDS=3
+ROUNDS=3  # Number of complete training rounds
+EPOCHS_PER_GROUP=15  # Number of epochs to train each group
 GROUPS=("plus" "plus_minus" "plus_minus_mul" "plus_minus_mul_div")
 
+
 # Create necessary directories
-mkdir -p metrics logs wandb plots
-for group in "${GROUPS[@]}"; do
-    mkdir -p "$DATA_DIR/$group"
-done
+mkdir -p /app/metrics /app/logs /app/wandb /app/plots "$DATA_DIR/plus" "$DATA_DIR/plus_minus" "$DATA_DIR/plus_minus_mul" "$DATA_DIR/plus_minus_mul_div"
 
 # Initialize model directory if it doesn't exist
 if [ ! -d "$TRAINED_MODEL" ]; then
@@ -57,23 +56,71 @@ echo "Tensor Parallel Size: $ROLLOUT_TP_SIZE"
 echo "Training Rounds: $ROUNDS"
 echo "Operator Groups: ${GROUPS[*]}"
 
-# Prepare training and validation file lists in specific order to maintain optimizer state
-TRAIN_FILES=("$DATA_DIR/plus/train.parquet" "$DATA_DIR/plus_minus/train.parquet" "$DATA_DIR/plus_minus_mul/train.parquet" "$DATA_DIR/plus_minus_mul_div/train.parquet")
-VAL_FILES=("$DATA_DIR/plus/test.parquet" "$DATA_DIR/plus_minus/test.parquet" "$DATA_DIR/plus_minus_mul/test.parquet" "$DATA_DIR/plus_minus_mul_div/test.parquet")
+# Prepare training and validation file lists for all rounds in order
+declare -a TRAIN_FILES=()
+declare -a VAL_FILES=()
+
+for ((round=1; round<=ROUNDS; round++)); do
+    echo "Round $round:"
+    for ((group_idx=0; group_idx<4; group_idx++)); do
+        case $group_idx in
+            0) group_name="plus" ;;
+            1) group_name="plus_minus" ;;
+            2) group_name="plus_minus_mul" ;;
+            3) group_name="plus_minus_mul_div" ;;
+        esac
+        echo "  Processing group: $group_name"
+        for ((epoch=1; epoch<=EPOCHS_PER_GROUP; epoch++)); do
+            TRAIN_FILES+=("$DATA_DIR/$group_name/train.parquet")
+            VAL_FILES+=("$DATA_DIR/$group_name/test.parquet")
+        done
+    done
+done
 
 # Convert arrays to Hydra list format
-TRAIN_FILES_STR="[\"${TRAIN_FILES[0]}\",\"${TRAIN_FILES[1]}\",\"${TRAIN_FILES[2]}\",\"${TRAIN_FILES[3]}\"]"
-VAL_FILES_STR="[\"${VAL_FILES[0]}\",\"${VAL_FILES[1]}\",\"${VAL_FILES[2]}\",\"${VAL_FILES[3]}\"]"
+TRAIN_FILES_STR="["
+for file in "${TRAIN_FILES[@]}"; do
+    if [ "$TRAIN_FILES_STR" != "[" ]; then
+        TRAIN_FILES_STR+=","
+    fi
+    # Ensure proper path formatting
+    TRAIN_FILES_STR+="\"$file\""
+done
+TRAIN_FILES_STR+="]"
+
+VAL_FILES_STR="["
+for file in "${VAL_FILES[@]}"; do
+    if [ "$VAL_FILES_STR" != "[" ]; then
+        VAL_FILES_STR+=","
+    fi
+    # Ensure proper path formatting
+    VAL_FILES_STR+="\"$file\""
+done
+VAL_FILES_STR+="]"
 
 # Print the file lists for debugging
-echo "Train files list: $TRAIN_FILES_STR"
-echo "Val files list: $VAL_FILES_STR"
+echo "\nFirst few train files:"
+for ((i=0; i<5; i++)); do
+    echo "  ${TRAIN_FILES[$i]}"
+done
+echo "Total train files: ${#TRAIN_FILES[@]}"
 
-echo "Training files order (this order guarantees progression through operator groups):"
-echo "1. $DATA_DIR/plus/train.parquet"
-echo "2. $DATA_DIR/plus_minus/train.parquet"
-echo "3. $DATA_DIR/plus_minus_mul/train.parquet"
-echo "4. $DATA_DIR/plus_minus_mul_div/train.parquet"
+echo "\nFirst few validation files:"
+for ((i=0; i<5; i++)); do
+    echo "  ${VAL_FILES[$i]}"
+done
+echo "Total validation files: ${#VAL_FILES[@]}"
+
+echo "\nFirst 100 chars of train files list:"
+echo "${TRAIN_FILES_STR:0:100}..."
+echo "\nFirst 100 chars of val files list:"
+echo "${VAL_FILES_STR:0:100}..."
+
+echo "Training structure:"
+echo "3 rounds total, each round:"
+for group in "${GROUPS[@]}"; do
+    echo "- $group: 15 epochs with $DATA_DIR/$group/train.parquet"
+done
 
 echo "Training files: $TRAIN_FILES"
 echo "Validation files: $VAL_FILES"
@@ -81,9 +128,34 @@ echo "Validation files: $VAL_FILES"
 # Prevent model downloads
 export TRANSFORMERS_OFFLINE=1
 
+# Create logs directory if it doesn't exist
+mkdir -p /app/logs
+chmod -R 777 /app/logs
+chmod -R 777 /app/data/continual
+
+# Set environment variables
+export WANDB_MODE="disabled"
+export PYTHONUNBUFFERED=1  # Ensure Python output is not buffered
+export PYTHONFAULTHANDLER=1  # Enable Python fault handler for better error reporting
+export PYTHONPATH=/app:$PYTHONPATH
+
 # Run single training process for all groups
 WANDB_RUN_NAME="ContinualCountdown1.5B_SingleRun"
-log_file="logs/${WANDB_RUN_NAME}.log"
+log_file="/app/logs/${WANDB_RUN_NAME}.log"
+
+echo "Starting training for curriculum learning"
+
+# Print debug info
+echo "Starting curriculum training at $(date)" | tee -a "$log_file"
+echo "Current directory: $(pwd)" | tee -a "$log_file"
+echo "Python path: $(which python3)" | tee -a "$log_file"
+
+echo "Training configuration:" | tee -a "$log_file"
+echo "  Model: $TRAINED_MODEL" | tee -a "$log_file"
+echo "  Data directory: $DATA_DIR" | tee -a "$log_file"
+echo "  Groups: plus -> plus_minus -> plus_minus_mul -> plus_minus_mul_div" | tee -a "$log_file"
+echo "  GPUs: $N_GPUS" | tee -a "$log_file"
+echo "  Rollout TP size: $ROLLOUT_TP_SIZE" | tee -a "$log_file"
 
 python3 -m verl.trainer.main_ppo \
     data.train_files="$TRAIN_FILES_STR" \
@@ -92,6 +164,7 @@ python3 -m verl.trainer.main_ppo \
     data.val_batch_size=128 \
     data.max_prompt_length=256 \
     data.max_response_length=1024 \
+    +data.curriculum_learning=true \
     actor_rollout_ref.model.path=$TRAINED_MODEL \
     actor_rollout_ref.model.use_remove_padding=True \
     actor_rollout_ref.actor.use_dynamic_bsz=True \
@@ -121,21 +194,20 @@ python3 -m verl.trainer.main_ppo \
     critic.ppo_mini_batch_size=16 \
     algorithm.kl_ctrl.kl_coef=0.001 \
     trainer.logger=['wandb','console'] \
+    +logger.print_to_console=true \
     trainer.default_hdfs_dir=null \
-    trainer.default_local_dir=checkpoints/ContinualCountdown1.5B/$WANDB_RUN_NAME \
+    trainer.default_local_dir=/app/checkpoints/ContinualCountdown1.5B/$WANDB_RUN_NAME \
     trainer.n_gpus_per_node=$N_GPUS \
     trainer.nnodes=1 \
     trainer.save_freq=100 \
     trainer.test_freq=100 \
     trainer.project_name=ContinualCountdown1.5B \
     trainer.experiment_name=$WANDB_RUN_NAME \
-    trainer.total_epochs=400 \
-    +trainer.val_before_train=True \
+    trainer.total_epochs=1 \
+    +trainer.val_before_train=true \
     ++reward_model.enable=False \
     ++reward_model.model.path=$TRAINED_MODEL \
-    # Enable curriculum learning to process files in order
-    data.curriculum_learning=True \
-    2>&1 | tee "$log_file"
+    2>&1 | tee -a "$log_file"
 
 # Check if training was successful
 if ! grep -q "Final validation metrics" "$log_file"; then
@@ -144,11 +216,18 @@ if ! grep -q "Final validation metrics" "$log_file"; then
 fi
 
 # Save final model checkpoint
-latest_checkpoint="metrics/final_single_run"
+latest_checkpoint="/app/metrics/final_single_run"
 mkdir -p "$latest_checkpoint"
 
+# Install rsync if not present
+apt-get update && apt-get install -y rsync
+
+# Copy checkpoint
+echo "Copying final checkpoint to $latest_checkpoint"
+rsync -av --delete "$TRAINED_MODEL/" "$latest_checkpoint/"
+
 # Shutdown Ray and any lingering Python processes
-echo "Shutting down Ray and Python processes before copying checkpoint..."
+echo "Shutting down Ray and Python processes..."
 python3 -c 'import ray; ray.shutdown()'
 pkill -f "ray::" || true
 sleep 5

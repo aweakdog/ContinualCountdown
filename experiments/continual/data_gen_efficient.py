@@ -24,12 +24,12 @@ Assistant: Let me solve this step by step.
 <think>"""
     elif template_type == 'qwen-instruct':
         """This works for Qwen Instruct Models"""
-        prefix = f"""<|im_start|>system\nYou are a helpful assistant. You first thinks about the reasoning process in the mind and then provides the user with the answer.<|im_end|>\n<|im_start|>user\n Using the numbers {numbers}, create an equation that equals {target}. You can use basic arithmetic operations ({', '.join(operators)}) and each number can only be used once. Show your work in <think> </think> tags. And return the final answer in <answer> </answer> tags, for example <answer> (1 + 2) / 3 </answer>.<|im_end|>\n<|im_start|>assistant\nLet me solve this step by step.\n<think>"""
+        prefix = f"""Assistant\nYou are a helpful assistant. You first thinks about the reasoning process in the mind and then provides the user with the answer. \nUser\n Using the numbers {numbers}, create an equation that equals {target}. You can use basic arithmetic operations ({', '.join(operators)}) and each number can only be used once. Show your work in <think> </think> tags. And return the final answer in <answer> </answer> tags, for example <answer> (1 + 2) / 3 </answer>.\nAssistant\nLet me solve this step by step.\n<think>"""
     return prefix
 
 
 class DataGenerator:
-    def __init__(self, base_dir: str = "./data/continual"):
+    def __init__(self, base_dir: str = "/app/data/continual"):  
         self.base_dir = base_dir
         self.operator_groups = [
             ["+"],
@@ -44,8 +44,10 @@ class DataGenerator:
             "plus_minus_mul_div"
         ]
         os.makedirs(base_dir, exist_ok=True)
+        os.system(f"chmod -R 777 {base_dir}")
 
-    def generate_group_data(self, group_idx: int, train_size: int = 640, test_size: int = 7680) -> Tuple[Dataset, Dataset]:
+
+    def generate_group_data(self, group_idx: int, train_size: int = 256, test_size: int = 7680) -> Tuple[Dataset, Dataset]:
         """Generate train and test data for a specific operator group"""
         operators = self.operator_groups[group_idx]
         group_name = self.group_names[group_idx]
@@ -144,4 +146,4 @@ if __name__ == "__main__":
         rprint(f"\n[bold cyan]Processing operator group: {generator.operator_groups[group_idx]}[/bold cyan]")
         train_dataset, test_dataset = generator.generate_group_data(group_idx)
         rprint(f"[green]✓ Generated {len(train_dataset)} training samples and {len(test_dataset)} test samples[/green]")
-        rprint(f"[blue]  Saved in /data/countdown/continual/{generator.group_names[group_idx]}/[/blue]")
+        rprint(f"[blue]  Saved in /data/continual/{generator.group_names[group_idx]}/[/blue]")

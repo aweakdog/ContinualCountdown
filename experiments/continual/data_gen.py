@@ -181,4 +181,4 @@ if __name__ == "__main__":
         rprint(f"\n[bold cyan]Processing operator group: {generator.operator_groups[group_idx]}[/bold cyan]")
         train_dataset, test_dataset = generator.generate_group_data(group_idx)
         rprint(f"[green]✓ Generated {len(train_dataset)} training samples and {len(test_dataset)} test samples[/green]")
-        rprint(f"[blue]  Saved in /data/countdown/continual/{generator.group_names[group_idx]}/[/blue]")
+        rprint(f"[blue]  Saved in /data/continual/{generator.group_names[group_idx]}/[/blue]")

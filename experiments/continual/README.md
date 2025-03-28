@@ -81,7 +81,7 @@ The curriculum learning approach trains the model on operator groups in a progre
    b. Verify data exists in the expected locations:
    ```bash
    # Check data directory structure
-   ls -R data/countdown/continual/
+   ls -R data/continual/
    ```
 
    c. Start curriculum training:

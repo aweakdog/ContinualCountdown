@@ -6,7 +6,7 @@ services:
       dockerfile: Dockerfile
     volumes:
       - .:/app  # Mount entire project
-      - ./data:/data/countdown  # Mount data directory
+      - ./data:/data/continual  # Mount data directory
       - ./metrics:/app/metrics  # For metrics input
       - ./plots:/app/plots    # For evaluation plots
       - ./logs:/app/logs    # For training logs
@@ -48,7 +48,7 @@ services:
       dockerfile: Dockerfile
     volumes:
       - .:/app  # Mount entire project
-      - ./data:/data/countdown  # Mount data directory
+      - ./data:/data/continual  # Mount data directory
     container_name: countdown-data-generator
     working_dir: /app
     command: >
@@ -56,6 +56,8 @@ services:
         git config --global --add safe.directory /app &&
         . /opt/conda/etc/profile.d/conda.sh &&
         conda activate zero &&
+        mkdir -p /data/continual &&
+        chmod -R 777 /data/continual &&
         python experiments/continual/data_gen_efficient.py
       '
 
@@ -65,7 +67,7 @@ services:
       dockerfile: Dockerfile
     volumes:
       - .:/app  # Mount entire project
-      - ./data:/data/countdown  # Mount data directory
+      - ./data:/data/continual  # Mount data directory
       - ./wandb:/app/wandb  # For WandB logs
       - ./logs:/app/logs    # For training logs
       - ~/model/qwen0.5b:/app/models/qwen:ro  # Mount Qwen model as read-only
@@ -101,7 +103,7 @@ services:
       dockerfile: Dockerfile
     volumes:
       - .:/app
-      - ./data:/data/countdown
+      - ./data:/data/continual
       - ./checkpoints:/app/checkpoints
       - ./metrics:/app/metrics
       - ./logs:/app/logs
@@ -132,30 +134,42 @@ services:
         conda run -n zero bash scripts/train_continual_countdown_1.5b.sh
       '
 
+  countdown-viewer:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    volumes:
+      - .:/app  # Mount entire project
+      - ./data:/data/continual  # Mount data directory
+    container_name: countdown-viewer
+    working_dir: /app
+    stdin_open: true  # Keep STDIN open for interactive use
+    tty: true        # Allocate a pseudo-TTY
+    command: >
+      bash -c '
+        . /opt/conda/etc/profile.d/conda.sh &&
+        conda activate zero &&
+        python tmp/show_data.py
+      '
+
   curriculum-trainer-1.5b:
     build:
       context: .
       dockerfile: Dockerfile
     volumes:
       - .:/app
-      - ./data:/data/countdown
+      - ./data:/data/continual
       - ./checkpoints:/app/checkpoints
       - ./metrics:/app/metrics
       - ./logs:/app/logs
       - ./wandb:/app/wandb
-      - ~/model/qwen1.5b/snapshots/8faed761d45a263340a0528343f099c05c9a4323:/app/models/qwen1.5b:ro
+      - ~/model/qwen1.5b:/app/models/qwen1.5b:ro
       - ./models/countdown_continual_1.5b:/app/models/countdown_continual_1.5b
+    depends_on:
+      - data-generator
     container_name: countdown-curriculum-1.5b
-    environment:
-      - NVIDIA_VISIBLE_DEVICES=all
-      - BASE_MODEL=/app/models/qwen1.5b
-      - N_GPUS=8
-      - ROLLOUT_TP_SIZE=2
-      - DATA_DIR=/data/continual
-      - WANDB_MODE=offline
-      - VLLM_ATTENTION_BACKEND=XFORMERS
-      - WANDB_PROJECT=ContinualCountdown1.5B
-      - CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
+    tty: true
+    stdin_open: true
     deploy:
       resources:
         reservations:
@@ -169,11 +183,23 @@ services:
       stack: 67108864
     ipc: host
     working_dir: /app
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - PYTHONUNBUFFERED=1
+      - BASE_MODEL=/app/models/qwen1.5b
+      - N_GPUS=8
+      - ROLLOUT_TP_SIZE=2
+      - DATA_DIR=/data/continual
+      - WANDB_MODE=offline
+      - VLLM_ATTENTION_BACKEND=XFORMERS
+      - CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
+      - NCCL_DEBUG=INFO
     command: >
       bash -c '
         git config --global --add safe.directory /app &&
         . /opt/conda/etc/profile.d/conda.sh &&
         conda activate zero &&
         mkdir -p /app/checkpoints /app/metrics /app/logs /app/wandb &&
-        conda run -n zero bash scripts/train_continual_countdown_1.5b_curriculum.sh
+        chmod +x /app/scripts/train_continual_countdown_1.5b_curriculum.sh &&
+        exec conda run -n zero bash /app/scripts/train_continual_countdown_1.5b_curriculum.sh
       '

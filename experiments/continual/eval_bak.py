@@ -22,71 +22,26 @@ def extract_metrics_from_log(log_file: str) -> List[Dict[str, float]]:
     
     with open(log_file, 'r') as f:
         content = f.read()
-    
-    # Remove ANSI color codes
-    content = re.sub(r'\x1b\[[0-9;]*[a-zA-Z]', '', content)
-    
-    # Split content by training start markers to get separate runs
-    runs = re.split(r'Starting curriculum training at.*?\n', content)
-    if len(runs) > 1:
-        print(f"Found {len(runs)-1} training runs in log file")
-        # Use the last run (most recent)
-        content = runs[-1]
-    
+        
     # Extract all step metrics
     step_metrics = []
+    # Pattern to match all relevant metrics
+    step_pattern = r'step:(\d+).*?critic/score/mean:([0-9.]+).*?actor/pg_loss:([-.0-9]+).*?actor/grad_norm:([0-9.]+).*?response_length/mean:([0-9.]+)'
     
-    # Extract lines containing step and metrics, but only training steps
-    step_lines = re.findall(r'\(main_task pid=\d+\) step:\d+.*?(?:\r\n|\n)', content)
-    print(f"Raw content length: {len(content)} chars")
-    print(f"Found {len(step_lines)} lines with step metrics")
+    matches = re.finditer(step_pattern, content, re.MULTILINE | re.DOTALL)
     
-    training_step = 0  # Counter for actual training steps
-    
-    for i, line in enumerate(step_lines):
-        # Skip validation/test steps or any other non-training metrics
-        if any(x in line for x in ['val/', 'test/', 'eval/']):
-            print(f"Skipping validation/test step in line {i}")
-            continue
-            
-        # Extract metrics one by one
-        step_match = re.search(r'step:(\d+)', line)
-        score_match = re.search(r'critic/score/mean:([0-9.]+)', line)
-        pg_loss_match = re.search(r'actor/pg_loss:([-.0-9]+)', line)
-        grad_norm_match = re.search(r'actor/grad_norm:([0-9.]+)', line)
-        response_length_match = re.search(r'response_length/mean:([0-9.]+)', line)
-        
-        # Skip if any required metric is missing
-        if not all([score_match, pg_loss_match, grad_norm_match, response_length_match]):
-            print(f"Skipping line {i} due to missing metrics")
-            continue
-            
-        training_step += 1  # Increment training step counter
-
-        
-        try:
-            metrics = {
-                'step': training_step,  # Use our training step counter
-                'score': float(score_match.group(1)),
-                'pg_loss': float(pg_loss_match.group(1)),
-                'grad_norm': float(grad_norm_match.group(1)),
-                'response_length': float(response_length_match.group(1))
-            }
-            step_metrics.append(metrics)
-            print(f"Successfully parsed metrics for training step {training_step}")
-        except (ValueError, IndexError) as e:
-            print(f"Warning: Could not parse metrics from line {i}: {e}")
-            training_step -= 1  # Revert the step counter if parsing failed
-            continue
+    for match in matches:
+        metrics = {
+            'step': int(match.group(1)),
+            'score': float(match.group(2)),
+            'pg_loss': float(match.group(3)),
+            'grad_norm': float(match.group(4)),
+            'response_length': float(match.group(5))
+        }
+        step_metrics.append(metrics)
     
     if not step_metrics:
         print(f"Warning: No metrics found in {log_file}")
-        print("Please check that training is outputting metrics in the expected format:")
-        print("  - step:<number>")
-        print("  - critic/score/mean:<number>")
-        print("  - actor/pg_loss:<number>")
-        print("  - actor/grad_norm:<number>")
-        print("  - response_length/mean:<number>")
         
     return step_metrics
 
@@ -116,13 +71,32 @@ class ContinualEvaluator:
 
     def compute_weight_change(self, round_num: int, group: str) -> float:
         """Compute normalized weight change between initial and final model states."""
-        initial_path = os.path.join(self.metrics_dir, f"initial_{round_num}_{group}/model.safetensors")
-        final_path = os.path.join(self.metrics_dir, f"final_{round_num}_{group}/model.safetensors")
+        # For initial state:
+        # - For round 1 plus: use base model
+        # - For round 1 other groups: use previous group's checkpoint
+        # - For round 2+ all groups: use same group's checkpoint from previous round
+        if round_num == 1 and group == "plus":
+            initial_path = Path(self.base_model) / "model.safetensors"
+        elif round_num == 1:
+            prev_group = self.groups[self.groups.index(group) - 1]
+            initial_path = Path(f"checkpoints/{self.project_name}") / f"{self.run_name}/actor/group_{prev_group}/model.safetensors"
+        else:
+            initial_path = Path(f"checkpoints/{self.project_name}") / f"{self.run_name}/actor/round_{round_num-1}_group_{group}/model.safetensors"
         
-        if not os.path.exists(initial_path) or not os.path.exists(final_path):
-            print(f"Warning: Missing model states for round {round_num}, group {group}")
+        # For final state, use current group's checkpoint
+        final_path = Path(f"checkpoints/{self.project_name}") / f"{self.run_name}/actor/round_{round_num}_group_{group}/model.safetensors"
+        
+        print(f"Comparing models for round {round_num}, group {group}:")
+        print(f"  - Initial: {initial_path}")
+        print(f"  - Final: {final_path}")
+        
+        if not (initial_path.exists() and final_path.exists()):
+            print(f"Warning: Missing model files for round {round_num}, group {group}")
+            print(f"  - Initial exists: {initial_path.exists()}")
+            print(f"  - Final exists: {final_path.exists()}")
             return 0.0
         
+        # Load models and compute weight change
         initial_state = torch.load(initial_path)
         final_state = torch.load(final_path)
         
@@ -139,64 +113,70 @@ class ContinualEvaluator:
         
         return total_change / total_params if total_params > 0 else 0.0
 
+    def process_metrics(self, log_file: Path) -> List[Dict]:
+        """Process metrics from a log file"""
+        metrics = []
+        step_metrics = extract_metrics_from_log(str(log_file))
+        
+        # For curriculum learning single run, we just process metrics sequentially
+        current_step_metrics = []
+        window_size = 100  # Average over last 100 steps
+        
+        for step in step_metrics:
+            current_step_metrics.append(step)
+            if len(current_step_metrics) >= window_size:
+                # Calculate moving averages
+                avg_metrics = {
+                    'step': step['step'],
+                    'score': np.mean([m['score'] for m in current_step_metrics[-window_size:]]),
+                    'pg_loss': np.mean([m['pg_loss'] for m in current_step_metrics[-window_size:]]),
+                    'grad_norm': np.mean([m['grad_norm'] for m in current_step_metrics[-window_size:]]),
+                    'response_length': np.mean([m['response_length'] for m in current_step_metrics[-window_size:]])
+                }
+                metrics.append(avg_metrics)
+        
+        return metrics
+
     def plot_metrics(self, metrics: List[Dict], save_path: Optional[str] = None):
         """Create plots for all metrics."""
-        if not metrics:
-            print("No metrics to plot")
-            return
-            
         fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(15, 10))
-        fig.suptitle(f'Training Metrics - {self.model_size.upper()} Model', fontsize=16, y=0.98)
         
-        # Get continuous step numbers
-        steps = list(range(1, len(metrics) + 1))
+        steps = [m["step"] for m in metrics]
         
         # Success Rate
         values = [m.get("score", 0) for m in metrics]
-        ax1.plot(steps, values, "-b", linewidth=2, marker='o', markersize=4)
-        ax1.set_title("Success Rate")
-        ax1.set_ylim(0, max(0.15, max(values) * 1.1))  # Cap at 0.15 or 10% above max
-        ax1.set_xlabel("Training Step")
-        ax1.set_ylabel("Success Rate")
-        ax1.grid(True, alpha=0.3)
+        ax1.plot(steps, values, "-")
+        ax1.set_title("Score")
+        ax1.set_ylim(0, 1)
+        ax1.set_xlabel("Step")
         
-        # Policy Gradient Loss
+        # Loss
         values = [m.get("pg_loss", 0) for m in metrics]
-        ax2.plot(steps, values, "-r", linewidth=2, marker='o', markersize=4)
+        ax2.plot(steps, values, "-")
         ax2.set_title("Policy Gradient Loss")
-        ax2.set_xlabel("Training Step")
-        ax2.set_ylabel("Loss")
-        ax2.set_ylim(min(values) * 1.1, max(values) * 1.1)
-        ax2.grid(True, alpha=0.3)
+        ax2.set_xlabel("Step")
         
         # Gradient Norm
         values = [m.get("grad_norm", 0) for m in metrics]
-        ax3.plot(steps, values, "-g", linewidth=2, marker='o', markersize=4)
-        ax3.set_title("Gradient Norm")
-        ax3.set_xlabel("Training Step")
-        ax3.set_ylabel("Norm")
-        ax3.set_ylim(0, max(values) * 1.1)
-        ax3.grid(True, alpha=0.3)
+        ax3.plot(steps, values, "-")
+        ax3.set_title("Average Gradient Norm")
+        ax3.set_xlabel("Step")
         
         # Response Length
         values = [m.get("response_length", 0) for m in metrics]
-        ax4.plot(steps, values, "-m", linewidth=2, marker='o', markersize=4)
-        ax4.set_title("Response Length")
-        ax4.set_xlabel("Training Step")
-        ax4.set_ylabel("Length")
-        ax4.set_ylim(0, max(values) * 1.1)
-        ax4.grid(True, alpha=0.3)
+        ax4.plot(steps, values, "-")
+        ax4.set_title("Average Response Length")
+        ax4.set_xlabel("Step")
         
-        # Add some padding between subplots
-        plt.tight_layout(rect=[0, 0.03, 1, 0.95], h_pad=0.5, w_pad=0.5)
+        plt.tight_layout()
         
         if save_path:
-            plt.savefig(save_path, dpi=300, bbox_inches='tight')
+            plt.savefig(save_path)
         else:
-            plt.savefig(os.path.join(self.plots_dir, f"training_metrics_{self.model_size}.png"), dpi=300, bbox_inches='tight')
+            plt.savefig(self.plots_dir / "training_metrics_1.5b.png")
 
     def save_metrics(self):
-        consolidated_path = os.path.join(self.metrics_dir, f"consolidated_metrics_{self.model_size}.json")
+        consolidated_path = self.metrics_dir / f"consolidated_metrics_{self.model_size}.json"
         with open(consolidated_path, 'w') as f:
             json.dump(self.metrics, f, indent=2)
 
@@ -231,7 +211,7 @@ class ContinualEvaluator:
         # Use the most recent log file
         log_file = max(found_logs, key=os.path.getmtime)
         print(f"Reading metrics from {log_file}")
-        metrics = extract_metrics_from_log(log_file)
+        metrics = self.process_metrics(log_file)
         
         if not metrics:
             print("Error: No metrics found to evaluate")
@@ -242,22 +222,40 @@ class ContinualEvaluator:
             print("  - actor/grad_norm:<number>")
             print("  - response_length/mean:<number>")
             return
+
+        # Plot metrics
+        self.plot_metrics(metrics)
         
-        # Save metrics
-        self.metrics = metrics
+        # Save consolidated metrics
         self.save_metrics()
         
-        # Create plots
-        plot_path = os.path.join(self.plots_dir, f"training_metrics_{model_size}.png")
-        self.plot_metrics(metrics, plot_path)
+        print(f"\nEvaluation complete. Results saved to:")
+        print(f"  - Plots: {self.plots_dir}/training_metrics_{self.model_size}.png")
+        print(f"  - Metrics: {self.metrics_dir}/consolidated_metrics_{self.model_size}.json")
+
+    def print_summary(self, metrics: List[Dict]):
+        """Print summary statistics for each round."""
+        print("\nSummary Statistics:")
+        print("-" * 50)
         
-        print(f"\n{model_size.upper()} evaluation completed successfully!")
-        print("Results can be found in:")
-        print(f"  - Plots: {plot_path}")
-        print(f"  - Metrics: {os.path.join(self.metrics_dir, f'consolidated_metrics_{model_size}.json')}")
+        for round_num in range(1, self.rounds + 1):
+            round_metrics = [m for m in metrics if m['round'] == round_num]
+            if not round_metrics:
+                continue
+            
+            print(f"\nRound {round_num}:")
+            print("-" * 20)
+            
+            # Average success rate per group
+            for group in self.groups:
+                group_metrics = next((m for m in round_metrics if m['group'] == group), None)
+                if group_metrics:
+                    print(f"{group:20}: {group_metrics['score']:.2%} score")
 
 
 if __name__ == "__main__":
+    import argparse
+    
     parser = argparse.ArgumentParser(description="Evaluate continual learning results")
     parser.add_argument("--model-size", choices=["0.5b", "1.5b"], default="0.5b", help="Model size to evaluate")
     parser.add_argument("--metrics-dir", default="./metrics", help="Directory containing metrics files")

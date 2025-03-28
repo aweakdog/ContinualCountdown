@@ -5,17 +5,20 @@ source /opt/conda/etc/profile.d/conda.sh
 conda activate zero
 
 # Configuration
-export BASE_MODEL=${BASE_MODEL:-"/home/yliog/model/qwen1.5b/snapshots/8faed761d45a263340a0528343f099c05c9a4323"}  # Qwen 1.5B model path
+export BASE_MODEL=${BASE_MODEL:-"/app/models/qwen1.5b"}  # Qwen 1.5B model path
 export N_GPUS=8  # Using all 8 3090 GPUs
 export ROLLOUT_TP_SIZE=${ROLLOUT_TP_SIZE:-2}  # Increased to 4 for Qwen-1.5B's larger model
-export DATA_DIR="/data/countdown/continual"  # Match memory data structure
+export DATA_DIR="/data/continual"  # Match memory data structure
 export TRAINED_MODEL="/app/models/countdown_continual_1.5b"  # Model being continually trained
 
 # Training configuration
 ROUNDS=3
 
+# Clear previous logs
+rm -f /app/logs/ContinualCountdown1.5B_SingleRun.log
+
 # Create necessary directories
-mkdir -p metrics logs wandb plots "$DATA_DIR/plus" "$DATA_DIR/plus_minus" "$DATA_DIR/plus_minus_mul" "$DATA_DIR/plus_minus_mul_div"
+mkdir -p /app/metrics /app/logs /app/wandb /app/plots "$DATA_DIR/plus" "$DATA_DIR/plus_minus" "$DATA_DIR/plus_minus_mul" "$DATA_DIR/plus_minus_mul_div"
 
 # Initialize model directory if it doesn't exist
 if [ ! -d "$TRAINED_MODEL" ]; then
@@ -85,7 +88,7 @@ save_checkpoint() {
     
     # Create checkpoint directory
     local experiment_name="ContinualCountdown1.5B_R${round}_${group}"
-    local checkpoint_dir="checkpoints/ContinualCountdown1.5B/$experiment_name/actor"
+    local checkpoint_dir="/app/checkpoints/ContinualCountdown1.5B/$experiment_name/actor"
     
     # Check if source model exists
     if [ ! -d "$model_path" ]; then
@@ -110,14 +113,14 @@ save_checkpoint() {
 }
 
 # Create logs directory
-mkdir -p "logs"
+mkdir -p "/app/logs"
 
 # Training function for a specific group
 train_group() {
     local round=$1
     local group=$2
     local experiment_name="ContinualCountdown1.5B_R${round}_${group}"
-    local log_file="logs/${experiment_name}.log"
+    local log_file="/app/logs/${experiment_name}.log"
     
     echo "Starting training for Round ${round}, Group ${group}"
     
@@ -126,6 +129,7 @@ train_group() {
     
     # Run training with WandB configuration
     WANDB_RUN_NAME="ContinualCountdown1.5B_R${round}_${group}"
+    export WANDB_MODE="offline"  # Run in offline mode
     
     echo "Starting training for Round ${round}, Group ${group}"
     
@@ -137,12 +141,14 @@ train_group() {
     echo "  Test:  $DATA_DIR/$group/test.parquet"
     
     python3 -m verl.trainer.main_ppo \
-        data.train_files=$DATA_DIR/${group}/train.parquet \
-        data.val_files=$DATA_DIR/${group}/test.parquet \
+        data.train_files="$DATA_DIR/${group}/train.parquet" \
+        data.val_files="$DATA_DIR/${group}/test.parquet" \
         data.train_batch_size=128 \
         data.val_batch_size=128 \
         data.max_prompt_length=256 \
         data.max_response_length=1024 \
+        +data.curriculum_learning=false \
+        +logger.print_to_console=true \
         actor_rollout_ref.model.path=$TRAINED_MODEL \
         actor_rollout_ref.model.use_remove_padding=True \
         actor_rollout_ref.actor.use_dynamic_bsz=True \
@@ -173,7 +179,7 @@ train_group() {
         algorithm.kl_ctrl.kl_coef=0.001 \
         trainer.logger=['wandb','console'] \
         trainer.default_hdfs_dir=null \
-        trainer.default_local_dir=checkpoints/ContinualCountdown1.5B/$WANDB_RUN_NAME \
+        trainer.default_local_dir=/app/checkpoints/ContinualCountdown1.5B/$WANDB_RUN_NAME \
         trainer.n_gpus_per_node=$N_GPUS \
         trainer.nnodes=1 \
         trainer.save_freq=100 \
@@ -184,8 +190,6 @@ train_group() {
         +trainer.val_before_train=True \
         ++reward_model.enable=False \
         ++reward_model.model.path=$TRAINED_MODEL \
-        # Enable curriculum learning for consistent data processing within each group
-        data.curriculum_learning=True \
         2>&1 | tee "$log_file"
     
     # Check if training was successful by looking for validation metrics
@@ -193,7 +197,7 @@ train_group() {
         echo "Training successful for round $round, group $group"
         
         # Save final model checkpoint
-        latest_checkpoint="metrics/final_${round}_${group}"
+        latest_checkpoint="/app/metrics/final_${round}_${group}"
         mkdir -p "$latest_checkpoint"
         
         # Shutdown Ray and any lingering Python processes
@@ -229,7 +233,7 @@ for ((round=1; round<=$ROUNDS; round++)); do
         fi
         
         # Create metrics and logs directories
-        mkdir -p "metrics" "logs"
+        mkdir -p "/app/metrics" "/app/logs"
         
         # Save initial model state
         save_checkpoint "$TRAINED_MODEL" "$round" "$group" "initial"

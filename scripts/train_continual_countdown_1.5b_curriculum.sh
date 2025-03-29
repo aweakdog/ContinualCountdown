@@ -98,7 +98,7 @@ python3 -m verl.trainer.main_ppo \
     data.max_prompt_length=256 \
     data.max_response_length=1024 \
     ++data.curriculum_learning=true \
-    ++data.epochs_per_group=2 \
+    ++data.epochs_per_group=15 \
     ++data.total_rounds=3 \
     actor_rollout_ref.model.path=$TRAINED_MODEL \
     actor_rollout_ref.model.use_remove_padding=True \

@@ -103,18 +103,16 @@ class Worker(WorkerHelper):
         assert isinstance(rank, int), f"rank must be int, instead of {type(rank)}"
 
         if rank == 0:
-            master_addr, master_port = self.get_availale_master_addr_port()
+            # Use master info from env_vars
             rank_zero_info = {
-                "MASTER_ADDR": master_addr,
-                "MASTER_PORT": master_port,
+                "MASTER_ADDR": os.environ["MASTER_ADDR"],
+                "MASTER_PORT": os.environ["MASTER_PORT"],
             }
 
             if os.getenv("WG_BACKEND", None) == "ray":
                 from verl.single_controller.base.register_center.ray import create_worker_group_register_center
                 self.register_center = create_worker_group_register_center(name=register_center_name,
                                                                            info=rank_zero_info)
-
-            os.environ.update(rank_zero_info)
 
     def __init__(self, cuda_visible_devices=None) -> None:
         # construct a meta from envrionment variable. Note that the import must be inside the class because it is executed remotely

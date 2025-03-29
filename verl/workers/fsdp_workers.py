@@ -475,6 +475,15 @@ class ActorRolloutRefWorker(Worker):
         return output
 
     @register(dispatch_mode=Dispatch.ONE_TO_ALL)
+    def reset_optimizer_learning_rate(self):
+        """Reset learning rates to initial values while keeping optimizer state"""
+        if self.actor_optimizer is not None and self.actor_lr_scheduler is not None:
+            # Reset scheduler's internal state
+            self.actor_lr_scheduler.last_epoch = -1
+            # Update learning rate
+            self.actor_lr_scheduler.step()
+
+    @register(dispatch_mode=Dispatch.ONE_TO_ALL)
     def save_checkpoint(self, local_path, hdfs_path=None):
         assert self._is_actor
         import torch
@@ -731,6 +740,15 @@ class CriticWorker(Worker):
         torch.cuda.empty_cache()
         output = output.to('cpu')
         return output
+
+    @register(dispatch_mode=Dispatch.ONE_TO_ALL)
+    def reset_optimizer_learning_rate(self):
+        """Reset learning rates to initial values while keeping optimizer state"""
+        if self.critic_optimizer is not None and self.critic_lr_scheduler is not None:
+            # Reset scheduler's internal state
+            self.critic_lr_scheduler.last_epoch = -1
+            # Update learning rate
+            self.critic_lr_scheduler.step()
 
     @register(dispatch_mode=Dispatch.ONE_TO_ALL)
     def save_checkpoint(self, local_path, hdfs_path=None):

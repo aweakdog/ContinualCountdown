@@ -128,6 +128,8 @@ def merge_resource_pool(rp1: RayResourcePool, rp2: RayResourcePool) -> RayResour
 class RayClassWithInitArgs(ClassWithInitArgs):
 
     def __init__(self, cls, *args, **kwargs) -> None:
+        # Extract role if provided, don't pass it to the class
+        self._role = kwargs.pop('role', None)
         # self._options = kwargs.pop('options', dict())
         super().__init__(cls, *args, **kwargs)
         self._options = {}
@@ -223,6 +225,10 @@ class RayWorkerGroup(WorkerGroup):
         # cia.add_kwarg("_world_size", world_size)
         num_gpus = 1 / resource_pool.max_collocate_count
 
+        # Get master info from rank 0 worker
+        self._master_addr = ray._private.services.get_node_ip_address()
+        self._master_port = str(self._get_free_port())
+
         rank = -1
         for pg_idx, local_world_size in enumerate(resource_pool.store):
             pg = pgs[pg_idx]
@@ -240,9 +246,9 @@ class RayWorkerGroup(WorkerGroup):
                     'RAY_LOCAL_WORLD_SIZE': str(local_world_size),
                     'RAY_LOCAL_RANK': str(local_rank),
                 }
-                if rank != 0:
-                    env_vars['MASTER_ADDR'] = self._master_addr
-                    env_vars['MASTER_PORT'] = self._master_port
+                # Set master info for all ranks
+                env_vars['MASTER_ADDR'] = self._master_addr
+                env_vars['MASTER_PORT'] = self._master_port
 
                 import re
                 cia_name = type(ray_cls_with_init.cls).__name__
@@ -263,19 +269,12 @@ class RayWorkerGroup(WorkerGroup):
                 self._workers.append(worker)
                 self._worker_names.append(name)
 
-                if rank == 0:
-                    register_center_actor = None
-                    for _ in range(120):
-                        if f"{self.name_prefix}_register_center" not in list_named_actors():
-                            time.sleep(1)
-                        else:
-                            register_center_actor = ray.get_actor(f"{self.name_prefix}_register_center")
-                            break
-                    assert register_center_actor is not None, f"failed to get register_center_actor: {self.name_prefix}_register_center in {list_named_actors(all_namespaces=True)}"
-                    rank_zero_info = ray.get(register_center_actor.get_rank_zero_info.remote())
-                    self._master_addr, self._master_port = rank_zero_info['MASTER_ADDR'], rank_zero_info['MASTER_PORT']
-                    # print(f"rank_zero_info: {rank_zero_info}")
-                    # print(f"master_addr: {self._master_addr}, master_port: {self._master_port}")
+                # All workers will use the same master info
+    def _get_free_port(self):
+        import socket
+        with socket.socket() as sock:
+            sock.bind(('', 0))
+            return sock.getsockname()[1]
 
     @property
     def worker_names(self):
@@ -406,8 +405,9 @@ def _bind_workers_method_to_parent(cls, key, user_defined_cls):
             try:
                 method_name_with_prefix = key + '_' + method_name
                 setattr(cls, method_name_with_prefix, func)
-                # print(f'Binding {method_name_with_prefix}')
+                print(f'DEBUG: Bound method {method_name_with_prefix} to {cls.__name__}')
             except Exception as e:
+                print(f'DEBUG: Failed to bind method {method_name} with error: {e}')
                 raise ValueError(f'Fail to set method_name {method_name}')
 
 
@@ -424,6 +424,7 @@ def create_colocated_worker_cls(class_dict: dict[str, RayClassWithInitArgs]):
     """
     cls_dict = {}
     init_args_dict = {}
+    role_dict = {}
     worker_cls = None
     for key, cls in class_dict.items():
         if worker_cls == None:
@@ -433,25 +434,37 @@ def create_colocated_worker_cls(class_dict: dict[str, RayClassWithInitArgs]):
                 'the worker class should be the same when share the same process'
         cls_dict[key] = cls.cls
         init_args_dict[key] = {'args': cls.args, 'kwargs': cls.kwargs}
+        # Store role if provided
+        if hasattr(cls, '_role') and cls._role is not None:
+            role_dict[key] = cls._role
 
     assert cls_dict.keys() == init_args_dict.keys()
+
+    print('DEBUG: class_dict keys:', list(class_dict.keys()))
+    print('DEBUG: role_dict:', role_dict)
 
     # TODO: create a class with customizable name
     class WorkerDict(worker_cls):
 
         def __init__(self):
+            # Initialize without role since base Worker doesn't take role
             super().__init__()
             self.worker_dict = {}
             for key, user_defined_cls in cls_dict.items():
                 user_defined_cls = _unwrap_ray_remote(user_defined_cls)
                 # directly instantiate the class without remote
                 with patch.dict(os.environ, {'DISABLE_WORKER_INIT': '1'}):
-                    self.worker_dict[key] = user_defined_cls(*init_args_dict[key].get('args', ()),
-                                                             **init_args_dict[key].get('kwargs', {}))
+                    # Pass role from role_dict if available
+                    kwargs = init_args_dict[key].get('kwargs', {})
+                    if key in role_dict:
+                        kwargs['role'] = role_dict[key]
+                    self.worker_dict[key] = user_defined_cls(*init_args_dict[key].get('args', ()), **kwargs)
 
     # now monkey-patch the methods from inner class to WorkerDict
     for key, user_defined_cls in cls_dict.items():
         user_defined_cls = _unwrap_ray_remote(user_defined_cls)
+        # Use key when binding methods to ensure all methods are bound
+        print(f'DEBUG: Binding methods for {key}, class: {user_defined_cls.__name__}')
         _bind_workers_method_to_parent(WorkerDict, key, user_defined_cls)
 
     remote_cls = ray.remote(WorkerDict)

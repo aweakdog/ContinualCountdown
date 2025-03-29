@@ -30,6 +30,7 @@ from verl.utils.py_functional import append_to_dict
 from verl.utils.torch_functional import masked_mean
 from verl.utils.ulysses import ulysses_pad_and_slice_inputs, gather_outpus_and_unpad
 from verl.utils.seqlen_balancing import rearrange_micro_batches, get_reverse_idx
+from verl.single_controller.base.decorator import register, Dispatch
 
 from flash_attn.bert_padding import pad_input, unpad_input, rearrange, index_first_axis
 
@@ -49,6 +50,32 @@ class DataParallelPPOCritic(BasePPOCritic):
         self.gradient_accumulation = self.config.ppo_mini_batch_size // self.config.ppo_micro_batch_size
 
         self.ulysses_sequence_parallel_size = self.config.get('ulysses_sequence_parallel_size', 1)
+        
+        # Store initial optimizer config
+        self.optim_config = None
+        if hasattr(self.config, 'optim'):
+            self.optim_config = self.config.optim
+
+        # Create learning rate scheduler
+        self.lr_scheduler = None
+        if self.critic_optimizer is not None and self.optim_config is not None:
+            from verl.utils.torch_functional import get_constant_schedule_with_warmup
+            total_steps = self.optim_config.get('total_training_steps', 0)
+            num_warmup_steps_ratio = self.optim_config.get('lr_warmup_steps_ratio', 0.)
+            num_warmup_steps = int(num_warmup_steps_ratio * total_steps)
+            self.lr_scheduler = get_constant_schedule_with_warmup(
+                optimizer=self.critic_optimizer,
+                num_warmup_steps=num_warmup_steps
+            )
+
+    @register(dispatch_mode=Dispatch.ONE_TO_ALL)
+    def reset_optimizer_learning_rate(self):
+        """Reset learning rates to initial values while keeping optimizer state"""
+        if self.critic_optimizer is not None and self.lr_scheduler is not None:
+            # Reset scheduler's internal state
+            self.lr_scheduler.last_epoch = -1
+            # Update learning rate
+            self.lr_scheduler.step()
 
     def _forward_micro_batch(self, micro_batch):
         response_length = micro_batch['responses'].size(-1)

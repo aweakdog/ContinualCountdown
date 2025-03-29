@@ -396,6 +396,9 @@ def register(dispatch_mode=Dispatch.ALL_TO_ALL, execute_mode=Execute.ALL, blocki
     _check_execute_mode(execute_mode=execute_mode)
 
     def decorator(func):
+        # Add MAGIC_ATTR to the original function for class method binding
+        attrs = {'dispatch_mode': dispatch_mode, 'execute_mode': execute_mode, 'blocking': blocking}
+        setattr(func, MAGIC_ATTR, attrs)
 
         @wraps(func)
         def inner(*args, **kwargs):
@@ -403,7 +406,7 @@ def register(dispatch_mode=Dispatch.ALL_TO_ALL, execute_mode=Execute.ALL, blocki
                 args, kwargs = _materialize_futures(*args, **kwargs)
             return func(*args, **kwargs)
 
-        attrs = {'dispatch_mode': dispatch_mode, 'execute_mode': execute_mode, 'blocking': blocking}
+        # Also add MAGIC_ATTR to the wrapper for instance method binding
         setattr(inner, MAGIC_ATTR, attrs)
         return inner
 

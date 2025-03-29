@@ -547,6 +547,7 @@ class RayPPOTrainer(object):
 
         if self.use_critic:
             self.critic_wg = all_wg['critic']
+            # The methods are already bound without prefix by spawn()
             self.critic_wg.init_model()
 
         if self.use_reference_policy:
@@ -560,6 +561,15 @@ class RayPPOTrainer(object):
         # we should create rollout at the end so that vllm can have a better estimation of kv cache memory
         self.actor_rollout_wg = all_wg['actor_rollout']
         self.actor_rollout_wg.init_model()
+
+    def _reset_learning_rates(self):
+        """Reset learning rates of actor and critic to their default values"""
+        # Reset critic learning rate if using critic
+        if self.use_critic:
+            self.critic_wg.critic_reset_optimizer_learning_rate()
+            
+        # Reset actor learning rate
+        self.actor_rollout_wg.reset_optimizer_learning_rate()
 
     def _save_checkpoint(self):
         actor_local_path = os.path.join(self.config.trainer.default_local_dir, 'actor',
@@ -624,6 +634,8 @@ class RayPPOTrainer(object):
             for round_num in range(self.config.data.total_rounds):
                 for group in ['plus', 'plus_minus', 'plus_minus_mul', 'plus_minus_mul_div']:
                     print(f'Starting training on group: {group}')
+                    # Reset learning rates at the start of each group
+                    self._reset_learning_rates()
                     for epoch in range(self.config.data.epochs_per_group):
                         for batch_dict in self.train_dataloaders[group]:
                             print(f'Round {round_num}, Group {group}, Epoch {epoch}, Step {self.global_steps}')

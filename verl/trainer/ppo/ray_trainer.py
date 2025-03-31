@@ -358,8 +358,10 @@ class RayPPOTrainer(object):
                 'plus_minus_mul_div': [f for f in self.config.data.train_files if 'plus_minus_mul_div/train' in f]
             }
             
-            for group in ['plus', 'plus_minus', 'plus_minus_mul', 'plus_minus_mul_div']:
+            #for group in ['plus', 'plus_minus', 'plus_minus_mul', 'plus_minus_mul_div']:
                 # Create dataset for this group using only its files
+            #TODO(@aweakdog): hardcode here,fix this
+            for group in ['plus_minus', 'plus_minus_mul', 'plus_minus_mul_div']:
                 self.train_datasets[group] = RLHFDataset(
                     parquet_files=group_files[group],
                     tokenizer=self.tokenizer,
@@ -632,7 +634,10 @@ class RayPPOTrainer(object):
 
         if self.config.data.get('curriculum_learning', False):
             for round_num in range(self.config.data.total_rounds):
-                for group in ['plus', 'plus_minus', 'plus_minus_mul', 'plus_minus_mul_div']:
+                #TODO(@aweakdog): hard code here, need to fix
+                #for group in ['plus', 'plus_minus', 'plus_minus_mul', 'plus_minus_mul_div']:
+                #for group in ['plus_minus_mul_div', 'plus_minus_mul', 'plus_minus', 'plus']:
+                for group in ['plus_minus', 'plus_minus_mul', 'plus_minus_mul_div']:
                     print(f'Starting training on group: {group}')
                     # Reset learning rates at the start of each group
                     self._reset_learning_rates()

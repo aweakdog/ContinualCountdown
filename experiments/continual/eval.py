@@ -153,7 +153,7 @@ class ContinualEvaluator:
         
         # Success Rate
         values = [m.get("score", 0) for m in metrics]
-        ax1.plot(steps, values, "-b", linewidth=2, marker='o', markersize=4)
+        ax1.plot(steps, values, "-b", linewidth=0.5, marker='o', markersize=0.1)
         ax1.set_title("Success Rate")
         ax1.set_ylim(0, max(0.15, max(values) * 1.1))  # Cap at 0.15 or 10% above max
         ax1.set_xlabel("Training Step")
@@ -162,7 +162,7 @@ class ContinualEvaluator:
         
         # Policy Gradient Loss
         values = [m.get("pg_loss", 0) for m in metrics]
-        ax2.plot(steps, values, "-r", linewidth=2, marker='o', markersize=4)
+        ax2.plot(steps, values, "-r", linewidth=0.5, marker='o', markersize=0.1)
         ax2.set_title("Policy Gradient Loss")
         ax2.set_xlabel("Training Step")
         ax2.set_ylabel("Loss")
@@ -171,7 +171,7 @@ class ContinualEvaluator:
         
         # Gradient Norm
         values = [m.get("grad_norm", 0) for m in metrics]
-        ax3.plot(steps, values, "-g", linewidth=2, marker='o', markersize=4)
+        ax3.plot(steps, values, "-g", linewidth=0.5, marker='o', markersize=0.1)
         ax3.set_title("Gradient Norm")
         ax3.set_xlabel("Training Step")
         ax3.set_ylabel("Norm")
@@ -180,7 +180,7 @@ class ContinualEvaluator:
         
         # Response Length
         values = [m.get("response_length", 0) for m in metrics]
-        ax4.plot(steps, values, "-m", linewidth=2, marker='o', markersize=4)
+        ax4.plot(steps, values, "-m", linewidth=0.5, marker='o', markersize=0.1)
         ax4.set_title("Response Length")
         ax4.set_xlabel("Training Step")
         ax4.set_ylabel("Length")

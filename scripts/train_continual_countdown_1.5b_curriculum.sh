@@ -49,7 +49,9 @@ echo "Number of GPUs: $N_GPUS"
 echo "Tensor Parallel Size: $ROLLOUT_TP_SIZE"
 
 # Prepare training and validation files
-TRAIN_FILES_STR="[\"/app/data/continual/plus/train.parquet\",\"/app/data/continual/plus_minus/train.parquet\",\"/app/data/continual/plus_minus_mul/train.parquet\",\"/app/data/continual/plus_minus_mul_div/train.parquet\"]"
+#TRAIN_FILES_STR="[\"/app/data/continual/plus/train.parquet\",\"/app/data/continual/plus_minus/train.parquet\",\"/app/data/continual/plus_minus_mul/train.parquet\",\"/app/data/continual/plus_minus_mul_div/train.parquet\"]"
+#TRAIN_FILES_STR="[\"/app/data/continual/plus_minus_mul_div/train.parquet\",\"/app/data/continual/plus_minus_mul/train.parquet\",\"/app/data/continual/plus_minus/train.parquet\",\"/app/data/continual/plus/train.parquet\"]"
+TRAIN_FILES_STR="[\"/app/data/continual/plus_minus/train.parquet\",\"/app/data/continual/plus_minus_mul/train.parquet\",\"/app/data/continual/plus_minus_mul_div/train.parquet\"]"
 
 VAL_FILES_STR="[\"/app/data/continual/plus/test.parquet\",\"/app/data/continual/plus_minus/test.parquet\",\"/app/data/continual/plus_minus_mul/test.parquet\",\"/app/data/continual/plus_minus_mul_div/test.parquet\"]"
 
@@ -98,7 +100,7 @@ python3 -m verl.trainer.main_ppo \
     data.max_prompt_length=256 \
     data.max_response_length=1024 \
     ++data.curriculum_learning=true \
-    ++data.epochs_per_group=15 \
+    ++data.epochs_per_group=25 \
     ++data.total_rounds=3 \
     actor_rollout_ref.model.path=$TRAINED_MODEL \
     actor_rollout_ref.model.use_remove_padding=True \

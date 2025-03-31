@@ -350,18 +350,26 @@ class RayPPOTrainer(object):
             self.train_datasets = {}
             self.train_dataloaders = {}
             
-            # Map of group to its file pattern
-            group_files = {
-                'plus': [f for f in self.config.data.train_files if 'plus/train' in f],
-                'plus_minus': [f for f in self.config.data.train_files if 'plus_minus/train' in f],
-                'plus_minus_mul': [f for f in self.config.data.train_files if 'plus_minus_mul/train' in f],
-                'plus_minus_mul_div': [f for f in self.config.data.train_files if 'plus_minus_mul_div/train' in f]
-            }
+            # Extract groups from training file paths, preserving input order
+            import os
+            from collections import OrderedDict
+            group_files = OrderedDict()
+            ordered_groups = []
+            for file_path in self.config.data.train_files:
+                if 'train' not in file_path:
+                    continue
+                # Extract group name from path (assumes structure like path/to/group_name/train.parquet)
+                group = os.path.basename(os.path.dirname(file_path))
+                if group not in group_files:
+                    group_files[group] = []
+                    ordered_groups.append(group)
+                group_files[group].append(file_path)
             
-            #for group in ['plus', 'plus_minus', 'plus_minus_mul', 'plus_minus_mul_div']:
-                # Create dataset for this group using only its files
-            #TODO(@aweakdog): hardcode here,fix this
-            for group in ['plus_minus', 'plus_minus_mul', 'plus_minus_mul_div']:
+            # Store ordered groups for use in fit()
+            self.ordered_groups = ordered_groups
+            # Get operator groups in specified order from config, or use input file order
+            operator_groups = self.config.data.get('operator_groups', ordered_groups)
+            for group in operator_groups:
                 self.train_datasets[group] = RLHFDataset(
                     parquet_files=group_files[group],
                     tokenizer=self.tokenizer,
@@ -380,9 +388,10 @@ class RayPPOTrainer(object):
                     collate_fn=collate_fn)
                 
             # For validation purposes, set train_dataset to last group's dataset
-            self.train_dataset = self.train_datasets['plus_minus_mul_div']
+            last_group = self.ordered_groups[-1]
+            self.train_dataset = self.train_datasets[last_group]
             # For length checks, use last group's dataloader
-            self.train_dataloader = self.train_dataloaders['plus_minus_mul_div']
+            self.train_dataloader = self.train_dataloaders[last_group]
         else:
             # Regular training without curriculum
             self.train_dataset = RLHFDataset(
@@ -634,10 +643,9 @@ class RayPPOTrainer(object):
 
         if self.config.data.get('curriculum_learning', False):
             for round_num in range(self.config.data.total_rounds):
-                #TODO(@aweakdog): hard code here, need to fix
-                #for group in ['plus', 'plus_minus', 'plus_minus_mul', 'plus_minus_mul_div']:
-                #for group in ['plus_minus_mul_div', 'plus_minus_mul', 'plus_minus', 'plus']:
-                for group in ['plus_minus', 'plus_minus_mul', 'plus_minus_mul_div']:
+                # Use the same groups that were detected in _create_dataloader, preserving input order
+                operator_groups = self.config.data.get('operator_groups', self.ordered_groups)
+                for group in operator_groups:
                     print(f'Starting training on group: {group}')
                     # Reset learning rates at the start of each group
                     self._reset_learning_rates()

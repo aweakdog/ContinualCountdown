@@ -32,10 +32,10 @@ class DataGenerator:
     def __init__(self, base_dir: str = "/app/data/continual"):  
         self.base_dir = base_dir
         self.operator_groups = [
-            [['+', '-', '*'], ['+', '-', '*']],  # plus_minus_mul
-            [['+', '-', '/'], ['+', '-', '/']],  # plus_minus_div
-            [['-', '*', '/'], ['-', '*', '/']],  # minus_mul_div
-            [['+', '*', '/'], ['+', '*', '/']]   # plus_mul_div
+            [["+"],["+"]],
+            [["+", "-"],["-"]],
+            [["+", "-", "*"],["*"]],
+            [["+", "-", "*", "/"],["/"]]
         ]
         self.group_names = [
             "plus_minus_mul",
@@ -47,7 +47,7 @@ class DataGenerator:
         os.system(f"chmod -R 777 {base_dir}")
 
 
-    def generate_group_data(self, group_idx: int, train_size: int = 1280, test_size: int = 1000) -> Tuple[Dataset, Dataset]:
+    def generate_group_data(self, group_idx: int, train_size: int = 256, test_size: int = 7680) -> Tuple[Dataset, Dataset]:
         """Generate train and test data for a specific operator group"""
         candidate_operators = self.operator_groups[group_idx][0]
         neccessary_operators = self.operator_groups[group_idx][1]
@@ -59,15 +59,13 @@ class DataGenerator:
             random.seed(42 + group_idx + seed_offset)
             samples = []
             
-            for _ in tqdm(range(num_samples), desc=f"Generating {num_samples} samples for {group_name}"):
+            for _ in tqdm(range(num_samples), desc=f"Generating {num_samples} samples"):
                 # Initialize countdown with random start size between 3 and 4
                 start_size = random.randint(3, 4)
-                cd = CountDownReverse(min_target=0, max_target=1000, start_size=start_size, 
-                                   max_internal_value=1000, 
-                                   candidate_operators=candidate_operators, 
-                                   neccessary_operators=neccessary_operators)
+                cd = CountDownReverse(min_target = 0, max_target=1000,  start_size=start_size, max_internal_value=1000,candidate_operators=candidate_operators, neccessary_operators=neccessary_operators)
                 target, nums, solution = cd.generate()
                 rating = 1.0
+                print('new_data:', target, nums, solution)
                 samples.append({
                     "target": target,
                     "nums": nums,
@@ -77,11 +75,13 @@ class DataGenerator:
             
             return samples
         
-        rprint(f"[yellow]Generating training samples for {group_name}...[/yellow]")
+        rprint(f"[yellow]Generating training samples...[/yellow]")
         train_samples = generate_samples(train_size)
         
-        rprint(f"[yellow]Generating test samples for {group_name}...[/yellow]")
-        test_samples = generate_samples(test_size, seed_offset=100)  # Different seed for test set
+        rprint(f"[yellow]Generating test samples...[/yellow]")
+        #test_samples = generate_samples(test_size, seed_offset=100)  # Different seed for test set
+        test_samples = train_samples
+
         
         # Convert to dataset format
         def create_dataset(samples, split: str) -> Dataset:
@@ -95,32 +95,41 @@ class DataGenerator:
             dataset = Dataset.from_dict(data)
             
             def process_fn(example, idx):
-                # Create prompt template with group-specific operators
-                question = make_prefix(example, operators=candidate_operators)
-                
-                # Format the solution
-                solution = example["solution"]
-                
-                # Add metadata
-                meta = {
-                    "target": example["target"],
-                    "nums": example["nums"],
-                    "rating": example["rating"],
+                # Create prompt template
+                question = make_prefix(example, operators=["+", "-", "*", "/"])
+
+                # Add solution and metadata
+                data = {
+                    "data_source": "countdown_continual",
+                    "prompt": [{
+                        "role": "user",
+                        "content": question,
+                    }],
+                    "ability": "math",
+                    "reward_model": {
+                        "style": "rule",
+                        "ground_truth": {
+                            "target": example['target'],
+                            "numbers": example['nums'],
+                            "solution": example['solution'],
+                            "rating": example['rating'],
+                        }
+                    },
+                    "extra_info": {
+                        'split': split,
+                        'index': idx,
+                        'operator_group': self.group_names[group_idx],
+                    }
                 }
-                
-                return {
-                    "question": question,
-                    "answer": solution,
-                    "meta": meta,
-                }
+                return data
             
-            # Apply processing function
-            dataset = dataset.map(process_fn, with_indices=True)
+            # Map the processing function over the dataset
+            dataset = dataset.map(function=process_fn, with_indices=True)
             
-            # Save to parquet
-            output_file = os.path.join(group_dir, f"{split}.parquet")
-            dataset.to_parquet(output_file)
-            rprint(f"[green]Saved {split} dataset to {output_file}[/green]")
+            # Save dataset
+            output_path = os.path.join(group_dir, f"{split}.parquet")
+            dataset.to_parquet(output_path)
+            rprint(f"[green]Saved {split} dataset to {output_path}[/green]")
             
             return dataset
         
@@ -129,12 +138,13 @@ class DataGenerator:
         
         return train_dataset, test_dataset
 
-
 if __name__ == "__main__":
-    rprint("[bold blue]Countdown Task Data Generator - New Groups[/bold blue]")
+    rprint("[bold blue]Countdown Task Data Generator[/bold blue]")
     generator = DataGenerator()
     
     # Generate data for each operator group
-    for group_idx in range(len(generator.group_names)):
-        rprint(f"\n[bold cyan]Generating data for group {generator.group_names[group_idx]}[/bold cyan]")
-        generator.generate_group_data(group_idx)
+    for group_idx in tqdm(range(len(generator.operator_groups)), desc="Generating datasets"):
+        rprint(f"\n[bold cyan]Processing operator group: {generator.operator_groups[group_idx]}[/bold cyan]")
+        train_dataset, test_dataset = generator.generate_group_data(group_idx)
+        rprint(f"[green]✓ Generated {len(train_dataset)} training samples and {len(test_dataset)} test samples[/green]")
+        rprint(f"[blue]  Saved in /data/continual/{generator.group_names[group_idx]}/[/blue]")

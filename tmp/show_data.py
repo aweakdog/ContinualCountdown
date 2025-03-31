@@ -7,7 +7,7 @@ from rich import print
 from rich.table import Table
 from rich.console import Console
 
-OPERATOR_GROUPS = ['plus', 'plus_minus', 'plus_minus_mul', 'plus_minus_mul_div']
+OPERATOR_GROUPS = ['plus_minus_mul', 'plus_minus_div', 'minus_mul_div', 'plus_mul_div']
 DATA_DIR = './data/continual'
 NUM_EXAMPLES = 5  # Number of examples to show from each split
 

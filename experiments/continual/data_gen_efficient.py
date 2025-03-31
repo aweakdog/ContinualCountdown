@@ -32,10 +32,10 @@ class DataGenerator:
     def __init__(self, base_dir: str = "/app/data/continual"):  
         self.base_dir = base_dir
         self.operator_groups = [
-            ["+"],
-            ["+", "-"],
-            ["+", "-", "*"],
-            ["+", "-", "*", "/"]
+            [["+"],["+"]],
+            [["+", "-"],["-"]],
+            [["+", "-", "*"],["*"]],
+            [["+", "-", "*", "/"],["/"]]
         ]
         self.group_names = [
             "plus",
@@ -49,7 +49,8 @@ class DataGenerator:
 
     def generate_group_data(self, group_idx: int, train_size: int = 256, test_size: int = 7680) -> Tuple[Dataset, Dataset]:
         """Generate train and test data for a specific operator group"""
-        operators = self.operator_groups[group_idx]
+        candidate_operators = self.operator_groups[group_idx][0]
+        neccessary_operators = self.operator_groups[group_idx][1]
         group_name = self.group_names[group_idx]
         group_dir = os.path.join(self.base_dir, group_name)
         os.makedirs(group_dir, exist_ok=True)
@@ -61,7 +62,7 @@ class DataGenerator:
             for _ in tqdm(range(num_samples), desc=f"Generating {num_samples} samples"):
                 # Initialize countdown with random start size between 3 and 4
                 start_size = random.randint(3, 4)
-                cd = CountDownReverse(min_target = 0, max_target=1000,  start_size=start_size, max_internal_value=1000,operators=operators)
+                cd = CountDownReverse(min_target = 0, max_target=1000,  start_size=start_size, max_internal_value=1000,candidate_operators=candidate_operators, neccessary_operators=neccessary_operators)
                 target, nums, solution = cd.generate()
                 rating = 1.0
                 print('new_data:', target, nums, solution)

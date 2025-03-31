@@ -17,12 +17,13 @@ class Node:
 
 
 class CountDownReverse(object):
-    def __init__(self, max_target=24, start_size=4, min_target=10, max_internal_value=1000, operators=None):
+    def __init__(self, max_target=24, start_size=4, min_target=10, max_internal_value=1000, candidate_operators=None, neccessary_operators=None):
         self.max_target = max_target
         self.min_target = min_target
         self.max_internal_value = max_internal_value
         self.start_size = start_size
-        self.operators = operators if operators is not None else ["+", "-", "*", "/"]
+        self.candidate_operators = candidate_operators if candidate_operators is not None else ["+", "-", "*", "/"]
+        self.neccessary_operators = neccessary_operators if neccessary_operators is not None else []
         # if len(self.operators) == 1 :
         #     self.max_cnt_limit = 10
         # else:
@@ -66,8 +67,19 @@ class CountDownReverse(object):
         return target, nums, operations
                 
     def generate_operation_tree(self, start_size):
+        pass_check = False
+        while not pass_check:
+            operators = random.choices(self.candidate_operators, k=start_size-1)
+            operators_set = set(operators)
+            pass_check = True
+            for i in self.neccessary_operators:
+                if i not in operators_set:
+                    pass_check = False
+                    break
+            
         all_nodes: List[Node] = [Node(None) for _ in range(start_size)]
         nodes = all_nodes[:]
+        num = 0
         while len(nodes) > 1:
             # Randomly select two nodes
             node1, node2 = random.sample(nodes, 2)
@@ -77,9 +89,10 @@ class CountDownReverse(object):
             nodes.remove(node2)
             
             # Create a new parent node with a random operator
-            operator = random.choice(self.operators)
-            parent = Node(operator, node1, node2)
-            
+            #operator = random.choice(self.operators)
+            parent = Node(operators[num], node1, node2)
+            num += 1
+
             # Add the new parent node back to the list
             nodes.append(parent)
             all_nodes.append(parent)

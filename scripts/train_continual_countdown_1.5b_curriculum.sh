@@ -51,9 +51,12 @@ echo "Tensor Parallel Size: $ROLLOUT_TP_SIZE"
 # Prepare training and validation files
 #TRAIN_FILES_STR="[\"/app/data/continual/plus/train.parquet\",\"/app/data/continual/plus_minus/train.parquet\",\"/app/data/continual/plus_minus_mul/train.parquet\",\"/app/data/continual/plus_minus_mul_div/train.parquet\"]"
 #TRAIN_FILES_STR="[\"/app/data/continual/plus_minus_mul_div/train.parquet\",\"/app/data/continual/plus_minus_mul/train.parquet\",\"/app/data/continual/plus_minus/train.parquet\",\"/app/data/continual/plus/train.parquet\"]"
-TRAIN_FILES_STR="[\"/app/data/continual/plus_minus/train.parquet\",\"/app/data/continual/plus_minus_mul/train.parquet\",\"/app/data/continual/plus_minus_mul_div/train.parquet\"]"
+#TRAIN_FILES_STR="[\"/app/data/continual/plus_minus/train.parquet\",\"/app/data/continual/plus_minus_mul/train.parquet\",\"/app/data/continual/plus_minus_mul_div/train.parquet\"]"
 
-VAL_FILES_STR="[\"/app/data/continual/plus/test.parquet\",\"/app/data/continual/plus_minus/test.parquet\",\"/app/data/continual/plus_minus_mul/test.parquet\",\"/app/data/continual/plus_minus_mul_div/test.parquet\"]"
+#VAL_FILES_STR="[\"/app/data/continual/plus/test.parquet\",\"/app/data/continual/plus_minus/test.parquet\",\"/app/data/continual/plus_minus_mul/test.parquet\",\"/app/data/continual/plus_minus_mul_div/test.parquet\"]"
+
+TRAIN_FILES_STR="[\"/app/data/continual/plus_minus_mul/train.parquet\",\"/app/data/continual/plus_minus_div/train.parquet\",\"/app/data/continual/plus_mul_div/train.parquet\",\"/app/data/continual/minus_mul_div/train.parquet\"]"
+VAL_FILES_STR="[\"/app/data/continual/plus_minus_mul/test.parquet\",\"/app/data/continual/plus_minus_div/test.parquet\",\"/app/data/continual/plus_mul_div/test.parquet\",\"/app/data/continual/minus_mul_div/test.parquet\"]"
 
 echo "\nFirst 100 chars of train files list:"
 echo "${TRAIN_FILES_STR:0:100}..."
@@ -88,7 +91,6 @@ echo "Python path: $(which python3)" | tee -a "$log_file"
 echo "Training configuration:" | tee -a "$log_file"
 echo "  Model: $TRAINED_MODEL" | tee -a "$log_file"
 echo "  Data directory: $DATA_DIR" | tee -a "$log_file"
-echo "  Groups: plus -> plus_minus -> plus_minus_mul -> plus_minus_mul_div" | tee -a "$log_file"
 echo "  GPUs: $N_GPUS" | tee -a "$log_file"
 echo "  Rollout TP size: $ROLLOUT_TP_SIZE" | tee -a "$log_file"
 
@@ -97,10 +99,9 @@ python3 -m verl.trainer.main_ppo \
     data.val_files="$VAL_FILES_STR" \
     data.train_batch_size=128 \
     data.val_batch_size=128 \
-    data.max_prompt_length=256 \
     data.max_response_length=1024 \
     ++data.curriculum_learning=true \
-    ++data.epochs_per_group=25 \
+    ++data.epochs_per_group=15 \
     ++data.total_rounds=3 \
     actor_rollout_ref.model.path=$TRAINED_MODEL \
     actor_rollout_ref.model.use_remove_padding=True \
@@ -137,7 +138,7 @@ python3 -m verl.trainer.main_ppo \
     trainer.n_gpus_per_node=$N_GPUS \
     trainer.nnodes=1 \
     trainer.save_freq=100 \
-    trainer.test_freq=100 \
+    trainer.test_freq=50 \
     trainer.project_name=ContinualCountdown1.5B \
     trainer.experiment_name=$WANDB_RUN_NAME \
     trainer.total_epochs=1 \

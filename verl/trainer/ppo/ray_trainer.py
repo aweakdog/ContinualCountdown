@@ -367,9 +367,8 @@ class RayPPOTrainer(object):
             
             # Store ordered groups for use in fit()
             self.ordered_groups = ordered_groups
-            # Get operator groups in specified order from config, or use input file order
-            operator_groups = self.config.data.get('operator_groups', ordered_groups)
-            for group in operator_groups:
+            # Use groups in order from input files
+            for group in ordered_groups:
                 self.train_datasets[group] = RLHFDataset(
                     parquet_files=group_files[group],
                     tokenizer=self.tokenizer,
@@ -387,6 +386,40 @@ class RayPPOTrainer(object):
                     drop_last=True,
                     collate_fn=collate_fn)
                 
+            # Create validation datasets and dataloaders for each group
+            self.val_datasets = {}
+            self.val_dataloaders = {}
+            val_group_files = OrderedDict()
+            
+            # Extract groups from validation file paths
+            for file_path in self.config.data.val_files:
+                if 'test' not in file_path:
+                    continue
+                # Extract group name from path (assumes structure like path/to/group_name/test.parquet)
+                group = os.path.basename(os.path.dirname(file_path))
+                if group not in val_group_files:
+                    val_group_files[group] = []
+                val_group_files[group].append(file_path)
+            
+            # Create validation datasets and loaders using same groups as training
+            for group in ordered_groups:
+                if group in val_group_files:
+                    self.val_datasets[group] = RLHFDataset(
+                        parquet_files=val_group_files[group],
+                        tokenizer=self.tokenizer,
+                        prompt_key=self.config.data.prompt_key,
+                        max_prompt_length=self.config.data.max_prompt_length,
+                        filter_prompts=True,
+                        return_raw_chat=self.config.data.get('return_raw_chat', False),
+                        truncation='error',
+                        config=self.config)
+                    self.val_dataloaders[group] = DataLoader(
+                        dataset=self.val_datasets[group],
+                        batch_size=self.config.data.val_batch_size,
+                        shuffle=False,
+                        drop_last=True,
+                        collate_fn=collate_fn)
+            
             # For validation purposes, set train_dataset to last group's dataset
             last_group = self.ordered_groups[-1]
             self.train_dataset = self.train_datasets[last_group]
@@ -448,41 +481,100 @@ class RayPPOTrainer(object):
             self.config.actor_rollout_ref.actor.optim.total_training_steps = total_training_steps
             self.config.critic.optim.total_training_steps = total_training_steps
 
-    def _validate(self):
+    def _validate_small(self, group=None):
+        """Quick validation using a single batch from the dataloader."""
+        if not group or group not in self.val_dataloaders:
+            return {}
+            
+        # Get the next batch from the validation dataloader
+        if not hasattr(self, '_val_iterators'):
+            self._val_iterators = {}
+        if group not in self._val_iterators:
+            self._val_iterators[group] = iter(self.val_dataloaders[group])
+            
+        try:
+            test_data = next(self._val_iterators[group])
+        except StopIteration:
+            # Reset iterator when we've gone through all batches
+            self._val_iterators[group] = iter(self.val_dataloaders[group])
+            test_data = next(self._val_iterators[group])
+        
+        test_batch = DataProto.from_single_dict(test_data)
+        
+        if self.config.reward_model.enable and test_batch[0].non_tensor_batch['reward_model']['style'] == 'model':
+            return {}
+
+        test_gen_batch = test_batch.pop(['input_ids', 'attention_mask', 'position_ids'])
+        test_gen_batch.meta_info = {
+            'eos_token_id': self.tokenizer.eos_token_id,
+            'pad_token_id': self.tokenizer.pad_token_id,
+            'recompute_log_prob': False,
+            'do_sample': False,
+            'validate': True,
+        }
+
+        # Generate and evaluate
+        test_gen_batch_padded, pad_size = pad_dataproto_to_divisor(test_gen_batch, self.actor_rollout_wg.world_size)
+        test_output_gen_batch_padded = self.actor_rollout_wg.generate_sequences(test_gen_batch_padded)
+        test_output_gen_batch = unpad_dataproto(test_output_gen_batch_padded, pad_size=pad_size)
+        test_batch = test_batch.union(test_output_gen_batch)
+        
+        # Get rewards
+        reward_tensor = self.val_reward_fn(test_batch)
+        data_source = test_batch.non_tensor_batch.get('data_source', ['unknown'] * reward_tensor.shape[0])
+        
+        # Calculate metrics
+        reward_mean = reward_tensor.sum(-1).mean().item()
+        return {f'val/test_score_quick/{data_source[0]}': reward_mean}
+        
+    def _validate(self, group=None):
+        """Full validation on all test data. Used less frequently for thorough evaluation."""
         reward_tensor_lst = []
         data_source_lst = []
-        for test_data in self.val_dataloader:
-            test_batch = DataProto.from_single_dict(test_data)
-            # test_batch = test_batch.to('cuda')
+        
+        # Only validate on specified group
+        if not group:
+            return {}
+            
+        if group not in self.val_dataloaders:
+            return {}
+            
+        # Run validation on specified group
+        cnt = 1
+        for test_data in self.val_dataloaders[group]:
+                print('test_data_tmp:',cnt)
+                cnt += 1
+                test_batch = DataProto.from_single_dict(test_data)
+                # test_batch = test_batch.to('cuda')
 
-            # we only do validation on rule-based rm
-            if self.config.reward_model.enable and test_batch[0].non_tensor_batch['reward_model']['style'] == 'model':
-                return {}
+                # we only do validation on rule-based rm
+                if self.config.reward_model.enable and test_batch[0].non_tensor_batch['reward_model']['style'] == 'model':
+                    return {}
 
-            test_gen_batch = test_batch.pop(['input_ids', 'attention_mask', 'position_ids'])
-            test_gen_batch.meta_info = {
-                'eos_token_id': self.tokenizer.eos_token_id,
-                'pad_token_id': self.tokenizer.pad_token_id,
-                'recompute_log_prob': False,
-                'do_sample': False,
-                'validate': True,
-            }
+                test_gen_batch = test_batch.pop(['input_ids', 'attention_mask', 'position_ids'])
+                test_gen_batch.meta_info = {
+                    'eos_token_id': self.tokenizer.eos_token_id,
+                    'pad_token_id': self.tokenizer.pad_token_id,
+                    'recompute_log_prob': False,
+                    'do_sample': False,
+                    'validate': True,
+                }
 
-            # pad to be divisible by dp_size
-            test_gen_batch_padded, pad_size = pad_dataproto_to_divisor(test_gen_batch, self.actor_rollout_wg.world_size)
-            test_output_gen_batch_padded = self.actor_rollout_wg.generate_sequences(test_gen_batch_padded)
-            # unpad
-            test_output_gen_batch = unpad_dataproto(test_output_gen_batch_padded, pad_size=pad_size)
-            print('validation generation end')
+                # pad to be divisible by dp_size
+                test_gen_batch_padded, pad_size = pad_dataproto_to_divisor(test_gen_batch, self.actor_rollout_wg.world_size)
+                test_output_gen_batch_padded = self.actor_rollout_wg.generate_sequences(test_gen_batch_padded)
+                # unpad
+                test_output_gen_batch = unpad_dataproto(test_output_gen_batch_padded, pad_size=pad_size)
+                print('validation generation end')
 
-            test_batch = test_batch.union(test_output_gen_batch)
+                test_batch = test_batch.union(test_output_gen_batch)
 
-            # evaluate using reward_function
-            # for certain reward function (e.g. sandbox), the generation can overlap with reward
-            reward_tensor = self.val_reward_fn(test_batch)
+                # evaluate using reward_function
+                # for certain reward function (e.g. sandbox), the generation can overlap with reward
+                reward_tensor = self.val_reward_fn(test_batch)
 
-            reward_tensor_lst.append(reward_tensor)
-            data_source_lst.append(test_batch.non_tensor_batch.get('data_source', ['unknown'] * reward_tensor.shape[0]))
+                reward_tensor_lst.append(reward_tensor)
+                data_source_lst.append(test_batch.non_tensor_batch.get('data_source', ['unknown'] * reward_tensor.shape[0]))
 
         reward_tensor = torch.cat(reward_tensor_lst, dim=0).sum(-1).cpu()  # (batch_size,)
         data_sources = np.concatenate(data_source_lst, axis=0)
@@ -632,7 +724,7 @@ class RayPPOTrainer(object):
         # perform validation before training
         # currently, we only support validation using the reward_function.
         if self.val_reward_fn is not None and self.config.trainer.get('val_before_train', True):
-            val_metrics = self._validate()
+            val_metrics = self._validate(self.ordered_groups[0]) # for debug
             pprint(f'Initial validation metrics: {val_metrics}')
             logger.log(data=val_metrics, step=self.global_steps)
             if self.config.trainer.get('val_only', False):
@@ -643,14 +735,17 @@ class RayPPOTrainer(object):
 
         if self.config.data.get('curriculum_learning', False):
             for round_num in range(self.config.data.total_rounds):
-                # Use the same groups that were detected in _create_dataloader, preserving input order
-                operator_groups = self.config.data.get('operator_groups', self.ordered_groups)
-                for group in operator_groups:
+                # Use groups in order from input files
+                for group in self.ordered_groups:
                     print(f'Starting training on group: {group}')
                     # Reset learning rates at the start of each group
                     self._reset_learning_rates()
+                    
                     for epoch in range(self.config.data.epochs_per_group):
                         for batch_dict in self.train_dataloaders[group]:
+
+                            
+                            print(f'Intotal we have Round num: {self.config.data.total_rounds}, Group num {len(self.ordered_groups)}, Epoch num {self.config.data.epochs_per_group}, Step num {len(self.train_dataloaders[group])/128}')
                             print(f'Round {round_num}, Group {group}, Epoch {epoch}, Step {self.global_steps}')
                             metrics = {}
                             timing_raw = {}
@@ -735,11 +830,16 @@ class RayPPOTrainer(object):
                                 actor_output_metrics = reduce_metrics(actor_output.meta_info['metrics'])
                                 metrics.update(actor_output_metrics)
 
-                            # validate
-                            if self.val_reward_fn is not None and self.config.trainer.test_freq > 0 and \
-                                self.global_steps % self.config.trainer.test_freq == 0:
-                                with _timer('testing', timing_raw):
-                                    val_metrics: dict = self._validate()
+                            # Quick validation every step
+                            #if self.val_reward_fn is not None:
+                            #    with _timer('group_small_testing', timing_raw):
+                            #        val_metrics: dict = self._validate_small(group=group)
+                            #    metrics.update({f'{group}/test_small': val_metrics})
+                                
+                            # Full validation less frequently
+                            if self.val_reward_fn is not None and self.global_steps % self.config.trainer.test_freq == 0:
+                                with _timer('group_full_testing', timing_raw):
+                                    val_metrics: dict = self._validate(group=group)
                                 metrics.update(val_metrics)
 
                             if self.config.trainer.save_freq > 0 and \
@@ -751,9 +851,14 @@ class RayPPOTrainer(object):
                             metrics.update(compute_data_metrics(batch=batch, use_critic=self.use_critic))
                             metrics.update(compute_timing_metrics(batch=batch, timing_raw=timing_raw))
 
-                            # TODO: make a canonical logger that supports various backend
-                            logger.log(data=metrics, step=self.global_steps)
+                            ## Run validation after each step
+                            #if self.val_reward_fn is not None:
+                            #    # Only validate current group to save memory
+                            #    val_metrics = self._validate(group=group)
+                            #    metrics.update({f'{group}/test': val_metrics})
 
+                            # Log all metrics
+                            logger.log(data=metrics, step=self.global_steps)
                             self.global_steps += 1
 
                             # update kl control

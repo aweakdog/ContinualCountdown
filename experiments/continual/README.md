@@ -59,16 +59,34 @@ The curriculum learning approach trains the model on operator groups in a progre
 
 1. **Data Organization**
    - Training data is organized in order of increasing complexity
-   - Files are processed in sequence: plus → plus_minus → plus_minus_mul → plus_minus_mul_div
+   - Files are processed in sequence based on input order:
+     1. plus_minus_mul (operators: +, -, *)
+     2. plus_minus_div (operators: +, -, /)
+     3. plus_mul_div (operators: +, *, /)
+     4. minus_mul_div (operators: -, *, /)
 
 2. **Configuration**
-   - Uses tensor parallel size of 2 across 8 GPUs
-   - Batch sizes: 128 for both training and validation
-   - Learning rates:
-     - Actor: 1e-6
-     - Critic: 1e-5
-   - Uses Flash Attention 2 for improved performance
-   - Enables dynamic batch sizing for optimal GPU utilization
+   - Hardware Setup:
+     - 8 GPUs total
+     - Tensor parallel size: 4
+     - Data parallel size: 2
+   - Training Parameters:
+     - 3 complete rounds of training
+     - 15 epochs per group per round
+     - Total epochs: 180 (3 rounds × 4 groups × 15 epochs)
+   - Data Structure:
+     - Each group: 100k training samples, 1k test samples
+     - Fixed sequence length: 4 tokens
+     - Data format: Parquet files
+   - Metrics Tracking:
+     - Success rate per group
+     - Weight changes
+     - Loss function
+     - Normalized gradient
+     - Response length
+   - Validation:
+     - Tests on current group and all previous groups
+     - Runs every 100 steps and at group boundaries
 
 3. **Running Training**
 
@@ -96,11 +114,16 @@ The curriculum learning approach trains the model on operator groups in a progre
    tail -f logs/ContinualCountdown1.5B_SingleRun.log
    ```
 
-   The training will automatically process all operator groups in sequence:
-   1. Addition only
-   2. Addition + Subtraction
-   3. Addition + Subtraction + Multiplication
-   4. All operations (including Division)
+   The training will automatically process operator groups in sequence:
+   1. plus_minus_mul: Training with +, -, * operators
+   2. plus_minus_div: Training with +, -, / operators
+   3. plus_mul_div: Training with +, *, / operators
+   4. minus_mul_div: Training with -, *, / operators
+   
+   For each group:
+   - Training runs for 15 epochs
+   - Validation tests current and all previous groups
+   - Metrics are logged with group-specific prefixes
 
    Training progress can be monitored through WandB UI or the console logs.
 

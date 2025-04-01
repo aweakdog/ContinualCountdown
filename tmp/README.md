@@ -16,7 +16,6 @@ docker compose build countdown-viewer
 ```bash
 # Run in interactive mode
 docker compose run --rm countdown-viewer
-docker compose run --rm countdown-viewer
 ```
 
 ## Interactive Commands

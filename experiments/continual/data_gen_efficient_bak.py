@@ -50,7 +50,6 @@ class DataGenerator:
     def generate_group_data(self, group_idx: int, train_size: int = 256, test_size: int = 7680) -> Tuple[Dataset, Dataset]:
         """Generate train and test data for a specific operator group"""
         candidate_operators = self.operator_groups[group_idx][0]
-        neccessary_operators = self.operator_groups[group_idx][1]
         group_name = self.group_names[group_idx]
         group_dir = os.path.join(self.base_dir, group_name)
         os.makedirs(group_dir, exist_ok=True)

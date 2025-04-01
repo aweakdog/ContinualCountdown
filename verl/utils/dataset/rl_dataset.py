@@ -120,51 +120,24 @@ class RLHFDataset(Dataset):
             os.path.basename(os.path.dirname(f)) for f in self.parquet_files
         )))
 
-        # Add group and round information
+        # Add group information
         self.dataframe['_group'] = self.dataframe['_source_file'].apply(
             lambda x: os.path.basename(os.path.dirname(x))
         )
         
-        # Add epoch information if provided in config
+        # Store config parameters but don't replicate data
         self.epochs_per_group = None
         self.total_rounds = None
         if hasattr(self, 'config') and hasattr(self.config, 'data'):
             self.epochs_per_group = self.config.data.get('epochs_per_group')
             self.total_rounds = self.config.data.get('total_rounds')
-            
-            if self.epochs_per_group and self.total_rounds:
-                # Calculate total samples needed for each group
-                samples_per_group = len(self.dataframe) // (len(self.operator_groups) * self.total_rounds)
-                
-                # Replicate data for each round and epoch
-                new_dataframes = []
-                for round_num in range(self.total_rounds):
-                    for group in self.operator_groups:
-                        group_data = self.dataframe[self.dataframe['_group'] == group]
-                        for epoch in range(self.epochs_per_group):
-                            epoch_data = group_data.copy()
-                            epoch_data['_round'] = round_num
-                            epoch_data['_epoch'] = epoch
-                            new_dataframes.append(epoch_data)
-                
-                self.dataframe = pd.concat(new_dataframes, ignore_index=True)
-            dataframe['_source_file'] = parquet_file
-            dataframes.append(dataframe)
-        # Reset index to maintain order of files
-        self.dataframe = pd.concat(dataframes, ignore_index=True)
 
-        print(f'original dataset len: {len(self.dataframe)}')
-
-        # filter out too long prompts
-        tokenizer = self.tokenizer
-        prompt_key = self.prompt_key
-
-        # nvm if prompt is too long
-        # self.dataframe = self.dataframe[self.dataframe.apply(lambda doc: len(
-        #     tokenizer.apply_chat_template(doc[prompt_key], add_generation_prompt=True)) <= self.max_prompt_length,
-        #                                                      axis=1)]
-
-        print(f'filter dataset len: {len(self.dataframe)}')
+        print(f'Dataset size: {len(self.dataframe)} samples')
+        print(f'Groups: {self.operator_groups}')
+        
+        # Print samples per group
+        group_sizes = self.dataframe.groupby('_group').size()
+        print(f'Samples per group:\n{group_sizes}')
 
     def __len__(self):
         return len(self.dataframe)

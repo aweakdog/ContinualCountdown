@@ -9,7 +9,7 @@ from rich.console import Console
 
 OPERATOR_GROUPS = ['plus_minus_mul', 'plus_minus_div', 'minus_mul_div', 'plus_mul_div']
 DATA_DIR = './data/continual'
-NUM_EXAMPLES = 5  # Number of examples to show from each split
+NUM_EXAMPLES = 1280  # Number of examples to show from each split
 
 def load_dataset(group, split='train'):
     """Load a specific dataset group and split."""
@@ -25,7 +25,6 @@ def show_examples(dataset, num_examples, console, group_name, split):
     table.add_column("Target Number")
     table.add_column("Available Numbers")
     table.add_column("Solution", style="green")
-    
     for i in range(min(num_examples, len(dataset))):
         row = dataset.iloc[i]
         table.add_row(
@@ -34,7 +33,7 @@ def show_examples(dataset, num_examples, console, group_name, split):
             str(row['nums']),
             str(row['solution'])
         )
-    
+
     console.print(f"\n[bold blue]{group_name} - {split} split[/bold blue] (showing {min(num_examples, len(dataset))} of {len(dataset)} examples)")
     console.print(table)
 

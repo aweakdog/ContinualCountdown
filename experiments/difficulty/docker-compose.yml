@@ -1,0 +1,30 @@
+services:
+  difficulty-tester:
+    build:
+      context: ../..  # Build from root directory
+      dockerfile: Dockerfile
+    volumes:
+      - ../../data:/app/data
+      - ./results:/app/difficulty_results
+      - ./log:/app/experiments/difficulty/log
+      - ./deepseek_api.txt:/app/deepseek_api.txt
+      - ./difficulty_test.py:/app/experiments/difficulty/difficulty_test.py
+      - ./requirements.txt:/app/experiments/difficulty/requirements.txt
+    working_dir: /app/experiments/difficulty
+    environment:
+      - PYTHONUNBUFFERED=1
+      - PYTHONIOENCODING=UTF-8
+    command: >
+      bash -c '
+      mkdir -p /app/experiments/difficulty/log &&
+      chmod -R 777 /app/experiments/difficulty/log &&
+      conda run -n zero pip install -r requirements.txt &&
+      conda run -n zero python -u difficulty_test.py --data-dir /app/data/continual /app/data/tinyzero --pattern train.parquet --output-dir /app/difficulty_results --api-key-file /app/deepseek_api.txt
+      '
+    tty: true
+    stdin_open: true
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"

@@ -101,8 +101,8 @@ ENV/
 .ropeproject
 
 # Difficulty experiment logs and results
-difficulty/log/
-difficulty/results/
+difficulty/log/*
+difficulty/results/*
 
 # vscode
 .vscode

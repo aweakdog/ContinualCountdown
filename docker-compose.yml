@@ -203,3 +203,76 @@ services:
         chmod +x /app/scripts/train_continual_countdown_1.5b_curriculum.sh &&
         exec conda run -n zero bash /app/scripts/train_continual_countdown_1.5b_curriculum.sh
       '
+
+  tinyzero-dummy-generator:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    volumes:
+      - .:/app  # Mount entire project
+      - ./data/tinyzero/data:/data/tinyzero/data:ro  # Mount input data as read-only
+      - ./data/dummy_tinyzero:/data/dummy_tinyzero  # Mount output directory
+    container_name: tinyzero-dummy-generator
+    working_dir: /app
+    command: >
+      bash -c '
+        git config --global --add safe.directory /app &&
+        . /opt/conda/etc/profile.d/conda.sh &&
+        conda activate zero &&
+        mkdir -p /data/dummy_tinyzero &&
+        chmod -R 777 /data/dummy_tinyzero &&
+        python experiments/dummy_tinyzero/gen_tinyzero_dummy.py
+      '
+
+  tinyzero-dummy-trainer:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    volumes:
+      - .:/app
+      - ./data:/data/dummy_tinyzero
+      - ./checkpoints:/app/checkpoints
+      - ./metrics:/app/metrics
+      - ./logs:/app/logs
+      - ./wandb:/app/wandb
+      - ~/model/qwen1.5b:/app/models/qwen1.5b:ro
+    depends_on:
+      - tinyzero-dummy-generator
+    container_name: tinyzero-dummy-trainer
+    tty: true
+    stdin_open: true
+
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 8
+              capabilities: [gpu]
+    shm_size: '64gb'
+    ulimits:
+      memlock: -1
+      stack: 67108864
+    ipc: host
+    working_dir: /app
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - PYTHONUNBUFFERED=1
+      - BASE_MODEL=/app/models/qwen1.5b
+      - N_GPUS=8
+      - ROLLOUT_TP_SIZE=2
+      - DATA_DIR=/data/dummy_tinyzero
+      - WANDB_MODE=offline
+      - VLLM_ATTENTION_BACKEND=XFORMERS
+      - CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
+      - NCCL_DEBUG=INFO
+    command: >
+      bash -c '
+        git config --global --add safe.directory /app &&
+        . /opt/conda/etc/profile.d/conda.sh &&
+        conda activate zero &&
+        mkdir -p /app/checkpoints/tinyzero_dummy /app/metrics /app/logs /app/wandb &&
+        chmod +x /app/scripts/train_tinyzero_dummy.sh &&
+        chmod -R 777 /app/checkpoints/tinyzero_dummy &&
+        cd /app && ./scripts/train_tinyzero_dummy.sh
+      '

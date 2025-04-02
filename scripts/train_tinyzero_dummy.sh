@@ -9,11 +9,12 @@ conda activate zero
 export BASE_MODEL=${BASE_MODEL:-"/app/models/qwen1.5b"}  # Qwen 1.5B model path
 export N_GPUS=8  # Using all 8 GPUs
 export ROLLOUT_TP_SIZE=${ROLLOUT_TP_SIZE:-2}  # Tensor parallel size
-export DATA_DIR="./data/continual"  # Match actual data location
+export DATA_DIR="/data/dummy_tinyzero"  # Match actual data location
+#export TRAINED_MODEL="/app/models/tinyzero_dummy"  # Model being trained
 
 # Create logs directory if it doesn't exist
-mkdir -p /app/metrics /app/logs /app/wandb /app/plots "$DATA_DIR" /app/checkpoints/continual_countdown1.5b
-chmod -R 777 /app/checkpoints/continual_countdown1.5b
+mkdir -p /app/metrics /app/logs /app/wandb /app/plots "$DATA_DIR" /app/checkpoints/tinyzero_dummy
+chmod -R 777 /app/checkpoints/tinyzero_dummy
 chmod -R 777 /app/logs
 chmod -R 777 "$DATA_DIR"
 
@@ -42,12 +43,13 @@ fi
 #fi
 
 # Run single training process
-WANDB_RUN_NAME="ContinualCountdown1.5B_SingleRun"
+WANDB_RUN_NAME="TinyZeroDummy1.5B_SingleRun"
 log_file="/app/logs/${WANDB_RUN_NAME}.log"
 
+echo "Starting Tinyzero dummy training"
 
 # Print debug info
-echo "Starting ContinualCountdown1.5B training at $(date)" | tee -a "$log_file"
+echo "Starting Tinyzero dummy training at $(date)" | tee -a "$log_file"
 echo "Current directory: $(pwd)" | tee -a "$log_file"
 echo "Python path: $(which python3)" | tee -a "$log_file"
 
@@ -58,8 +60,8 @@ echo "  GPUs: $N_GPUS" | tee -a "$log_file"
 echo "  Rollout TP size: $ROLLOUT_TP_SIZE" | tee -a "$log_file"
 
 # Create data file strings for training
-TRAIN_FILES_STR="[\"/app/data/continual/plus_minus_mul/train.parquet\",\"/app/data/continual/plus_minus_div/train.parquet\",\"/app/data/continual/plus_mul_div/train.parquet\",\"/app/data/continual/minus_mul_div/train.parquet\"]"
-VAL_FILES_STR="[\"/app/data/continual/plus_minus_mul/test.parquet\",\"/app/data/continual/plus_minus_div/test.parquet\",\"/app/data/continual/plus_mul_div/test.parquet\",\"/app/data/continual/minus_mul_div/test.parquet\"]"
+TRAIN_FILES_STR="[\"/app/data/dummy_tinyzero/0/train.parquet\",\"/app/data/dummy_tinyzero/1/train.parquet\",\"/app/data/dummy_tinyzero/2/train.parquet\",\"/app/data/dummy_tinyzero/3/train.parquet\"]"
+VAL_FILES_STR="[\"/app/data/dummy_tinyzero/0/test.parquet\",\"/app/data/dummy_tinyzero/1/test.parquet\",\"/app/data/dummy_tinyzero/2/test.parquet\",\"/app/data/dummy_tinyzero/3/test.parquet\"]"
 
 echo "\nFirst 100 chars of train files list:"
 echo "${TRAIN_FILES_STR:0:100}..."
@@ -70,9 +72,9 @@ echo "${VAL_FILES_STR:0:100}..."
 export TRANSFORMERS_OFFLINE=1
 
 # Create logs directory if it doesn't exist
-mkdir -p /app/logs
+mkdir -p /app/logs/tinyzero_dummy
 chmod -R 777 /app/logs
-chmod -R 777 /app/data/continual
+chmod -R 777 /app/data/dummy_tinyzero
 
 # Set environment variables
 export WANDB_MODE="disabled"
@@ -81,14 +83,15 @@ export PYTHONFAULTHANDLER=1  # Enable Python fault handler for better error repo
 export PYTHONPATH=/app:$PYTHONPATH
 
 # Run single training process for all groups
-WANDB_RUN_NAME="ContinualCountdown1.5B_SingleRun"
+WANDB_RUN_NAME="TinyZeroDummy1.5B_SingleRun"
+#log_file="/app/logs/tinyzero_dummy/train_$(date +%Y%m%d_%H%M%S).log"
 log_file="/app/logs/${WANDB_RUN_NAME}.log"
 
 
-echo "Starting training for ContinualCountdown1.5B dataset"
+echo "Starting training for Tinyzero dummy dataset"
 
 # Print debug info
-echo "Starting ContinualCountdown1.5B training at $(date)" | tee -a "$log_file"
+echo "Starting Tinyzero dummy training at $(date)" | tee -a "$log_file"
 echo "Current directory: $(pwd)" | tee -a "$log_file"
 echo "Python path: $(which python3)" | tee -a "$log_file"
 
@@ -101,12 +104,13 @@ echo "  Rollout TP size: $ROLLOUT_TP_SIZE" | tee -a "$log_file"
 python3 -m verl.trainer.main_ppo \
     data.train_files="$TRAIN_FILES_STR" \
     data.val_files="$VAL_FILES_STR" \
-    data.train_batch_size=32 \
-    data.val_batch_size=32 \
+    data.train_batch_size=128 \
+    data.val_batch_size=128 \
     data.max_response_length=1024 \
     ++data.curriculum_learning=true \
     ++data.epochs_per_group=15 \
     ++data.total_rounds=3 \
+    ++data.save_model_each_round=true \
     actor_rollout_ref.model.path=$BASE_MODEL \
     actor_rollout_ref.model.use_remove_padding=True \
     actor_rollout_ref.actor.use_dynamic_bsz=True \
@@ -125,8 +129,6 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.rollout.enforce_eager=true \
     actor_rollout_ref.rollout.free_cache_engine=false \
     actor_rollout_ref.ref.log_prob_micro_batch_size=8 \
-    actor_rollout_ref.model.enable_gradient_checkpointing=True \
-    critic.model.enable_gradient_checkpointing=True \
     critic.optim.lr=1e-5 \
     critic.model.path=$BASE_MODEL \
     +critic.model.trust_remote_code=true \
@@ -140,12 +142,12 @@ python3 -m verl.trainer.main_ppo \
     trainer.logger=['wandb','console'] \
     +logger.print_to_console=true \
     trainer.default_hdfs_dir=null \
-    trainer.default_local_dir=/app/checkpoints/continual_countdown1.5b \
+    trainer.default_local_dir=/app/checkpoints/tinyzero_dummy \
     trainer.n_gpus_per_node=$N_GPUS \
     trainer.nnodes=1 \
     trainer.save_freq=100 \
     trainer.test_freq=50 \
-    trainer.project_name=ContinualCountdown1.5B \
+    trainer.project_name=TinyZeroDummy1.5B \
     trainer.experiment_name=$WANDB_RUN_NAME \
     trainer.total_epochs=1 \
     +trainer.val_before_train=true \

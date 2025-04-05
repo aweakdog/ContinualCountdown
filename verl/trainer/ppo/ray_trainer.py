@@ -746,7 +746,7 @@ class RayPPOTrainer(object):
                         for batch_dict in self.train_dataloaders[group]:
 
                             
-                            print(f'Intotal we have Round num: {self.config.data.total_rounds}, Group num {len(self.ordered_groups)}, Epoch num {self.config.data.epochs_per_group}, Step num {len(self.train_dataloaders[group])/128}')
+                            print(f'Intotal we have Round num: {self.config.data.total_rounds}, Group num {len(self.ordered_groups)}, Epoch num {self.config.data.epochs_per_group}, Step num {len(self.train_dataloaders[group])}')
                             print(f'Round {round_num}, Group {group}, Epoch {epoch}, Step {self.global_steps}')
                             metrics = {}
                             timing_raw = {}
@@ -839,8 +839,12 @@ class RayPPOTrainer(object):
                                 
                             # Full validation less frequently
                             if self.val_reward_fn is not None and self.global_steps % self.config.trainer.test_freq == 0:
-                                with _timer('group_full_testing', timing_raw):
-                                    val_metrics: dict = self._validate(group=group)
+                                #with _timer('group_full_testing', timing_raw):
+                                #    val_metrics: dict = self._validate(group=group)
+                                
+                                val_metrics: dict = self._validate(group=group)
+
+                                pprint(f'Step validation metrics: {val_metrics}') # debug
                                 metrics.update(val_metrics)
 
                             if self.config.trainer.save_freq > 0 and \

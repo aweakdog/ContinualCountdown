@@ -30,13 +30,16 @@ venv/
 ENV/
 
 # Data and Model Files
-data/
+# Ignore data but keep the directory structure
+data/**/*.parquet
+data/**/*.json
+data/*
 wandb/
-logs/
+logs/*.log
 metrics/
 checkpoints/
-# Keep models directory for base model access
-# models/
+plots/*
+output/*
 
 # IDE
 .idea/

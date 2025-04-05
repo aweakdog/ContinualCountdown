@@ -44,21 +44,31 @@ def extract_metrics_from_log(log_file: str) -> List[Dict[str, float]]:
     training_step = 0  # Counter for actual training steps
     
     for i, line in enumerate(step_lines):
-        # Skip validation/test steps or any other non-training metrics
-        if any(x in line for x in ['val/', 'test/', 'eval/']):
-            print(f"Skipping validation/test step in line {i}")
-            continue
-            
         # Extract metrics one by one
         step_match = re.search(r'step:(\d+)', line)
         score_match = re.search(r'critic/score/mean:([0-9.]+)', line)
         pg_loss_match = re.search(r'actor/pg_loss:([-.0-9]+)', line)
         grad_norm_match = re.search(r'actor/grad_norm:([0-9.]+)', line)
         response_length_match = re.search(r'response_length/mean:([0-9.]+)', line)
+        val_test_score_match = re.search(r'val/test_score/countdown_continual:([0-9.]+)', line)
         
-        # Skip if any required metric is missing
-        if not all([score_match, pg_loss_match, grad_norm_match, response_length_match]):
-            print(f"Skipping line {i} due to missing metrics")
+        # For training steps, require all training metrics
+        if not val_test_score_match and not all([score_match, pg_loss_match, grad_norm_match, response_length_match]):
+            print(f"Skipping line {i} due to missing training metrics")
+            continue
+        
+        # For validation steps, only require val/test_score
+        if val_test_score_match and not any([score_match, pg_loss_match, grad_norm_match, response_length_match]):
+            metrics = {
+                'step': len(step_metrics) + 1,
+                'score': 0.0,
+                'pg_loss': 0.0,
+                'grad_norm': 0.0,
+                'response_length': 0.0,
+                'val/test_score/countdown_continual': float(val_test_score_match.group(1))
+            }
+            step_metrics.append(metrics)
+            print(f"Added validation metrics for step {len(step_metrics)}")
             continue
             
         training_step += 1  # Increment training step counter
@@ -70,7 +80,8 @@ def extract_metrics_from_log(log_file: str) -> List[Dict[str, float]]:
                 'score': float(score_match.group(1)),
                 'pg_loss': float(pg_loss_match.group(1)),
                 'grad_norm': float(grad_norm_match.group(1)),
-                'response_length': float(response_length_match.group(1))
+                'response_length': float(response_length_match.group(1)),
+                'val/test_score/countdown_continual': float(val_test_score_match.group(1)) if val_test_score_match else 0.0
             }
             step_metrics.append(metrics)
             print(f"Successfully parsed metrics for training step {training_step}")
@@ -151,14 +162,40 @@ class ContinualEvaluator:
         # Get continuous step numbers
         steps = list(range(1, len(metrics) + 1))
         
-        # Success Rate
-        values = [m.get("score", 0) for m in metrics]
-        ax1.plot(steps, values, "-b", linewidth=0.5, marker='o', markersize=0.1)
-        ax1.set_title("Success Rate")
-        ax1.set_ylim(0, max(0.15, max(values) * 1.1))  # Cap at 0.15 or 10% above max
+        # Success Rate and Val/Test Score
+        train_scores = [m.get("score", 0) for m in metrics]
+        
+        # Apply smoothing to training scores
+        smoothed_scores = []
+        smooth_factor = 0.9  # Configurable smoothing factor
+        if train_scores:
+            smoothed_scores.append(train_scores[0])  # First value unchanged
+            for score in train_scores[1:]:
+                smoothed_scores.append(smooth_factor * smoothed_scores[-1] + (1 - smooth_factor) * score)
+        
+        # Get validation scores only where they exist (no zeros)
+        val_test_scores = [(i+1, m["val/test_score/countdown_continual"]) 
+                          for i, m in enumerate(metrics) 
+                          if "val/test_score/countdown_continual" in m]
+        
+        # Plot both raw and smoothed training scores
+        ax1.plot(steps, train_scores, "-b", linewidth=0.2, alpha=0.3, label='Raw Training Score')
+        ax1.plot(steps, smoothed_scores, "-b", linewidth=1.0, label=f'Smoothed Training Score')
+        
+        # Plot validation scores with line chart
+        if val_test_scores:
+            val_steps, val_scores = zip(*val_test_scores)
+            print("Validation steps:", val_steps)
+            print("Validation scores:", val_scores)
+            ax1.plot(val_steps, val_scores, "-r", linewidth=1.0, label='Val/Test Score')
+        
+        ax1.set_title("Score")
+        max_score = max(max(train_scores), max(s for _, s in val_test_scores) if val_test_scores else 0)
+        ax1.set_ylim(0, max(0.15, max_score * 1.1))  # Cap at 0.15 or 10% above max
         ax1.set_xlabel("Training Step")
-        ax1.set_ylabel("Success Rate")
+        ax1.set_ylabel("Score")
         ax1.grid(True, alpha=0.3)
+        ax1.legend()
         
         # Policy Gradient Loss
         values = [m.get("pg_loss", 0) for m in metrics]

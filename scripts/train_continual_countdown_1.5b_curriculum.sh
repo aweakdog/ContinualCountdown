@@ -106,7 +106,7 @@ python3 -m verl.trainer.main_ppo \
     data.max_response_length=1024 \
     ++data.curriculum_learning=true \
     ++data.epochs_per_group=15 \
-    ++data.total_rounds=3 \
+    ++data.total_rounds=10 \
     actor_rollout_ref.model.path=$BASE_MODEL \
     actor_rollout_ref.model.use_remove_padding=True \
     actor_rollout_ref.actor.use_dynamic_bsz=True \
@@ -144,7 +144,7 @@ python3 -m verl.trainer.main_ppo \
     trainer.n_gpus_per_node=$N_GPUS \
     trainer.nnodes=1 \
     trainer.save_freq=100 \
-    trainer.test_freq=50 \
+    trainer.test_freq=10 \
     trainer.project_name=ContinualCountdown1.5B \
     trainer.experiment_name=$WANDB_RUN_NAME \
     trainer.total_epochs=1 \

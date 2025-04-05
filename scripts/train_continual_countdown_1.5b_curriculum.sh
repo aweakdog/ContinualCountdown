@@ -101,8 +101,8 @@ echo "  Rollout TP size: $ROLLOUT_TP_SIZE" | tee -a "$log_file"
 python3 -m verl.trainer.main_ppo \
     data.train_files="$TRAIN_FILES_STR" \
     data.val_files="$VAL_FILES_STR" \
-    data.train_batch_size=32 \
-    data.val_batch_size=32 \
+    data.train_batch_size=128 \
+    data.val_batch_size=128 \
     data.max_response_length=1024 \
     ++data.curriculum_learning=true \
     ++data.epochs_per_group=15 \

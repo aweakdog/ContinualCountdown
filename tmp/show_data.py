@@ -7,9 +7,9 @@ from rich import print
 from rich.table import Table
 from rich.console import Console
 
-OPERATOR_GROUPS = ['plus_minus_mul', 'plus_minus_div', 'minus_mul_div', 'plus_mul_div']
+OPERATOR_GROUPS = ['0', '1','2', '3']
 DATA_DIR = './data/continual'
-NUM_EXAMPLES = 1280  # Number of examples to show from each split
+NUM_EXAMPLES = 100 # Number of examples to show from each split
 
 def load_dataset(group, split='train'):
     """Load a specific dataset group and split."""

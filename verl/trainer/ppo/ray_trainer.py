@@ -382,7 +382,7 @@ class RayPPOTrainer(object):
                 self.train_dataloaders[group] = DataLoader(
                     dataset=self.train_datasets[group],
                     batch_size=self.config.data.train_batch_size,
-                    shuffle=False,  # No shuffle in curriculum learning
+                    shuffle=True,  
                     drop_last=True,
                     collate_fn=collate_fn)
                 
@@ -466,7 +466,8 @@ class RayPPOTrainer(object):
 
         # inject total_training_steps to actor/critic optim_config. This is hacky.
         if self.config.data.get('curriculum_learning', False):
-            total_training_steps = len(self.train_dataloader) * len(self.train_dataset.operator_groups) * self.config.data.epochs_per_group * self.config.data.total_rounds
+            #total_training_steps = len(self.train_dataloader) * len(self.train_dataset.operator_groups) * self.config.data.epochs_per_group * self.config.data.total_rounds
+            total_training_steps = len(self.train_dataloader) * self.config.data.epochs_per_group
         else:
             total_training_steps = len(self.train_dataloader) * self.config.trainer.total_epochs
 

@@ -58,8 +58,8 @@ echo "  GPUs: $N_GPUS" | tee -a "$log_file"
 echo "  Rollout TP size: $ROLLOUT_TP_SIZE" | tee -a "$log_file"
 
 # Create data file strings for training
-TRAIN_FILES_STR="[\"/app/data/continual/plus_minus_mul/train.parquet\",\"/app/data/continual/plus_minus_div/train.parquet\",\"/app/data/continual/plus_mul_div/train.parquet\",\"/app/data/continual/minus_mul_div/train.parquet\"]"
-VAL_FILES_STR="[\"/app/data/continual/plus_minus_mul/test.parquet\",\"/app/data/continual/plus_minus_div/test.parquet\",\"/app/data/continual/plus_mul_div/test.parquet\",\"/app/data/continual/minus_mul_div/test.parquet\"]"
+TRAIN_FILES_STR="[\"/app/data/continual/0/train.parquet\",\"/app/data/continual/1/train.parquet\",\"/app/data/continual/2/train.parquet\",\"/app/data/continual/3/train.parquet\"]"
+VAL_FILES_STR="[\"/app/data/continual/0/test.parquet\",\"/app/data/continual/1/test.parquet\",\"/app/data/continual/2/test.parquet\",\"/app/data/continual/3/test.parquet\"]"
 
 echo "\nFirst 100 chars of train files list:"
 echo "${TRAIN_FILES_STR:0:100}..."

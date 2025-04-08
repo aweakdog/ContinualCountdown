@@ -37,6 +37,7 @@ class DataGenerator:
             [['-', '*', '/'], ['-', '*', '/']],  # minus_mul_div
             [['+', '*', '/'], ['+', '*', '/']]   # plus_mul_div
         ]
+        self.distinct = True
         #self.operator_groups = [
         #    [['*','/','+'], ['/']],  # plus_minus_mul
         #    [['*', '/','-'], ['*']],  # plus_minus_div
@@ -59,7 +60,7 @@ class DataGenerator:
         os.system(f"chmod -R 777 {base_dir}")
 
 
-    def generate_group_data(self, group_idx: int, train_size: int = 1280, test_size: int = 256) -> Tuple[Dataset, Dataset]:
+    def generate_group_data(self, group_idx: int, train_size: int = 5120, test_size: int = 256) -> Tuple[Dataset, Dataset]:
         """Generate train and test data for a specific operator group"""
         candidate_operators = self.operator_groups[group_idx][0]
         neccessary_operators = self.operator_groups[group_idx][1]
@@ -77,7 +78,8 @@ class DataGenerator:
                 cd = CountDownReverse(min_target=3, max_target=100, start_size=start_size, 
                                    max_internal_value=100, 
                                    candidate_operators=candidate_operators, 
-                                   neccessary_operators=neccessary_operators)
+                                   neccessary_operators=neccessary_operators,
+                                   distinct=self.distinct)
                 target, nums, solution = cd.generate()
                 rating = 1.0
                 samples.append({

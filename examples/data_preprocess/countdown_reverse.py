@@ -17,30 +17,37 @@ class Node:
 
 
 class CountDownReverse(object):
-    def __init__(self, max_target=24, start_size=4, min_target=10, max_internal_value=1000, candidate_operators=None, neccessary_operators=None):
+    def __init__(self, max_target=24, start_size=4, min_target=10, max_internal_value=1000, candidate_operators=None, neccessary_operators=None, distinct=False):
         self.max_target = max_target
         self.min_target = min_target
         self.max_internal_value = max_internal_value
         self.start_size = start_size
         self.candidate_operators = candidate_operators if candidate_operators is not None else ["+", "-", "*", "/"]
         self.neccessary_operators = neccessary_operators if neccessary_operators is not None else []
+        self.distinct = distinct
         # if len(self.operators) == 1 :
         #     self.max_cnt_limit = 10
         # else:
         #     self.max_cnt_limit = 10000
         self.max_cnt_limit = 10000
     
+    def check_distinct_numbers(self, nums):
+        """Check if all numbers in the list are distinct."""
+        return len(nums) == len(set(nums))
+
     def generate(self):
         while True:
             all_nodes = self.generate_operation_tree(self.start_size)
             cnt = 0
-            while cnt <=self.max_cnt_limit:
+            while cnt <= self.max_cnt_limit:
                 res = self.fill_values(all_nodes[-1], [self.min_target, self.max_target], 1)
                 cnt += 1
                 assert self.min_target!=0 or res or self.max_target!=self.max_internal_value
                 if res:
-                    num, target, solution = self.encode(all_nodes)
-                    return num, target, solution
+                    target, nums, solution = self.encode(all_nodes)
+                    # Check if numbers should be distinct and if they are
+                    if not self.distinct or self.check_distinct_numbers(nums):
+                        return target, nums, solution
             print("Failed to generate a valid value after", cnt, "attempts.")
     def encode(self, all_nodes):
         target = all_nodes[-1].value

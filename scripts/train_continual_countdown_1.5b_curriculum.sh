@@ -11,11 +11,37 @@ export N_GPUS=8  # Using all 8 GPUs
 export ROLLOUT_TP_SIZE=${ROLLOUT_TP_SIZE:-2}  # Tensor parallel size
 export DATA_DIR="./data/continual"  # Match actual data location
 
-# Create logs directory if it doesn't exist
-mkdir -p /app/metrics /app/logs /app/wandb /app/plots "$DATA_DIR" /app/checkpoints/continual_countdown1.5b
-chmod -R 777 /app/checkpoints/continual_countdown1.5b
-chmod -R 777 /app/logs
-chmod -R 777 "$DATA_DIR"
+# Set up logging with backup
+LOG_FILE="/app/logs/ContinualCountdown1.5B_SingleRun.log"
+TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+BACKUP_DIR="/app/logs/run"
+
+# Create backup of existing log if it exists
+if [ -f "$LOG_FILE" ]; then
+    mkdir -p "$BACKUP_DIR"
+    cp "$LOG_FILE" "$BACKUP_DIR/ContinualCountdown1.5B_SingleRun_${TIMESTAMP}.log"
+fi
+
+# Clean up previous checkpoints
+rm -rf /app/checkpoints/continual_countdown1.5b
+
+# Create all required directories first
+mkdir -p /app/metrics /app/logs/run /app/wandb /app/plots "$DATA_DIR" /app/checkpoints/continual_countdown1.5b
+
+# Handle log backup and cleanup
+if [ -f "$LOG_FILE" ]; then
+    mkdir -p "$BACKUP_DIR"
+    cp "$LOG_FILE" "$BACKUP_DIR/ContinualCountdown1.5B_SingleRun_${TIMESTAMP}.log"
+    chmod 644 "$BACKUP_DIR/ContinualCountdown1.5B_SingleRun_${TIMESTAMP}.log"
+fi
+
+# Clean up current log and wandb
+rm -f "$LOG_FILE"
+rm -rf /app/wandb/*
+chmod -R 755 /app/checkpoints/continual_countdown1.5b
+chmod -R 755 /app/logs
+chmod -R 755 "$DATA_DIR"
+chmod -R 755 /app/logs/run  # Ensure backup directory is properly permissioned
 
 # Set environment variables
 export WANDB_MODE="disabled"

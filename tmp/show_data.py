@@ -7,7 +7,7 @@ from rich import print
 from rich.table import Table
 from rich.console import Console
 
-OPERATOR_GROUPS = ['0', '1','2', '3']
+OPERATOR_GROUPS = ['4', '5','6', '7']
 DATA_DIR = './data/continual'
 NUM_EXAMPLES = 100 # Number of examples to show from each split
 

@@ -17,7 +17,7 @@ class Node:
 
 
 class CountDownReverse(object):
-    def __init__(self, max_target=24, start_size=4, min_target=10, max_internal_value=1000, candidate_operators=None, neccessary_operators=None, distinct=False):
+    def __init__(self, max_target=24, start_size=4, min_target=10, max_internal_value=1000, candidate_operators=None, neccessary_operators=None, distinct=False, one_limit_prob=0.1):
         self.max_target = max_target
         self.min_target = min_target
         self.max_internal_value = max_internal_value
@@ -30,6 +30,7 @@ class CountDownReverse(object):
         # else:
         #     self.max_cnt_limit = 10000
         self.max_cnt_limit = 10000
+        self.one_limit_prob = one_limit_prob  # Probability to accept samples containing 1
     
     def check_distinct_numbers(self, nums):
         """Check if all numbers in the list are distinct."""
@@ -46,8 +47,14 @@ class CountDownReverse(object):
                 if res:
                     target, nums, solution = self.encode(all_nodes)
                     # Check if numbers should be distinct and if they are
+                    # Check if numbers should be distinct
                     if not self.distinct or self.check_distinct_numbers(nums):
-                        return target, nums, solution
+                        # Check if sample contains 1
+                        has_one = 1 in nums
+                        # Accept sample based on one_limit_prob if it has 1, or always accept if it doesn't have 1
+                        # this is hacky
+                        if not has_one or random.random() < self.one_limit_prob:
+                            return target, nums, solution
             print("Failed to generate a valid value after", cnt, "attempts.")
     def encode(self, all_nodes):
         target = all_nodes[-1].value

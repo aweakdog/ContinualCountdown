@@ -69,12 +69,12 @@ if [ ! -d "$LOGS_DIR" ] || [ -z "$(ls -A $LOGS_DIR)" ]; then
 fi
 
 # Check if model checkpoints exist
-checkpoint_count=$(find "$METRICS_DIR" -type d -name "initial_*" -o -name "final_*" | wc -l)
-if [ "$checkpoint_count" -eq 0 ]; then
-    echo "Error: No model checkpoints found in $METRICS_DIR"
-    echo "Please ensure training has completed and generated model checkpoints."
-    exit 1
-fi
+#checkpoint_count=$(find "$METRICS_DIR" -type d -name "initial_*" -o -name "final_*" | wc -l)
+#if [ "$checkpoint_count" -eq 0 ]; then
+#    echo "Error: No model checkpoints found in $METRICS_DIR"
+#    echo "Please ensure training has completed and generated model checkpoints."
+#    exit 1
+#fi
 
 # Run evaluation for each model size
 if [ "$EVAL_0_5B" -eq 1 ]; then

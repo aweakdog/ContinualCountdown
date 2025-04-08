@@ -75,7 +75,7 @@ class DataGenerator:
             for _ in tqdm(range(num_samples), desc=f"Generating {num_samples} samples for {group_name}"):
                 # Initialize countdown with random start size between 4 and 6
                 start_size = random.randint(4, 4)
-                cd = CountDownReverse(min_target=3, max_target=100, start_size=start_size, 
+                cd = CountDownReverse(min_target=1, max_target=100, start_size=start_size, 
                                    max_internal_value=100, 
                                    candidate_operators=candidate_operators, 
                                    neccessary_operators=neccessary_operators,

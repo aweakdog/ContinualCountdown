@@ -838,14 +838,14 @@ class RayPPOTrainer(object):
                             #    metrics.update({f'{group}/test_small': val_metrics})
                                 
                             # Full validation less frequently
-                            #if self.val_reward_fn is not None and self.global_steps % self.config.trainer.test_freq == 0:
-                            #    #with _timer('group_full_testing', timing_raw):
-                            #    #    val_metrics: dict = self._validate(group=group)
-                            #    
-                            #    val_metrics: dict = self._validate(group=group)
+                            if self.val_reward_fn is not None and self.global_steps % self.config.trainer.test_freq == 0:
+                                #with _timer('group_full_testing', timing_raw):
+                                #    val_metrics: dict = self._validate(group=group)
+                                
+                                val_metrics: dict = self._validate(group=group)
 
-                            #    pprint(f'Step validation metrics: {val_metrics}') # debug
-                            #    metrics.update(val_metrics)
+                                pprint(f'Step validation metrics: {val_metrics}') # debug
+                                metrics.update(val_metrics)
 
                             if self.config.trainer.save_freq > 0 and \
                                     self.global_steps % self.config.trainer.save_freq == 0:

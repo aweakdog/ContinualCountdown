@@ -49,13 +49,13 @@ RUN conda create -n zero python=3.9 -y && \
     conda run -n zero pip install datasets rich
 
 # Create data directory
-RUN mkdir -p /data/countdown
+#RUN mkdir -p /data/countdown
 
 # Set default command to activate conda environment
 SHELL ["conda", "run", "-n", "zero", "/bin/bash", "-c"]
 
 # Set working directory for data
-WORKDIR /data/countdown
+#WORKDIR /data/countdown
 
 # Set the default command to run our data viewer
-CMD ["conda", "run", "-n", "zero", "python", "/app/tmp/show_data.py"]
+#CMD ["conda", "run", "-n", "zero", "python", "/app/tmp/show_data.py"]

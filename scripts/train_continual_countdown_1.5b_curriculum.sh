@@ -1,15 +1,22 @@
 #!/bin/bash
 
 # Activate conda environment
+git config --global --add safe.directory /app
 source /opt/conda/etc/profile.d/conda.sh
 conda activate zero
 
-# Configuration
-#export BASE_MODEL="/app/models/qwen1.5b"  # Qwen 1.5B model path
-export BASE_MODEL=${BASE_MODEL:-"/app/models/qwen1.5b"}  # Qwen 1.5B model path
-export N_GPUS=8  # Using all 8 GPUs
+# Configuration - Set environment variables from docker-compose.yml if not already set
+export NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-all}
+export BASE_MODEL=${BASE_MODEL:-"/app/models/qwen1.5b"}  # Path to mounted Qwen model
+export N_GPUS=${N_GPUS:-8}  # Using all 8 GPUs
 export ROLLOUT_TP_SIZE=${ROLLOUT_TP_SIZE:-2}  # Tensor parallel size
 export DATA_DIR="./data/continual"  # Match actual data location
+export WANDB_MODE=${WANDB_MODE:-offline}  # Run WandB in offline mode
+export VLLM_ATTENTION_BACKEND=${VLLM_ATTENTION_BACKEND:-XFORMERS}
+export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0,1,2,3,4,5,6,7}
+export NCCL_DEBUG=${NCCL_DEBUG:-INFO}
+#export VLLM_CPU_FRACTION=${VLLM_CPU_FRACTION:-0.9}
+
 
 # Set up logging with backup
 LOG_FILE="/app/logs/ContinualCountdown1.5B_SingleRun.log"
@@ -44,7 +51,7 @@ chmod -R 755 "$DATA_DIR"
 chmod -R 755 /app/logs/run  # Ensure backup directory is properly permissioned
 
 # Set environment variables
-export WANDB_MODE="disabled"
+export WANDB_MODE=${WANDB_MODE:-"disabled"}
 export PYTHONUNBUFFERED=1  # Ensure Python output is not buffered
 export PYTHONFAULTHANDLER=1  # Enable Python fault handler for better error reporting
 export PYTHONPATH=/app:$PYTHONPATH
@@ -82,6 +89,10 @@ echo "  Model: $TRAINED_MODEL" | tee -a "$log_file"
 echo "  Data directory: $DATA_DIR" | tee -a "$log_file"
 echo "  GPUs: $N_GPUS" | tee -a "$log_file"
 echo "  Rollout TP size: $ROLLOUT_TP_SIZE" | tee -a "$log_file"
+echo "  CUDA_VISIBLE_DEVICES: $CUDA_VISIBLE_DEVICES" | tee -a "$log_file"
+echo "  VLLM_ATTENTION_BACKEND: $VLLM_ATTENTION_BACKEND" | tee -a "$log_file"
+echo "  WANDB_MODE: $WANDB_MODE" | tee -a "$log_file"
+echo "  NCCL_DEBUG: $NCCL_DEBUG" | tee -a "$log_file"
 
 # Create data file strings for training
 TRAIN_FILES_STR="[\"/app/data/continual/0/train.parquet\",\"/app/data/continual/1/train.parquet\",\"/app/data/continual/2/train.parquet\",\"/app/data/continual/3/train.parquet\"]"
@@ -101,7 +112,7 @@ chmod -R 777 /app/logs
 chmod -R 777 /app/data/continual
 
 # Set environment variables
-export WANDB_MODE="disabled"
+export WANDB_MODE=${WANDB_MODE:-"disabled"}
 export PYTHONUNBUFFERED=1  # Ensure Python output is not buffered
 export PYTHONFAULTHANDLER=1  # Enable Python fault handler for better error reporting
 export PYTHONPATH=/app:$PYTHONPATH
@@ -123,6 +134,10 @@ echo "  Model: $TRAINED_MODEL" | tee -a "$log_file"
 echo "  Data directory: $DATA_DIR" | tee -a "$log_file"
 echo "  GPUs: $N_GPUS" | tee -a "$log_file"
 echo "  Rollout TP size: $ROLLOUT_TP_SIZE" | tee -a "$log_file"
+echo "  CUDA_VISIBLE_DEVICES: $CUDA_VISIBLE_DEVICES" | tee -a "$log_file"
+echo "  VLLM_ATTENTION_BACKEND: $VLLM_ATTENTION_BACKEND" | tee -a "$log_file"
+echo "  WANDB_MODE: $WANDB_MODE" | tee -a "$log_file"
+echo "  NCCL_DEBUG: $NCCL_DEBUG" | tee -a "$log_file"
 
 python3 -m verl.trainer.main_ppo \
     data.train_files="$TRAIN_FILES_STR" \

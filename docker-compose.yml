@@ -66,24 +66,14 @@ services:
       context: .
       dockerfile: Dockerfile
     volumes:
-      - .:/app  # Mount entire project
-      #- ./data:/data/continual  # Mount data directory
-      #- ./wandb:/app/wandb  # For WandB logs
-      #- ./logs:/app/logs    # For training logs
+      #- .:/app  # Mount entire project
+      - ./data:/app/data  # Mount data directory
+      - ./wandb:/app/wandb  # For WandB logs
+      - ./logs:/app/logs    # For training logs
       - ~/model/qwen1.5b:/app/models/qwen1.5b:ro  # Mount Qwen model as read-only
-      #- ./metrics:/app/metrics  # For metrics output
-      #- ./checkpoints:/app/checkpoints  # Mount checkpoints directory
+      - ./metrics:/app/metrics  # For metrics output
+      - ./checkpoints:/app/checkpoints  # Mount checkpoints directory
     container_name: countdown-curriculum-trainer-1.5b
-    environment:
-      - NVIDIA_VISIBLE_DEVICES=all
-      - BASE_MODEL=/app/models/qwen1.5b  # Path to mounted Qwen model
-      - N_GPUS=8  # Using all 8 GPUs
-      - ROLLOUT_TP_SIZE=2  # Tensor parallel size
-      #- DATA_DIR=/data/continual  # Match the mounted data path
-      - WANDB_MODE=offline  # Run WandB in offline mode
-      - VLLM_ATTENTION_BACKEND=XFORMERS
-      - CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
-      - NCCL_DEBUG=INFO
     deploy:
       resources:
         reservations:
@@ -99,9 +89,6 @@ services:
     working_dir: /app
     command: >
       bash -c '
-        git config --global --add safe.directory /app &&
-        . /opt/conda/etc/profile.d/conda.sh &&
-        conda activate zero &&
         bash scripts/train_continual_countdown_1.5b_curriculum.sh
       '
 
@@ -110,24 +97,14 @@ services:
       context: .
       dockerfile: Dockerfile
     volumes:
-      - .:/app  # Mount entire project
-      #- ./data:/data/continual  # Mount data directory
-      #- ./wandb:/app/wandb  # For WandB logs
-      #- ./logs:/app/logs    # For training logs
+      #- .:/app  # Mount entire project
+      - ./data:/app/data  # Mount data directory
+      - ./wandb:/app/wandb  # For WandB logs
+      - ./logs:/app/logs    # For training logs
       - ~/model/qwen3b:/app/models/qwen3b:ro  # Mount Qwen model as read-only
-      #- ./metrics:/app/metrics  # For metrics output
-      #- ./checkpoints:/app/checkpoints  # Mount checkpoints directory
+      - ./metrics:/app/metrics  # For metrics output
+      - ./checkpoints:/app/checkpoints  # Mount checkpoints directory
     container_name: countdown-curriculum-trainer-3b
-    environment:
-      - NVIDIA_VISIBLE_DEVICES=all
-      - BASE_MODEL=/app/models/qwen3b  # Path to mounted Qwen model
-      - N_GPUS=4  # Using 4 A800 GPUs
-      - ROLLOUT_TP_SIZE=2  # Tensor parallel size optimized for 4 GPUs
-      #- DATA_DIR=/data/continual  # Match the mounted data path
-      - WANDB_MODE=offline  # Run WandB in offline mode
-      - VLLM_ATTENTION_BACKEND=XFORMERS
-      - CUDA_VISIBLE_DEVICES=0,1,2,3
-      - NCCL_DEBUG=INFO
     deploy:
       resources:
         reservations:
@@ -143,8 +120,5 @@ services:
     working_dir: /app
     command: >
       bash -c '
-        git config --global --add safe.directory /app &&
-        . /opt/conda/etc/profile.d/conda.sh &&
-        conda activate zero &&
         bash scripts/train_continual_countdown_3b_curriculum.sh
       '

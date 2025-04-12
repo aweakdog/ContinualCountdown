@@ -1,14 +1,24 @@
 #!/bin/bash
 
 # Activate conda environment
+# Use a more cautious approach to Git configuration
+if ! git config --global --get-all safe.directory | grep -q "/app"; then
+    git config --global --add safe.directory /app
+fi
 source /opt/conda/etc/profile.d/conda.sh
 conda activate zero
 
-# Configuration
-export BASE_MODEL=${BASE_MODEL:-"/app/models/qwen3b"}  # Qwen 3B model path
-export N_GPUS=4  # Using 4 A800 GPUs
+# Configuration - Set environment variables from docker-compose.yml if not already set
+export NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-all}
+export BASE_MODEL=${BASE_MODEL:-"/app/models/qwen3b"}  # Path to mounted Qwen model
+export N_GPUS=${N_GPUS:-4}  # Using 4 A800 GPUs
 export ROLLOUT_TP_SIZE=${ROLLOUT_TP_SIZE:-2}  # Tensor parallel size optimized for 4 GPUs
 export DATA_DIR="./data/continual"  # Match actual data location
+export WANDB_MODE=${WANDB_MODE:-offline}  # Run WandB in offline mode
+export VLLM_ATTENTION_BACKEND=${VLLM_ATTENTION_BACKEND:-XFORMERS}
+export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0,1,2,3}
+export NCCL_DEBUG=${NCCL_DEBUG:-INFO}
+
 
 # Set up logging with backup
 LOG_FILE="/app/logs/ContinualCountdown3B_SingleRun.log"
@@ -43,7 +53,7 @@ chmod -R 755 "$DATA_DIR"
 chmod -R 755 /app/logs/run
 
 # Set environment variables
-export WANDB_MODE="disabled"
+export WANDB_MODE=${WANDB_MODE:-"disabled"}
 export PYTHONUNBUFFERED=1
 export PYTHONFAULTHANDLER=1
 export PYTHONPATH=/app:$PYTHONPATH
@@ -74,6 +84,10 @@ echo "  Model: $TRAINED_MODEL" | tee -a "$log_file"
 echo "  Data directory: $DATA_DIR" | tee -a "$log_file"
 echo "  GPUs: $N_GPUS" | tee -a "$log_file"
 echo "  Rollout TP size: $ROLLOUT_TP_SIZE" | tee -a "$log_file"
+echo "  CUDA_VISIBLE_DEVICES: $CUDA_VISIBLE_DEVICES" | tee -a "$log_file"
+echo "  VLLM_ATTENTION_BACKEND: $VLLM_ATTENTION_BACKEND" | tee -a "$log_file"
+echo "  WANDB_MODE: $WANDB_MODE" | tee -a "$log_file"
+echo "  NCCL_DEBUG: $NCCL_DEBUG" | tee -a "$log_file"
 
 # Create data file strings for training
 TRAIN_FILES_STR="[\"/app/data/continual/0/train.parquet\",\"/app/data/continual/1/train.parquet\",\"/app/data/continual/2/train.parquet\",\"/app/data/continual/3/train.parquet\"]"

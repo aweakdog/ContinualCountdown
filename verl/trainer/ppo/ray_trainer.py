@@ -881,6 +881,8 @@ class RayPPOTrainer(object):
                     
                     # First, get the sample size for this group if specified
                     sample_size = sample_sizes.get(group, 0)
+                    print("sample_size:",sample_size)
+                    print("sample_sizes:",sample_sizes)
                     
                     # Create a temporary limited dataloader to calculate the correct number of steps
                     # This is important because we want the learning rate schedule to be based on

@@ -413,22 +413,6 @@ class RayPPOTrainer(object):
             shuffle=True,
             drop_last=True,
             collate_fn=collate_fn)
-            self.train_dataset = RLHFDataset(
-                parquet_files=self.config.data.train_files,
-                tokenizer=self.tokenizer,
-                prompt_key=self.config.data.prompt_key,
-                max_prompt_length=self.config.data.max_prompt_length,
-                filter_prompts=True,
-                return_raw_chat=self.config.data.get('return_raw_chat', False),
-                truncation='error',
-                config=self.config)
-            
-            self.train_dataloader = DataLoader(
-                dataset=self.train_dataset,
-                batch_size=self.config.data.train_batch_size,
-                shuffle=True,
-                drop_last=True,
-                collate_fn=collate_fn)
 
         self.val_dataset = RLHFDataset(parquet_files=self.config.data.val_files,
                                        tokenizer=self.tokenizer,

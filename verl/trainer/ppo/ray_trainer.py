@@ -882,9 +882,16 @@ class RayPPOTrainer(object):
                     # First, get the sample size for this group if specified
                     sample_size = sample_sizes.get(group, 0)
                     
-                    # Reset learning rates for this group - use the full dataloader for total_training_steps calculation
-                    # This is because we want the learning rate schedule to be consistent across epochs
-                    self._reset_learning_rates(group=group, current_dataloader=self.train_dataloaders[group])
+                    # Create a temporary limited dataloader to calculate the correct number of steps
+                    # This is important because we want the learning rate schedule to be based on
+                    # the actual number of steps we'll be training on
+                    if sample_size > 0:
+                        temp_limited_dataloader = self._create_limited_dataloader(group, sample_size)
+                        # Reset learning rates using the limited dataloader size
+                        self._reset_learning_rates(group=group, current_dataloader=temp_limited_dataloader)
+                    else:
+                        # Use the full dataloader if no sample size is specified
+                        self._reset_learning_rates(group=group, current_dataloader=self.train_dataloaders[group])
                     
                     for epoch in range(self.config.data.epochs_per_group):
                         # Create a new limited dataloader for each epoch if sample size is specified

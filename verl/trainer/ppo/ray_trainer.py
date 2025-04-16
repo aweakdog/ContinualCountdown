@@ -341,7 +341,7 @@ class RayPPOTrainer(object):
         self._create_dataloader()
 
     def _create_dataloader(self):
-        from torch.utils.data import DataLoader
+        from torch.utils.data import DataLoader, Subset
         # TODO: we have to make sure the batch size is divisible by the dp size
         from verl.utils.dataset.rl_dataset import RLHFDataset, collate_fn
         
@@ -385,6 +385,34 @@ class RayPPOTrainer(object):
                     shuffle=True,  
                     drop_last=True,
                     collate_fn=collate_fn)
+                
+    def _create_limited_dataloader(self, group, sample_size):
+        """Create a new dataloader with a limited sample size from the original dataset"""
+        from torch.utils.data import DataLoader, Subset
+        import random
+        import numpy as np
+        from verl.utils.dataset.rl_dataset import collate_fn
+        
+        # Get the original dataset for this group
+        dataset = self.train_datasets[group]
+        
+        # Determine the number of samples to use
+        total_samples = len(dataset)
+        samples_to_use = min(sample_size, total_samples)
+        
+        # Randomly sample indices without replacement
+        indices = random.sample(range(total_samples), samples_to_use)
+        
+        # Create a subset dataset with the sampled indices
+        subset_dataset = Subset(dataset, indices)
+        
+        # Create and return a new dataloader with the subset
+        return DataLoader(
+            dataset=subset_dataset,
+            batch_size=self.config.data.train_batch_size,
+            shuffle=True,
+            drop_last=True,
+            collate_fn=collate_fn)
                 
             # Create validation datasets and dataloaders for each group
             self.val_datasets = {}
@@ -735,6 +763,35 @@ class RayPPOTrainer(object):
         self.global_steps += 1
 
         if self.config.data.get('curriculum_learning', False):
+            # Debug: Print the train_sample_size parameter
+            print("\n" + "="*50)
+            print("DEBUG: Checking train_sample_size parameter")
+            print(f"Has train_sample_size attribute: {hasattr(self.config.data, 'train_sample_size')}")
+            if hasattr(self.config.data, 'train_sample_size'):
+                print(f"train_sample_size value: {self.config.data.train_sample_size}")
+                print(f"train_sample_size type: {type(self.config.data.train_sample_size)}")
+            print("="*50 + "\n")
+            
+            # Get sample sizes for each group if provided
+            sample_sizes = {}
+            if hasattr(self.config.data, 'train_sample_size'):
+                # Try to convert from string to list if needed
+                train_sample_size = self.config.data.train_sample_size
+                if isinstance(train_sample_size, str):
+                    try:
+                        import ast
+                        train_sample_size = ast.literal_eval(train_sample_size)
+                        print(f"Converted train_sample_size from string to: {train_sample_size}")
+                    except Exception as e:
+                        print(f"Error converting train_sample_size: {e}")
+                
+                if isinstance(train_sample_size, list):
+                    for i, group in enumerate(self.ordered_groups):
+                        if i < len(train_sample_size):
+                            sample_size = train_sample_size[i]
+                            if sample_size > 0:
+                                sample_sizes[group] = sample_size
+            
             for round_num in range(self.config.data.total_rounds):
                 # Use groups in order from input files
                 for group in self.ordered_groups:
@@ -742,11 +799,21 @@ class RayPPOTrainer(object):
                     # Reset learning rates at the start of each group
                     self._reset_learning_rates()
                     
+                    # Create a new limited dataloader for this group if sample size is specified
+                    if group in sample_sizes:
+                        print(f'Creating limited dataloader for group {group} with sample size {sample_sizes[group]}')
+                        limited_dataloader = self._create_limited_dataloader(group, sample_sizes[group])
+                        print(f'Created limited dataloader with {len(limited_dataloader)} batches')
+                        current_dataloader = limited_dataloader
+                    else:
+                        current_dataloader = self.train_dataloaders[group]
+                        print(f'Using full dataloader with {len(current_dataloader)} batches')
+                    
                     for epoch in range(self.config.data.epochs_per_group):
-                        for batch_dict in self.train_dataloaders[group]:
+                        for batch_dict in current_dataloader:
 
                             
-                            print(f'Intotal we have Round num: {self.config.data.total_rounds}, Group num {len(self.ordered_groups)}, Epoch num {self.config.data.epochs_per_group}, Step num {len(self.train_dataloaders[group])}')
+                            print(f'Intotal we have Round num: {self.config.data.total_rounds}, Group num {len(self.ordered_groups)}, Epoch num {self.config.data.epochs_per_group}, Step num {len(current_dataloader)}')
                             print(f'Round {round_num}, Group {group}, Epoch {epoch}, Step {self.global_steps}')
                             metrics = {}
                             timing_raw = {}

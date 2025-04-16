@@ -385,7 +385,33 @@ class RayPPOTrainer(object):
                     shuffle=True,  
                     drop_last=True,
                     collate_fn=collate_fn)
-                
+            
+            # Create validation dataloaders
+            self._create_validation_dataloaders()
+            
+            # For validation purposes, set train_dataset to last group's dataset
+            last_group = self.ordered_groups[-1]
+            self.train_dataset = self.train_datasets[last_group]
+            # For length checks, use last group's dataloader
+            self.train_dataloader = self.train_dataloaders[last_group]
+        else:
+            # Regular training without curriculum
+            self.train_dataset = RLHFDataset(
+                parquet_files=self.config.data.train_files,
+                tokenizer=self.tokenizer,
+                prompt_key=self.config.data.prompt_key,
+                max_prompt_length=self.config.data.max_prompt_length,
+                filter_prompts=True,
+                return_raw_chat=self.config.data.get('return_raw_chat', False),
+                truncation='error',
+                config=self.config)
+            
+            self.train_dataloader = DataLoader(
+                dataset=self.train_dataset,
+                batch_size=self.config.data.train_batch_size,
+                shuffle=True,
+                drop_last=True,
+                collate_fn=collate_fn)
     def _create_limited_dataloader(self, group, sample_size):
         """Create a new dataloader with a limited sample size from the original dataset"""
         from torch.utils.data import DataLoader, Subset
@@ -413,6 +439,46 @@ class RayPPOTrainer(object):
             shuffle=True,
             drop_last=True,
             collate_fn=collate_fn)
+            
+    def _create_validation_dataloaders(self):
+        """Create validation datasets and dataloaders for each group"""
+        from torch.utils.data import DataLoader
+        from verl.utils.dataset.rl_dataset import RLHFDataset, collate_fn
+        import os
+        from collections import OrderedDict
+        
+        self.val_datasets = {}
+        self.val_dataloaders = {}
+        val_group_files = OrderedDict()
+        
+        # Extract groups from validation file paths
+        for file_path in self.config.data.val_files:
+            if 'test' not in file_path:
+                continue
+            # Extract group name from path (assumes structure like path/to/group_name/test.parquet)
+            group = os.path.basename(os.path.dirname(file_path))
+            if group not in val_group_files:
+                val_group_files[group] = []
+            val_group_files[group].append(file_path)
+        
+        # Create validation datasets and loaders using same groups as training
+        for group in self.ordered_groups:
+            if group in val_group_files:
+                self.val_datasets[group] = RLHFDataset(
+                    parquet_files=val_group_files[group],
+                    tokenizer=self.tokenizer,
+                    prompt_key=self.config.data.prompt_key,
+                    max_prompt_length=self.config.data.max_prompt_length,
+                    filter_prompts=True,
+                    return_raw_chat=self.config.data.get('return_raw_chat', False),
+                    truncation='error',
+                    config=self.config)
+                self.val_dataloaders[group] = DataLoader(
+                    dataset=self.val_datasets[group],
+                    batch_size=self.config.data.val_batch_size,
+                    shuffle=False,
+                    drop_last=True,
+                    collate_fn=collate_fn)
 
         self.val_dataset = RLHFDataset(parquet_files=self.config.data.val_files,
                                        tokenizer=self.tokenizer,

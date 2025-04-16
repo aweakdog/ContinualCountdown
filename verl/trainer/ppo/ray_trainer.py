@@ -367,6 +367,11 @@ class RayPPOTrainer(object):
             
             # Store ordered groups for use in fit()
             self.ordered_groups = ordered_groups
+            print(f"Initialized ordered_groups from training files: {self.ordered_groups}")
+            
+            # Create validation dataloaders first to ensure val_dataloaders is initialized
+            self._create_validation_dataloaders()
+            
             # Use groups in order from input files
             for group in ordered_groups:
                 self.train_datasets[group] = RLHFDataset(
@@ -386,14 +391,14 @@ class RayPPOTrainer(object):
                     drop_last=True,
                     collate_fn=collate_fn)
             
-            # Create validation dataloaders
-            self._create_validation_dataloaders()
-            
             # For validation purposes, set train_dataset to last group's dataset
             last_group = self.ordered_groups[-1]
             self.train_dataset = self.train_datasets[last_group]
             # For length checks, use last group's dataloader
             self.train_dataloader = self.train_dataloaders[last_group]
+            
+            # Calculate total training steps after both train and validation dataloaders are created
+            self._calculate_total_training_steps()
         else:
             # Regular training without curriculum
             self.train_dataset = RLHFDataset(
@@ -412,6 +417,9 @@ class RayPPOTrainer(object):
                 shuffle=True,
                 drop_last=True,
                 collate_fn=collate_fn)
+            
+            # Calculate total training steps after both train and validation dataloaders are created
+            self._calculate_total_training_steps()
     def _create_limited_dataloader(self, group, sample_size):
         """Create a new dataloader with a limited sample size from the original dataset"""
         from torch.utils.data import DataLoader, Subset
@@ -461,24 +469,28 @@ class RayPPOTrainer(object):
                 val_group_files[group] = []
             val_group_files[group].append(file_path)
         
-        # Create validation datasets and loaders using same groups as training
-        for group in self.ordered_groups:
-            if group in val_group_files:
-                self.val_datasets[group] = RLHFDataset(
-                    parquet_files=val_group_files[group],
-                    tokenizer=self.tokenizer,
-                    prompt_key=self.config.data.prompt_key,
-                    max_prompt_length=self.config.data.max_prompt_length,
-                    filter_prompts=True,
-                    return_raw_chat=self.config.data.get('return_raw_chat', False),
-                    truncation='error',
-                    config=self.config)
-                self.val_dataloaders[group] = DataLoader(
-                    dataset=self.val_datasets[group],
-                    batch_size=self.config.data.val_batch_size,
-                    shuffle=False,
-                    drop_last=True,
-                    collate_fn=collate_fn)
+        # Initialize ordered_groups if it doesn't exist yet
+        if not hasattr(self, 'ordered_groups'):
+            self.ordered_groups = list(val_group_files.keys())
+            print(f"Initializing ordered_groups from validation files: {self.ordered_groups}")
+            
+        # Create validation datasets and loaders using groups from validation files
+        for group in val_group_files.keys():
+            self.val_datasets[group] = RLHFDataset(
+                parquet_files=val_group_files[group],
+                tokenizer=self.tokenizer,
+                prompt_key=self.config.data.prompt_key,
+                max_prompt_length=self.config.data.max_prompt_length,
+                filter_prompts=True,
+                return_raw_chat=self.config.data.get('return_raw_chat', False),
+                truncation='error',
+                config=self.config)
+            self.val_dataloaders[group] = DataLoader(
+                dataset=self.val_datasets[group],
+                batch_size=self.config.data.val_batch_size,
+                shuffle=False,
+                drop_last=True,
+                collate_fn=collate_fn)
 
         self.val_dataset = RLHFDataset(parquet_files=self.config.data.val_files,
                                        tokenizer=self.tokenizer,
@@ -498,24 +510,42 @@ class RayPPOTrainer(object):
         assert len(self.val_dataloader) >= 1
         print(f'Size of val dataloader: {len(self.val_dataloader)}')
 
-        # inject total_training_steps to actor/critic optim_config. This is hacky.
+    def _calculate_total_training_steps(self):
+        """Calculate total training steps and inject into config
+        
+        For curriculum learning, this only sets a placeholder value that will be updated
+        by _reset_learning_rates for each group. For regular training, this calculates
+        the actual total_training_steps.
+        """
+        # For curriculum learning, just set a placeholder - real calculation happens in _reset_learning_rates
         if self.config.data.get('curriculum_learning', False):
-            #total_training_steps = len(self.train_dataloader) * len(self.train_dataset.operator_groups) * self.config.data.epochs_per_group * self.config.data.total_rounds
-            total_training_steps = len(self.train_dataloader) * self.config.data.epochs_per_group
+            # Just set a placeholder value that will be updated by _reset_learning_rates for each group
+            total_training_steps = 1  # Placeholder, will be updated per group in _reset_learning_rates
+            print(f'Curriculum learning: Setting placeholder total_training_steps that will be updated per group')
         else:
-            total_training_steps = len(self.train_dataloader) * self.config.trainer.total_epochs
+            # Regular training without curriculum - calculate the actual value
+            if hasattr(self, 'train_dataloader'):
+                total_training_steps = len(self.train_dataloader) * self.config.trainer.total_epochs
+                print(f'Regular training: Calculated total_training_steps = {total_training_steps}')
+            else:
+                print("Warning: Cannot calculate total_training_steps because train_dataloader is not initialized yet.")
+                # Defer calculation until dataloaders are available
+                print("Deferring total_training_steps calculation until dataloaders are available")
+                return
 
-        if self.config.trainer.total_training_steps is not None:
-            total_training_steps = self.config.trainer.total_training_steps
+        # No need to override with config value as it doesn't exist
 
+        # Store the value
         self.total_training_steps = total_training_steps
-        print(f'Total training steps: {self.total_training_steps}')
 
+        # Update the optimizer configs directly - this is hacky but necessary
+        from omegaconf import OmegaConf, open_dict
         OmegaConf.set_struct(self.config, True)
         with open_dict(self.config):
             self.config.actor_rollout_ref.actor.optim.total_training_steps = total_training_steps
-            self.config.critic.optim.total_training_steps = total_training_steps
-
+            if hasattr(self.config, 'critic') and hasattr(self.config.critic, 'optim'):
+                self.config.critic.optim.total_training_steps = total_training_steps
+            
     def _validate_small(self, group=None):
         """Quick validation using a single batch from the dataloader."""
         if not group:
@@ -707,8 +737,43 @@ class RayPPOTrainer(object):
         self.actor_rollout_wg = all_wg['actor_rollout']
         self.actor_rollout_wg.init_model()
 
-    def _reset_learning_rates(self):
-        """Reset learning rates of actor and critic to their default values"""
+    def _reset_learning_rates(self, group=None, current_dataloader=None):
+        """Reset learning rates of actor and critic to their default values
+        
+        If group is provided, also recalculate total_training_steps based on that group's dataloader
+        If current_dataloader is provided, use it instead of the default dataloader for the group
+        """
+        # If using curriculum learning and a group is specified, update total_training_steps for this group
+        if self.config.data.get('curriculum_learning', False) and group is not None:
+            # Determine which dataloader to use for calculating steps
+            if current_dataloader is not None:
+                # Use the provided dataloader (which might be a limited one)
+                dataloader_to_use = current_dataloader
+                print(f'Using provided dataloader for calculating steps (likely a limited one)')
+            elif hasattr(self, 'train_dataloaders') and group in self.train_dataloaders:
+                # Use the default dataloader for this group
+                dataloader_to_use = self.train_dataloaders[group]
+                print(f'Using default dataloader for calculating steps')
+            else:
+                print(f'Warning: No dataloader available for group {group}, skipping total_training_steps update')
+                return
+                
+            # Calculate steps for this specific group
+            steps_for_group = len(dataloader_to_use) * self.config.data.epochs_per_group
+            
+            print(f'Updating total_training_steps for group {group}: {steps_for_group} steps (dataloader size: {len(dataloader_to_use)})')
+            
+            # Update the optimizer configs directly - this is hacky but necessary
+            from omegaconf import OmegaConf, open_dict
+            OmegaConf.set_struct(self.config, True)
+            with open_dict(self.config):
+                self.config.actor_rollout_ref.actor.optim.total_training_steps = steps_for_group
+                if hasattr(self.config, 'critic') and hasattr(self.config.critic, 'optim'):
+                    self.config.critic.optim.total_training_steps = steps_for_group
+            
+            # Store the updated value
+            self.total_training_steps = steps_for_group
+        
         # Reset critic learning rate if using critic
         if self.use_critic:
             self.critic_wg.critic_reset_optimizer_learning_rate()
@@ -813,8 +878,6 @@ class RayPPOTrainer(object):
                 # Use groups in order from input files
                 for group in self.ordered_groups:
                     print(f'Starting training on group: {group}')
-                    # Reset learning rates at the start of each group
-                    self._reset_learning_rates()
                     
                     # Create a new limited dataloader for this group if sample size is specified
                     if group in sample_sizes:
@@ -825,6 +888,10 @@ class RayPPOTrainer(object):
                     else:
                         current_dataloader = self.train_dataloaders[group]
                         print(f'Using full dataloader with {len(current_dataloader)} batches')
+                        
+                    # Reset learning rates after creating the dataloader, so we can pass the correct one
+                    # This ensures total_training_steps is calculated based on the limited dataloader when applicable
+                    self._reset_learning_rates(group=group, current_dataloader=current_dataloader)
                     
                     for epoch in range(self.config.data.epochs_per_group):
                         for batch_dict in current_dataloader:

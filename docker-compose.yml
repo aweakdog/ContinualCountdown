@@ -39,7 +39,9 @@ services:
         # First evaluate 0.5B model
         conda run -n zero bash scripts/eval_continual_countdown.sh --model-size 0.5b &&
         # Then evaluate 1.5B model
-        conda run -n zero bash scripts/eval_continual_countdown.sh --model-size 1.5b
+        conda run -n zero bash scripts/eval_continual_countdown.sh --model-size 1.5b &&
+        # Finally evaluate 3B model
+        conda run -n zero bash scripts/eval_continual_countdown.sh --model-size 3b
       '
 
   data-generator:

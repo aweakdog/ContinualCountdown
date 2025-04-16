@@ -60,7 +60,7 @@ class DataGenerator:
         os.system(f"chmod -R 777 {base_dir}")
 
 
-    def generate_group_data(self, group_idx: int, train_size: int = 2560, test_size: int = 256) -> Tuple[Dataset, Dataset]:
+    def generate_group_data(self, group_idx: int, train_size: int = 256000, test_size: int = 256) -> Tuple[Dataset, Dataset]:
         """Generate train and test data for a specific operator group"""
         candidate_operators = self.operator_groups[group_idx][0]
         neccessary_operators = self.operator_groups[group_idx][1]
@@ -75,7 +75,7 @@ class DataGenerator:
             for _ in tqdm(range(num_samples), desc=f"Generating {num_samples} samples for {group_name}"):
                 # Initialize countdown with random start size between 4 and 6
                 start_size = random.randint(4, 4)
-                cd = CountDownReverse(min_target=1, max_target=100, start_size=start_size, 
+                cd = CountDownReverse(min_target=3, max_target=100, start_size=start_size, 
                                    max_internal_value=100, 
                                    candidate_operators=candidate_operators, 
                                    neccessary_operators=neccessary_operators,

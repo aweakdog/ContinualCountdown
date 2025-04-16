@@ -9,9 +9,10 @@ METRICS_DIR=${METRICS_DIR:-"/app/metrics"}
 PLOTS_DIR=${PLOTS_DIR:-"/app/plots"}
 LOGS_DIR=${LOGS_DIR:-"/app/logs"}
 
-# Default to evaluating both models
+# Default to evaluating all models
 EVAL_0_5B=1
 EVAL_1_5B=1
+EVAL_3B=1
 
 # Parse command line arguments
 while [[ $# -gt 0 ]]; do
@@ -33,13 +34,20 @@ while [[ $# -gt 0 ]]; do
                 0.5b)
                     EVAL_0_5B=1
                     EVAL_1_5B=0
+                    EVAL_3B=0
                     ;;
                 1.5b)
                     EVAL_0_5B=0
                     EVAL_1_5B=1
+                    EVAL_3B=0
+                    ;;
+                3b)
+                    EVAL_0_5B=0
+                    EVAL_1_5B=0
+                    EVAL_3B=1
                     ;;
                 *)
-                    echo "Invalid model size: $2. Must be '0.5b' or '1.5b'"
+                    echo "Invalid model size: $2. Must be '0.5b', '1.5b', or '3b'"
                     exit 1
                     ;;
             esac
@@ -129,6 +137,34 @@ if [ "$EVAL_1_5B" -eq 1 ]; then
         echo "  - Metrics: $METRICS_DIR/consolidated_metrics_1.5b.json"
     else
         echo "Warning: Qwen 1.5B evaluation completed but some output files are missing."
+        echo "Please check the evaluation logs for details."
+    fi
+fi
+
+if [ "$EVAL_3B" -eq 1 ]; then
+    echo "\nEvaluating Qwen 3B model..."
+    python3 experiments/continual/eval.py \
+        --model-size 3b \
+        --metrics-dir "$METRICS_DIR" \
+        --plots-dir "$PLOTS_DIR" \
+        --logs-dir "$LOGS_DIR"
+    
+    if [ $? -ne 0 ]; then
+        echo "Error evaluating 3B model"
+        exit 1
+    fi
+    
+    # Fix permissions for generated files
+    chmod -R 777 "$PLOTS_DIR" "$METRICS_DIR"
+    
+    # Check if files were generated
+    if [ -f "$PLOTS_DIR/training_metrics_3b.png" ] && [ -f "$METRICS_DIR/consolidated_metrics_3b.json" ]; then
+        echo "Qwen 3B evaluation completed successfully!"
+        echo "Results can be found in:"
+        echo "  - Plots: $PLOTS_DIR/training_metrics_3b.png"
+        echo "  - Metrics: $METRICS_DIR/consolidated_metrics_3b.json"
+    else
+        echo "Warning: Qwen 3B evaluation completed but some output files are missing."
         echo "Please check the evaluation logs for details."
     fi
 fi

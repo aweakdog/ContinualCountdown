@@ -48,11 +48,28 @@ RUN conda create -n zero python=3.9 -y && \
     conda run -n zero pip install wandb IPython matplotlib && \
     conda run -n zero pip install datasets rich
 
+
+# Install and configure SSH server
+RUN apt-get update && \
+    apt-get install -y openssh-server && \
+    mkdir -p /var/run/sshd && \
+    echo 'PermitRootLogin yes' >> /etc/ssh/sshd_config && \
+    echo 'PasswordAuthentication yes' >> /etc/ssh/sshd_config && \
+    sed -i 's/#PermitEmptyPasswords no/PermitEmptyPasswords no/' /etc/ssh/sshd_config && \
+    # Set a default password for root (you should change this in production)
+    echo 'root:password' | chpasswd && \
+    # Clean up
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
+
+# Expose SSH port
+EXPOSE 22
+
 # Create data directory
 #RUN mkdir -p /data/countdown
 
 # Set default command to activate conda environment
-SHELL ["conda", "run", "-n", "zero", "/bin/bash", "-c"]
+#SHELL ["conda", "run", "-n", "zero", "/bin/bash", "-c"]
 
 # Set working directory for data
 #WORKDIR /data/countdown

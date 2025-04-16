@@ -74,6 +74,9 @@ def extract_metrics_from_log(log_file: str) -> List[Dict[str, float]]:
         training_step += 1  # Increment training step counter
 
         
+        # Extract entropy if available
+        entropy_match = re.search(r'actor/entropy_loss:([-.0-9]+)', line)
+        
         try:
             metrics = {
                 'step': training_step,  # Use our training step counter
@@ -81,6 +84,7 @@ def extract_metrics_from_log(log_file: str) -> List[Dict[str, float]]:
                 'pg_loss': float(pg_loss_match.group(1)),
                 'grad_norm': float(grad_norm_match.group(1)),
                 'response_length': float(response_length_match.group(1)),
+                'entropy': float(entropy_match.group(1)) if entropy_match else 0.0,
                 'val/test_score/countdown_continual': float(val_test_score_match.group(1)) if val_test_score_match else 0.0
             }
             step_metrics.append(metrics)
@@ -97,14 +101,103 @@ def extract_metrics_from_log(log_file: str) -> List[Dict[str, float]]:
         print("  - critic/score/mean:<number>")
         print("  - actor/pg_loss:<number>")
         print("  - actor/grad_norm:<number>")
+        print("  - actor/entropy_loss:<number>")
         print("  - response_length/mean:<number>")
         
     return step_metrics
 
 
+def extract_group_metrics_from_log(log_file: str) -> Dict[int, Dict[int, List[Dict[str, float]]]]:
+    """Extract metrics organized by round and group from a training log file.
+    
+    Returns:
+        A dictionary where:
+        - Keys are group IDs
+        - Values are dictionaries where:
+          - Keys are round IDs
+          - Values are lists of metrics dictionaries for that round and group
+    """
+    if not os.path.exists(log_file):
+        print(f"Warning: Log file not found: {log_file}")
+        return {}
+    
+    with open(log_file, 'r') as f:
+        content = f.read()
+    
+    # Remove ANSI color codes
+    content = re.sub(r'\x1b\[[0-9;]*[a-zA-Z]', '', content)
+    
+    # Split content by training start markers to get separate runs
+    runs = re.split(r'Starting curriculum training at.*?\n', content)
+    if len(runs) > 1:
+        print(f"Found {len(runs)-1} training runs in log file")
+        # Use the last run (most recent)
+        content = runs[-1]
+    
+    # Initialize the group metrics dictionary
+    # Structure: {group_id: {round_id: [metrics]}}
+    group_metrics = {}
+    
+    # Extract lines containing Round and Group information
+    round_group_pattern = r'\(main_task pid=\d+\) Round (\d+), Group (\d+), Epoch (\d+), Step (\d+)'
+    round_group_matches = re.finditer(round_group_pattern, content)
+    
+    # Extract lines containing step metrics
+    step_pattern = r'\(main_task pid=\d+\) step:(\d+) - .*?critic/score/mean:([0-9.]+).*?(?:\r\n|\n)'
+    step_matches = re.finditer(step_pattern, content)
+    
+    # Create a mapping of step numbers to metrics
+    step_to_metrics = {}
+    for match in step_matches:
+        step_num = int(match.group(1))
+        step_line = match.group(0)
+        
+        score_match = re.search(r'critic/score/mean:([0-9.]+)', step_line)
+        if score_match:
+            score = float(score_match.group(1))
+            step_to_metrics[step_num] = {'score': score, 'step': step_num}
+    
+    # Process each Round, Group, Epoch, Step entry
+    current_round = None
+    current_group = None
+    current_step = None
+    
+    for match in round_group_matches:
+        round_id = int(match.group(1))
+        group_id = int(match.group(2))
+        epoch_id = int(match.group(3))
+        step_id = int(match.group(4))
+        
+        # If we have metrics for this step
+        if step_id in step_to_metrics:
+            # Initialize group dictionary if needed
+            if group_id not in group_metrics:
+                group_metrics[group_id] = {}
+            
+            # Initialize round list if needed
+            if round_id not in group_metrics[group_id]:
+                group_metrics[group_id][round_id] = []
+            
+            # Add metrics to the appropriate round and group
+            metrics = step_to_metrics[step_id].copy()
+            metrics['round'] = round_id
+            metrics['group'] = group_id
+            metrics['epoch'] = epoch_id
+            group_metrics[group_id][round_id].append(metrics)
+    
+    # Check if we found any metrics
+    if not group_metrics:
+        print(f"Warning: No group metrics found in {log_file}")
+        print("Please check that training is outputting metrics in the expected format:")
+        print("  - Round X, Group Y, Epoch Z, Step W")
+        print("  - step:N - critic/score/mean:M")
+    
+    return group_metrics
+
+
 class ContinualEvaluator:
     def __init__(self, model_size: str = "0.5b", metrics_dir: str = "./metrics", plots_dir: str = "./plots", logs_dir: str = "./logs"):
-        self.groups = ["plus", "plus_minus", "plus_minus_mul", "plus_minus_mul_div"]
+        self.groups = ["0", "1", "2", "3"]  # Group names are now numbers
         self.metrics_dir = os.getenv("METRICS_DIR", metrics_dir)
         self.plots_dir = os.getenv("PLOTS_DIR", plots_dir)
         self.logs_dir = os.getenv("LOGS_DIR", logs_dir)
@@ -121,8 +214,18 @@ class ContinualEvaluator:
         self.metrics = []
         
         # Model paths based on size
-        self.base_model = "/app/models/qwen" if model_size == "0.5b" else "/app/models/countdown_continual_1.5b"
-        self.project_name = "ContinualCountdown" if model_size == "0.5b" else "ContinualCountdown1.5B"
+        if model_size == "0.5b":
+            self.base_model = "/app/models/qwen"
+            self.project_name = "ContinualCountdown"
+        elif model_size == "1.5b":
+            self.base_model = "/app/models/countdown_continual_1.5b"
+            self.project_name = "ContinualCountdown1.5B"
+        elif model_size == "3b":
+            self.base_model = "/app/models/countdown_continual_3b"
+            self.project_name = "ContinualCountdown3B"
+        else:
+            raise ValueError(f"Unsupported model size: {model_size}")
+            
         self.run_name = f"{self.project_name}_SingleRun"
 
     def compute_weight_change(self, round_num: int, group: str) -> float:
@@ -156,7 +259,7 @@ class ContinualEvaluator:
             print("No metrics to plot")
             return
             
-        fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(15, 10))
+        fig, ((ax1, ax2), (ax3, ax4), (ax5, ax6)) = plt.subplots(3, 2, figsize=(15, 15))
         fig.suptitle(f'Training Metrics - {self.model_size.upper()} Model', fontsize=16, y=0.98)
         
         # Get continuous step numbers
@@ -224,6 +327,19 @@ class ContinualEvaluator:
         ax4.set_ylim(0, max(values) * 1.1)
         ax4.grid(True, alpha=0.3)
         
+        # Entropy
+        values = [m.get("entropy", 0) for m in metrics]
+        ax5.plot(steps, values, "-c", linewidth=0.5, marker='o', markersize=0.1)
+        ax5.set_title("Entropy Loss")
+        ax5.set_xlabel("Training Step")
+        ax5.set_ylabel("Entropy Loss")
+        if any(values):  # Only set ylim if we have non-zero values
+            ax5.set_ylim(min(values) * 0.9, max(values) * 1.1)
+        ax5.grid(True, alpha=0.3)
+        
+        # Leave ax6 empty for now or use it for another metric if needed
+        ax6.set_visible(False)
+        
         # Add some padding between subplots
         plt.tight_layout(rect=[0, 0.03, 1, 0.95], h_pad=0.5, w_pad=0.5)
         
@@ -237,15 +353,97 @@ class ContinualEvaluator:
         with open(consolidated_path, 'w') as f:
             json.dump(self.metrics, f, indent=2)
 
+    def plot_by_group(self, group_metrics: Dict[int, Dict[int, List[Dict[str, float]]]], save_path_prefix: Optional[str] = None):
+        """Create separate plots for each group showing concatenated scores across all rounds.
+        
+        Args:
+            group_metrics: Dictionary organized by group and round
+            save_path_prefix: Optional prefix for the save path
+        """
+        if not group_metrics:
+            print("No group metrics to plot")
+            return
+        
+        # Plot each group in a separate figure
+        for group_id, rounds_data in sorted(group_metrics.items()):
+            # Create a new figure for each group
+            plt.figure(figsize=(10, 6))
+            
+            # Get group name
+            group_name = f"Group {group_id}"
+            
+            # Concatenate all scores from all rounds for this group
+            all_scores = []
+            for round_id, metrics_list in sorted(rounds_data.items()):
+                # Extract scores for this round
+                round_scores = [m.get('score', 0) for m in metrics_list]
+                all_scores.extend(round_scores)
+            
+            if all_scores:
+                # Create steps for the concatenated data
+                steps = list(range(1, len(all_scores) + 1))
+                
+                # Apply smoothing to the data
+                smoothed_scores = []
+                window_size = 5  # Adjust this for more or less smoothing
+                
+                # Simple moving average smoothing
+                for i in range(len(all_scores)):
+                    start_idx = max(0, i - window_size // 2)
+                    end_idx = min(len(all_scores), i + window_size // 2 + 1)
+                    window = all_scores[start_idx:end_idx]
+                    smoothed_scores.append(sum(window) / len(window))
+                
+                # Plot both raw data (light) and smoothed data (darker)
+                plt.plot(steps, all_scores, color='lightblue', linewidth=0.8, alpha=0.5)
+                plt.plot(steps, smoothed_scores, color='blue', linewidth=2)
+                
+                # Add vertical lines to separate rounds
+                round_boundaries = [0]  # Start with 0
+                current_position = 0
+                
+                for round_id, metrics_list in sorted(rounds_data.items()):
+                    current_position += len(metrics_list)
+                    round_boundaries.append(current_position)
+                
+                # Draw vertical lines at round boundaries (except the first and last)
+                for boundary in round_boundaries[1:-1]:  # Skip first (0) and last (total length)
+                    plt.axvline(x=boundary, color='red', linestyle='--', alpha=0.5)
+                    plt.text(boundary, 0.02, f"R{round_boundaries.index(boundary)}", 
+                             color='red', ha='center', va='bottom', alpha=0.7)
+            
+            # Add labels and title
+            plt.title(f'Training Scores for {group_name} - {self.model_size.upper()} Model', fontsize=16)
+            plt.xlabel('Steps (Concatenated Across Rounds)', fontsize=12)
+            plt.ylabel('Score', fontsize=12)
+            plt.grid(True, alpha=0.3)
+            plt.ylim(0, 1.0)  # Set y-axis from 0 to 1 for consistency
+            
+            # Save the plot
+            if save_path_prefix:
+                save_path = f"{save_path_prefix}_group{group_id}.png"
+            else:
+                save_path = os.path.join(self.plots_dir, f"plot_group{group_id}_{self.model_size}.png")
+            
+            plt.savefig(save_path, dpi=300, bbox_inches='tight')
+            plt.close()
+            print(f"Created plot for {group_name}: {save_path}")
+
     def evaluate_model(self, model_size: str):
         """Evaluate a specific model size."""
         print(f"\nEvaluating Qwen {model_size} model...")
         
         # Updated log file paths - use absolute paths
+        # Handle special case for 3b model which might use different naming convention
+        if model_size == "3b":
+            model_size_prefix = "3B"
+        else:
+            model_size_prefix = model_size.upper()
+            
         log_patterns = [
-            os.path.join(self.logs_dir, f"ContinualCountdown{model_size.upper()}_curriculum_*.log"),
-            os.path.join(self.logs_dir, f"ContinualCountdown{model_size.upper()}_R*_*.log"),
-            os.path.join(self.logs_dir, f"ContinualCountdown{model_size.upper()}_SingleRun.log")
+            os.path.join(self.logs_dir, f"ContinualCountdown{model_size_prefix}_curriculum_*.log"),
+            os.path.join(self.logs_dir, f"ContinualCountdown{model_size_prefix}_R*_*.log"),
+            os.path.join(self.logs_dir, f"ContinualCountdown{model_size_prefix}_SingleRun.log")
         ]
         
         # Try each log pattern
@@ -270,6 +468,9 @@ class ContinualEvaluator:
         print(f"Reading metrics from {log_file}")
         metrics = extract_metrics_from_log(log_file)
         
+        # Extract group metrics for the group-based plot
+        group_metrics = extract_group_metrics_from_log(log_file)
+        
         if not metrics:
             print("Error: No metrics found to evaluate")
             print("Please check that training is outputting metrics in the expected format:")
@@ -277,6 +478,7 @@ class ContinualEvaluator:
             print("  - critic/score/mean:<number>")
             print("  - actor/pg_loss:<number>")
             print("  - actor/grad_norm:<number>")
+            print("  - actor/entropy_loss:<number>")
             print("  - response_length/mean:<number>")
             return
         
@@ -284,9 +486,17 @@ class ContinualEvaluator:
         self.metrics = metrics
         self.save_metrics()
         
-        # Create plots
+        # Create standard plots
         plot_path = os.path.join(self.plots_dir, f"training_metrics_{model_size}.png")
         self.plot_metrics(metrics, plot_path)
+        
+        # Create group-based plots if we have group metrics
+        if group_metrics:
+            group_plot_path_prefix = os.path.join(self.plots_dir, f"plot_{model_size}")
+            self.plot_by_group(group_metrics, group_plot_path_prefix)
+            print(f"Group-based plots saved to: {self.plots_dir}")
+        else:
+            print("No group metrics found for group-based plots")
         
         print(f"\n{model_size.upper()} evaluation completed successfully!")
         print("Results can be found in:")
@@ -296,7 +506,7 @@ class ContinualEvaluator:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Evaluate continual learning results")
-    parser.add_argument("--model-size", choices=["0.5b", "1.5b"], default="0.5b", help="Model size to evaluate")
+    parser.add_argument("--model-size", choices=["0.5b", "1.5b", "3b"], default="0.5b", help="Model size to evaluate")
     parser.add_argument("--metrics-dir", default="./metrics", help="Directory containing metrics files")
     parser.add_argument("--plots-dir", default="./plots", help="Directory to save plots")
     parser.add_argument("--logs-dir", default="./logs", help="Directory containing training logs")

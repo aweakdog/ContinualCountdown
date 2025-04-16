@@ -90,10 +90,15 @@ echo "  NCCL_DEBUG: $NCCL_DEBUG" | tee -a "$log_file"
 TRAIN_FILES_STR="[\"./data/continual/0/train.parquet\",\"./data/continual/1/train.parquet\",\"./data/continual/2/train.parquet\",\"./data/continual/3/train.parquet\"]"
 VAL_FILES_STR="[\"./data/continual/0/test.parquet\",\"./data/continual/1/test.parquet\",\"./data/continual/2/test.parquet\",\"./data/continual/3/test.parquet\"]"
 
+# Define max sample size for each training file 
+TRAIN_SAMPLE_SIZE="[2560,2560,2560,2560]"
+
 echo "\nFirst 100 chars of train files list:"
 echo "${TRAIN_FILES_STR:0:100}..."
 echo "\nFirst 100 chars of val files list:"
 echo "${VAL_FILES_STR:0:100}..."
+echo "\nTrain sample size limits:"
+echo "$TRAIN_SAMPLE_SIZE"
 
 # Prevent model downloads
 export TRANSFORMERS_OFFLINE=1
@@ -112,6 +117,7 @@ python3 -m verl.trainer.main_ppo \
     ++data.curriculum_learning=true \
     ++data.epochs_per_group=15 \
     ++data.total_rounds=10 \
+    ++data.train_sample_size="$TRAIN_SAMPLE_SIZE" \
     actor_rollout_ref.model.path=$BASE_MODEL \
     actor_rollout_ref.model.use_remove_padding=True \
     actor_rollout_ref.actor.use_dynamic_bsz=True \

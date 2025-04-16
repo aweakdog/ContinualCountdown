@@ -494,10 +494,8 @@ class RayPPOTrainer(object):
                                          drop_last=True,
                                          collate_fn=collate_fn)
 
-        assert len(self.train_dataloader) >= 1
+        # Only check the val_dataloader length since train_dataloader may not exist yet
         assert len(self.val_dataloader) >= 1
-
-        print(f'Size of train dataloader: {len(self.train_dataloader)}')
         print(f'Size of val dataloader: {len(self.val_dataloader)}')
 
         # inject total_training_steps to actor/critic optim_config. This is hacky.
@@ -520,7 +518,12 @@ class RayPPOTrainer(object):
 
     def _validate_small(self, group=None):
         """Quick validation using a single batch from the dataloader."""
-        if not group or group not in self.val_dataloaders:
+        if not group:
+            return {}
+            
+        # Check if val_dataloaders exists and contains the group
+        if not hasattr(self, 'val_dataloaders') or group not in self.val_dataloaders:
+            print(f"Warning: No validation dataloader found for group {group}")
             return {}
             
         # Get the next batch from the validation dataloader
@@ -573,7 +576,9 @@ class RayPPOTrainer(object):
         if not group:
             return {}
             
-        if group not in self.val_dataloaders:
+        # Check if val_dataloaders exists and contains the group
+        if not hasattr(self, 'val_dataloaders') or group not in self.val_dataloaders:
+            print(f"Warning: No validation dataloader found for group {group}")
             return {}
             
         # Run validation on specified group
@@ -761,11 +766,15 @@ class RayPPOTrainer(object):
         # perform validation before training
         # currently, we only support validation using the reward_function.
         if self.val_reward_fn is not None and self.config.trainer.get('val_before_train', True):
-            val_metrics = self._validate(self.ordered_groups[0]) # for debug
-            pprint(f'Initial validation metrics: {val_metrics}')
-            logger.log(data=val_metrics, step=self.global_steps)
-            if self.config.trainer.get('val_only', False):
-                return
+            # Check if ordered_groups is initialized
+            if hasattr(self, 'ordered_groups') and self.ordered_groups:
+                val_metrics = self._validate(self.ordered_groups[0]) # for debug
+                pprint(f'Initial validation metrics: {val_metrics}')
+                logger.log(data=val_metrics, step=self.global_steps)
+                if self.config.trainer.get('val_only', False):
+                    return
+            else:
+                print("Warning: Cannot perform validation before training because ordered_groups is not initialized yet.")
 
         # we start from step 1
         self.global_steps += 1

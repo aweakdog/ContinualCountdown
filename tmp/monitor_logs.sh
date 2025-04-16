@@ -1,6 +1,6 @@
 #!/bin/bash
 
-LOG_FILE="../logs/ContinualCountdown1.5B_SingleRun.log"
+LOG_FILE="../logs/ContinualCountdown3B_SingleRun.log"
 
 while true; do
     if [ -f "$LOG_FILE" ]; then

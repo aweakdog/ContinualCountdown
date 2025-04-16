@@ -91,14 +91,23 @@ class RewardManager():
 
 
 import ray
+import os
+os.environ["RAY_TMPDIR"] = f"/home/yliog/ray_tmp/ray_tmp_{os.getpid()}"
 import hydra
 
 
 @hydra.main(config_path='config', config_name='ppo_trainer', version_base=None)
 def main(config):
     if not ray.is_initialized():
-        # this is for local ray cluster
-        ray.init(runtime_env={'env_vars': {'TOKENIZERS_PARALLELISM': 'true', 'NCCL_DEBUG': 'WARN'}})
+        ray.init(
+            address=os.environ.get("RAY_ADDRESS"),  # Use the exported address
+            runtime_env={
+                'env_vars': {
+                    'TOKENIZERS_PARALLELISM': 'true',
+                    'NCCL_DEBUG': 'WARN',
+                }
+            }
+        )
 
     ray.get(main_task.remote(config))
 

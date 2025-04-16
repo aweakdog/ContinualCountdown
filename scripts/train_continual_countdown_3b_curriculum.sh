@@ -2,18 +2,18 @@
 
 # Activate conda environment
 # Use a more cautious approach to Git configuration
-if ! git config --global --get-all safe.directory | grep -q "/app"; then
-    git config --global --add safe.directory /app
+if ! git config --global --get-all safe.directory | grep -q "."; then
+    git config --global --add safe.directory .
 fi
-source /opt/conda/etc/profile.d/conda.sh
-conda activate zero
+
+#conda init
+#conda activate zero
 
 # Configuration - Set environment variables from docker-compose.yml if not already set
 export NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-all}
-export BASE_MODEL=${BASE_MODEL:-"/app/models/qwen3b"}  # Path to mounted Qwen model
+export BASE_MODEL=${BASE_MODEL:-"./model/qwen3b"}  # Path to mounted Qwen model
 export N_GPUS=${N_GPUS:-4}  # Using 4 A800 GPUs
 export ROLLOUT_TP_SIZE=${ROLLOUT_TP_SIZE:-2}  # Tensor parallel size optimized for 4 GPUs
-export DATA_DIR="./data/continual"  # Match actual data location
 export WANDB_MODE=${WANDB_MODE:-offline}  # Run WandB in offline mode
 export VLLM_ATTENTION_BACKEND=${VLLM_ATTENTION_BACKEND:-XFORMERS}
 export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0,1,2,3}
@@ -21,9 +21,9 @@ export NCCL_DEBUG=${NCCL_DEBUG:-INFO}
 
 
 # Set up logging with backup
-LOG_FILE="/app/logs/ContinualCountdown3B_SingleRun.log"
+LOG_FILE="./logs/ContinualCountdown3B_SingleRun.log"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-BACKUP_DIR="/app/logs/run"
+BACKUP_DIR="./logs/run"
 
 # Create backup of existing log if it exists
 if [ -f "$LOG_FILE" ]; then
@@ -32,10 +32,9 @@ if [ -f "$LOG_FILE" ]; then
 fi
 
 # Clean up previous checkpoints
-rm -rf /app/checkpoints/continual_countdown3b
+rm -rf ./checkpoints/continual_countdown3b
 
 # Create all required directories first
-mkdir -p /app/metrics /app/logs/run /app/wandb /app/plots "$DATA_DIR" /app/checkpoints/continual_countdown3b
 
 # Handle log backup and cleanup
 if [ -f "$LOG_FILE" ]; then
@@ -46,17 +45,16 @@ fi
 
 # Clean up current log and wandb
 rm -f "$LOG_FILE"
-rm -rf /app/wandb/*
-chmod -R 755 /app/checkpoints/continual_countdown3b
-chmod -R 755 /app/logs
-chmod -R 755 "$DATA_DIR"
-chmod -R 755 /app/logs/run
+rm -rf ./wandb/*
+#chmod -R 755 ./checkpoints/continual_countdown3b
+chmod -R 755 ./logs
+chmod -R 755 ./logs/run
 
 # Set environment variables
 export WANDB_MODE=${WANDB_MODE:-"disabled"}
 export PYTHONUNBUFFERED=1
 export PYTHONFAULTHANDLER=1
-export PYTHONPATH=/app:$PYTHONPATH
+export PYTHONPATH=.:$PYTHONPATH
 
 # Check if base model exists
 if [ ! -d "$BASE_MODEL" ]; then
@@ -72,7 +70,7 @@ fi
 
 # Run single training process
 WANDB_RUN_NAME="ContinualCountdown3B_SingleRun"
-log_file="/app/logs/${WANDB_RUN_NAME}.log"
+log_file="./logs/${WANDB_RUN_NAME}.log"
 
 # Print debug info
 echo "Starting ContinualCountdown3B training at $(date)" | tee -a "$log_file"
@@ -81,7 +79,6 @@ echo "Python path: $(which python3)" | tee -a "$log_file"
 
 echo "Training configuration:" | tee -a "$log_file"
 echo "  Model: $TRAINED_MODEL" | tee -a "$log_file"
-echo "  Data directory: $DATA_DIR" | tee -a "$log_file"
 echo "  GPUs: $N_GPUS" | tee -a "$log_file"
 echo "  Rollout TP size: $ROLLOUT_TP_SIZE" | tee -a "$log_file"
 echo "  CUDA_VISIBLE_DEVICES: $CUDA_VISIBLE_DEVICES" | tee -a "$log_file"
@@ -90,8 +87,8 @@ echo "  WANDB_MODE: $WANDB_MODE" | tee -a "$log_file"
 echo "  NCCL_DEBUG: $NCCL_DEBUG" | tee -a "$log_file"
 
 # Create data file strings for training
-TRAIN_FILES_STR="[\"/app/data/continual/0/train.parquet\",\"/app/data/continual/1/train.parquet\",\"/app/data/continual/2/train.parquet\",\"/app/data/continual/3/train.parquet\"]"
-VAL_FILES_STR="[\"/app/data/continual/0/test.parquet\",\"/app/data/continual/1/test.parquet\",\"/app/data/continual/2/test.parquet\",\"/app/data/continual/3/test.parquet\"]"
+TRAIN_FILES_STR="[\"./data/continual/0/train.parquet\",\"./data/continual/1/train.parquet\",\"./data/continual/2/train.parquet\",\"./data/continual/3/train.parquet\"]"
+VAL_FILES_STR="[\"./data/continual/0/test.parquet\",\"./data/continual/1/test.parquet\",\"./data/continual/2/test.parquet\",\"./data/continual/3/test.parquet\"]"
 
 echo "\nFirst 100 chars of train files list:"
 echo "${TRAIN_FILES_STR:0:100}..."
@@ -102,9 +99,9 @@ echo "${VAL_FILES_STR:0:100}..."
 export TRANSFORMERS_OFFLINE=1
 
 # Create logs directory if it doesn't exist
-mkdir -p /app/logs
-chmod -R 777 /app/logs
-chmod -R 777 /app/data/continual
+mkdir -p ./logs
+chmod -R 777 ./logs
+chmod -R 777 ./data/continual
 
 python3 -m verl.trainer.main_ppo \
     data.train_files="$TRAIN_FILES_STR" \
@@ -148,7 +145,7 @@ python3 -m verl.trainer.main_ppo \
     trainer.logger=['wandb','console'] \
     +logger.print_to_console=true \
     trainer.default_hdfs_dir=null \
-    trainer.default_local_dir=/app/checkpoints/continual_countdown3b \
+    trainer.default_local_dir=./checkpoints/continual_countdown3b \
     trainer.n_gpus_per_node=$N_GPUS \
     trainer.nnodes=1 \
     trainer.save_freq=100 \

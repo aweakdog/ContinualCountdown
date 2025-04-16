@@ -855,25 +855,39 @@ class RayPPOTrainer(object):
             print("="*50 + "\n")
             
             # Get sample sizes for each group if provided
-            sample_sizes = {}
-            if hasattr(self.config.data, 'train_sample_size'):
-                # Try to convert from string to list if needed
-                train_sample_size = self.config.data.train_sample_size
-                if isinstance(train_sample_size, str):
-                    try:
-                        import ast
-                        train_sample_size = ast.literal_eval(train_sample_size)
-                        print(f"Converted train_sample_size from string to: {train_sample_size}")
-                    except Exception as e:
-                        print(f"Error converting train_sample_size: {e}")
-                
-                if isinstance(train_sample_size, list):
-                    for i, group in enumerate(self.ordered_groups):
-                        if i < len(train_sample_size):
-                            sample_size = train_sample_size[i]
-                            if sample_size > 0:
-                                sample_sizes[group] = sample_size
+            print("\n" + "="*50)
+            print("DEBUG: Checking train_sample_size parameter")
+            print(f"train_sample_size: {self.config.data.train_sample_size}")
+            print(f"train_sample_size type: {type(self.config.data.train_sample_size)}")
             
+            # Initialize sample_sizes dictionary
+            sample_sizes = {}
+            
+            # Convert train_sample_size to list if it's a string
+            if isinstance(self.config.data.train_sample_size, str):
+                try:
+                    train_sample_size = eval(self.config.data.train_sample_size)
+                    print(f"Converted train_sample_size to: {train_sample_size}")
+                except Exception as e:
+                    print(f"Error converting train_sample_size: {e}")
+            
+            # Handle ListConfig or list
+            if hasattr(self.config.data.train_sample_size, '__iter__') and not isinstance(self.config.data.train_sample_size, str):
+                print(f"Processing iterable train_sample_size: {self.config.data.train_sample_size}")
+                print(f"Ordered groups: {self.ordered_groups}")
+                
+                for i, group in enumerate(self.ordered_groups):
+                    if i < len(self.config.data.train_sample_size):
+                        sample_size = self.config.data.train_sample_size[i]
+                        if sample_size > 0:
+                            # Use the group directly as the key (don't convert to string)
+                            # This ensures we use the same key type when accessing the dictionary later
+                            sample_sizes[group] = sample_size
+                            print(f"Set sample_size for group {group} to {sample_size}")
+            
+            print(f"Final sample_sizes dictionary: {sample_sizes}")
+            print("="*50 + "\n")
+        
             for round_num in range(self.config.data.total_rounds):
                 # Use groups in order from input files
                 for group in self.ordered_groups:
@@ -881,8 +895,9 @@ class RayPPOTrainer(object):
                     
                     # First, get the sample size for this group if specified
                     sample_size = sample_sizes.get(group, 0)
-                    print("sample_size:",sample_size)
-                    print("sample_sizes:",sample_sizes)
+                    print("sample_size:", sample_size)
+                    print("sample_sizes:", sample_sizes)
+                    print("group:", group, "type:", type(group))
                     
                     # Create a temporary limited dataloader to calculate the correct number of steps
                     # This is important because we want the learning rate schedule to be based on

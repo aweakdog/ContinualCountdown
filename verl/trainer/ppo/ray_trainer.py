@@ -561,6 +561,97 @@ class RayPPOTrainer(object):
             if hasattr(self.config, 'critic') and hasattr(self.config.critic, 'optim'):
                 self.config.critic.optim.total_training_steps = total_training_steps
             
+    def _analyze_token_probabilities(self, input_batch, generated_sequence, group):
+        """Run a separate forward pass to get token probabilities for a case study sample
+        
+        Args:
+            input_batch: The input batch with prompts
+            generated_sequence: The generated sequence (output_ids or sequences)
+            group: The current group being validated
+        """
+        try:
+            import torch
+            import torch.nn.functional as F
+            
+            # Get the input prompt from the non_tensor_batch
+            if hasattr(input_batch, 'non_tensor_batch') and 'target' in input_batch.non_tensor_batch:
+                targets = input_batch.non_tensor_batch['target']
+                if len(targets) > 0:
+                    prompt_text = targets[0]  # Use the first sample
+                else:
+                    prompt_text = "[Input prompt not available]"
+            else:
+                prompt_text = "[Input prompt not available]"
+            
+            # Get the generated text
+            generated_text = self.tokenizer.decode(generated_sequence, skip_special_tokens=True)
+            
+            print(f"\n{'='*80}\nCASE STUDY - TOKEN PROBABILITIES FOR GROUP {group}\n{'='*80}")
+            print(f"Prompt: {prompt_text}")
+            print(f"Generated: {generated_text}")
+            
+            # Tokenize the prompt to get input_ids
+            tokenized_prompt = self.tokenizer(prompt_text, return_tensors="pt")
+            input_ids = tokenized_prompt.input_ids.to("cuda")
+            
+            # Get the model from the actor_rollout worker group
+            model = self.actor_rollout_wg.module
+            
+            # Run a separate forward pass to get token probabilities
+            print("\nToken-by-token probability analysis:")
+            
+            # Analyze only the first 20 tokens of the generated sequence for efficiency
+            max_tokens_to_analyze = min(20, len(generated_sequence) - len(input_ids[0]))
+            
+            # Start with the prompt
+            current_input_ids = input_ids.clone()
+            
+            # For each generated token, run a forward pass to get its probability
+            for i in range(max_tokens_to_analyze):
+                # Get the position in the full sequence
+                pos = len(input_ids[0]) + i
+                if pos >= len(generated_sequence):
+                    break
+                    
+                # Get the actual token that was generated
+                next_token_id = generated_sequence[pos].item() if isinstance(generated_sequence[pos], torch.Tensor) else generated_sequence[pos]
+                next_token_text = self.tokenizer.decode([next_token_id])
+                
+                # Run forward pass to get logits for the next token
+                with torch.no_grad():
+                    outputs = model(current_input_ids, return_dict=True)
+                    logits = outputs.logits
+                    next_token_logits = logits[0, -1, :]
+                    
+                    # Convert logits to probabilities using softmax
+                    probs = F.softmax(next_token_logits, dim=-1)
+                    
+                    # Get probability of the actual next token
+                    token_prob = probs[next_token_id].item()
+                    
+                    # Get top 3 alternative tokens
+                    top_indices = torch.topk(probs, 4).indices.tolist()
+                    alternatives = []
+                    for idx in top_indices:
+                        if idx != next_token_id:
+                            alt_token = self.tokenizer.decode([idx])
+                            alt_prob = probs[idx].item()
+                            alternatives.append(f"{alt_token} ({alt_prob:.4f})")
+                            if len(alternatives) >= 3:
+                                break
+                    
+                    print(f"Token {i+1}: '{next_token_text}' - Probability: {token_prob:.4f}")
+                    print(f"  Top alternatives: {', '.join(alternatives)}")
+                
+                # Add the next token to the input for the next iteration
+                current_input_ids = torch.cat([current_input_ids, torch.tensor([[next_token_id]]).to("cuda")], dim=1)
+            
+            print(f"{'='*80}\n")
+        except Exception as e:
+            print(f"Error in token probability analysis: {e}")
+            import traceback
+            traceback.print_exc()
+    
     def _log_token_probabilities(self, output_batch, input_batch, group):
         """Analyze and log token probabilities for a case study sample
         
@@ -580,11 +671,14 @@ class RayPPOTrainer(object):
             # Select the first sample for case study
             sample_idx = 0
             
-            # Get the input prompt and generated text
-            # The input_ids are in the tensor_batch of the DataProto object
-            if hasattr(input_batch, 'tensor_batch') and 'input_ids' in input_batch.tensor_batch:
-                input_ids = input_batch.tensor_batch['input_ids'][sample_idx]
-                prompt_text = self.tokenizer.decode(input_ids, skip_special_tokens=True)
+            # Get the input prompt and generated text from the non_tensor_batch
+            if hasattr(input_batch, 'non_tensor_batch') and 'target' in input_batch.non_tensor_batch:
+                # Extract the target (prompt) from the non_tensor_batch
+                targets = input_batch.non_tensor_batch['target']
+                if len(targets) > 0:
+                    prompt_text = targets[sample_idx]
+                else:
+                    prompt_text = "[Input prompt not available]"
             else:
                 prompt_text = "[Input prompt not available]"
                 print("Input batch structure:")
@@ -593,62 +687,39 @@ class RayPPOTrainer(object):
                 if hasattr(input_batch, 'non_tensor_batch'):
                     print("input non_tensor_batch keys:", list(input_batch.non_tensor_batch.keys()))
             
-            # Look for sequences in the output batch - this is the standard HF output format
-            if hasattr(output_batch, 'tensor_batch') and 'sequences' in output_batch.tensor_batch:
-                sequences = output_batch.tensor_batch['sequences']
-                print(f"Found sequences in tensor_batch with shape: {sequences.shape}")
+            # Since we can't directly access the generated tokens, let's try to extract them from the test batch
+            # after the validation function completes
+            
+            # Instead, let's modify our approach to analyze the validation example directly
+            print(f"\n{'='*80}\nCASE STUDY - VALIDATION EXAMPLE FOR GROUP {group}\n{'='*80}")
+            print(f"Prompt: {prompt_text}")
+            
+            # Extract additional information from the input batch
+            if hasattr(input_batch, 'non_tensor_batch'):
+                if 'nums' in input_batch.non_tensor_batch and len(input_batch.non_tensor_batch['nums']) > 0:
+                    print(f"Numbers: {input_batch.non_tensor_batch['nums'][sample_idx]}")
                 
-                # Get the generated text from the sequences
-                generated_text = self.tokenizer.decode(sequences[sample_idx], skip_special_tokens=True)
+                if 'solution' in input_batch.non_tensor_batch and len(input_batch.non_tensor_batch['solution']) > 0:
+                    print(f"Solution: {input_batch.non_tensor_batch['solution'][sample_idx]}")
                 
-                # Since we can't get token probabilities directly from the output (output_scores=False in generate),
-                # we'll provide a detailed token analysis instead
-                print(f"\n{'='*80}\nCASE STUDY - DETAILED TOKEN ANALYSIS FOR GROUP {group}\n{'='*80}")
-                print(f"Prompt: {prompt_text}")
-                print(f"Generated: {generated_text}")
-                print("\nToken-by-token analysis:")
+                if 'rating' in input_batch.non_tensor_batch and len(input_batch.non_tensor_batch['rating']) > 0:
+                    print(f"Rating: {input_batch.non_tensor_batch['rating'][sample_idx]}")
                 
-                # Get only the generated part (exclude prompt)
-                if hasattr(input_batch, 'tensor_batch') and 'input_ids' in input_batch.tensor_batch:
-                    # The generated tokens are after the prompt length
-                    prompt_length = input_ids.shape[0]
-                    generated_only = sequences[sample_idx][prompt_length:]
-                    print(f"Analyzing tokens from position {prompt_length} onward (after prompt)")
-                else:
-                    # If we can't determine prompt length, just analyze the whole sequence
-                    generated_only = sequences[sample_idx]
-                    print("Analyzing full sequence (including prompt)")
-                
-                # Analyze a reasonable number of tokens
-                max_tokens_to_analyze = min(20, len(generated_only))
-                
-                # Import necessary libraries
-                import torch
-                
-                # Analyze the context and progression of tokens
-                context = ""
-                for i in range(max_tokens_to_analyze):
-                    # Get the token text and ID
-                    token_id = generated_only[i].item() if isinstance(generated_only[i], torch.Tensor) else generated_only[i]
-                    token_text = self.tokenizer.decode([token_id])
-                    context += token_text
-                    
-                    # For each token, print its position, ID, and text
-                    print(f"Token {i+1}: ID={token_id}, '{token_text}'")
-                    
-                    # Every 5 tokens, show the accumulated context
-                    if (i+1) % 5 == 0 or i == max_tokens_to_analyze-1:
-                        print(f"\nContext after {i+1} tokens: '{context}'\n")
-            else:
-                print("Could not find 'sequences' in the output batch. Available keys:")
-                if hasattr(output_batch, 'tensor_batch'):
-                    print("tensor_batch keys:", list(output_batch.tensor_batch.keys()))
-                if hasattr(output_batch, 'non_tensor_batch'):
-                    print("non_tensor_batch keys:", list(output_batch.non_tensor_batch.keys()))
-                
+                if 'ability' in input_batch.non_tensor_batch and len(input_batch.non_tensor_batch['ability']) > 0:
+                    print(f"Ability: {input_batch.non_tensor_batch['ability'][sample_idx]}")
+            
+            # Instead of token analysis, print the full example
+            print("\nFull validation example:")
+            print(f"{'='*80}")
+            print(prompt_text)
             print(f"{'='*80}\n")
+            
+            # For future reference, we'll need to modify the validation code to capture the generated output
+            print("Note: To see token-by-token analysis, we need to modify the validation code to capture")
+            print("the generated output after it's been produced. This will require changes to the _validate method.")
+            
         except Exception as e:
-            print(f"Error in token probability analysis: {e}")
+            print(f"Error in validation example analysis: {e}")
     
     def _validate_small(self, group=None):
         """Quick validation using a single batch from the dataloader."""
@@ -752,7 +823,16 @@ class RayPPOTrainer(object):
 
                 # Case study: Analyze token probabilities for one sample (only for the first batch)
                 if cnt == 2:  # This is the first batch (cnt starts at 1 and is incremented before processing)
-                    self._log_token_probabilities(test_output_gen_batch, test_batch, group)
+                    # Extract the generated sequence
+                    if hasattr(test_output_gen_batch, 'tensor_batch') and 'sequences' in test_output_gen_batch.tensor_batch:
+                        # This is where the generated sequence would be in the standard HF output format
+                        self._analyze_token_probabilities(test_batch, test_output_gen_batch.tensor_batch['sequences'][0], group)
+                    elif hasattr(test_output_gen_batch, 'tensor_batch') and 'output_ids' in test_output_gen_batch.tensor_batch:
+                        # Try another common field name
+                        self._analyze_token_probabilities(test_batch, test_output_gen_batch.tensor_batch['output_ids'][0], group)
+                    else:
+                        # If we can't find the generated sequence, use the original implementation
+                        self._log_token_probabilities(test_output_gen_batch, test_batch, group)
                 
                 test_batch = test_batch.union(test_output_gen_batch)
 

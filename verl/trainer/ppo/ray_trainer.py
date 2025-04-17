@@ -581,64 +581,60 @@ class RayPPOTrainer(object):
             else:
                 prompt_text = "[Input prompt not available]"
             
-            # Check if scores are available in the output batch
-            if hasattr(output_batch, 'non_tensor_batch') and 'scores' in output_batch.non_tensor_batch:
-                scores = output_batch.non_tensor_batch['scores']
-                # Access output_ids from the correct location in the DataProto
-                if hasattr(output_batch, 'tensor_batch') and 'output_ids' in output_batch.tensor_batch:
-                    generated_ids = output_batch.tensor_batch['output_ids'][sample_idx]
-                elif hasattr(output_batch, 'non_tensor_batch') and 'output_ids' in output_batch.non_tensor_batch:
-                    generated_ids = output_batch.non_tensor_batch['output_ids'][sample_idx]
-                else:
-                    # Try to access it directly if it's a DataProtoItem
-                    try:
-                        generated_ids = output_batch[sample_idx].output_ids
-                    except (AttributeError, IndexError):
-                        print("Cannot find output_ids in the output batch")
-                        return
-                generated_text = self.tokenizer.decode(generated_ids, skip_special_tokens=True)
-                
-                # Get token probabilities for the generated sequence
-                if sample_idx < len(scores) and len(scores) > 0:
-                    sample_scores = scores[sample_idx]
-                    
-                    # Convert scores to probabilities using softmax
-                    import torch.nn.functional as F
-                    import torch
-                    
-                    print(f"\n{'='*80}\nCASE STUDY - TOKEN PROBABILITIES FOR GROUP {group}\n{'='*80}")
-                    print(f"Prompt: {prompt_text}")
-                    print(f"Generated: {generated_text}")
-                    print("\nToken-by-token analysis:")
-                    
-                    # Process each token and its probability
-                    for i, token_id in enumerate(generated_ids):
-                        if i < len(sample_scores):
-                            # Get the token text
-                            token_text = self.tokenizer.decode([token_id])
-                            
-                            # Get the probability for this token
-                            logits = sample_scores[i]
-                            probs = F.softmax(torch.tensor(logits), dim=-1)
-                            token_prob = probs[token_id].item()
-                            
-                            # Get top 3 alternative tokens
-                            top_indices = torch.topk(probs, 4).indices.tolist()
-                            alternatives = []
-                            for idx in top_indices:
-                                if idx != token_id:
-                                    alt_token = self.tokenizer.decode([idx])
-                                    alt_prob = probs[idx].item()
-                                    alternatives.append(f"{alt_token} ({alt_prob:.4f})")
-                                    if len(alternatives) >= 3:
-                                        break
-                            
-                            print(f"Token {i+1}: '{token_text}' - Probability: {token_prob:.4f}")
-                            print(f"  Top alternatives: {', '.join(alternatives)}")
-                    
-                    print(f"{'='*80}\n")
+            # Access output_ids from the correct location in the DataProto
+            if hasattr(output_batch, 'tensor_batch') and 'output_ids' in output_batch.tensor_batch:
+                generated_ids = output_batch.tensor_batch['output_ids'][sample_idx]
+            elif hasattr(output_batch, 'non_tensor_batch') and 'output_ids' in output_batch.non_tensor_batch:
+                generated_ids = output_batch.non_tensor_batch['output_ids'][sample_idx]
             else:
-                print("No token scores available in the output batch. Make sure 'output_scores' is enabled in meta_info.")
+                # Try to access it directly if it's a DataProtoItem
+                try:
+                    generated_ids = output_batch[sample_idx].output_ids
+                except (AttributeError, IndexError):
+                    print("Cannot find output_ids in the output batch")
+                    return
+            
+            # Get the generated text
+            generated_text = self.tokenizer.decode(generated_ids, skip_special_tokens=True)
+            
+            # Since we can't get token probabilities directly from the output (output_scores=False in generate),
+            # we'll provide a detailed token analysis instead
+            print(f"\n{'='*80}\nCASE STUDY - DETAILED TOKEN ANALYSIS FOR GROUP {group}\n{'='*80}")
+            print(f"Prompt: {prompt_text}")
+            print(f"Generated: {generated_text}")
+            print("\nToken-by-token analysis:")
+            
+            # Get only the generated part (exclude prompt)
+            if hasattr(output_batch, 'tensor_batch') and 'sequences' in output_batch.tensor_batch:
+                full_sequence = output_batch.tensor_batch['sequences'][sample_idx]
+                # The generated tokens are after the prompt length
+                prompt_length = input_ids.shape[0]
+                generated_only = full_sequence[prompt_length:]
+            else:
+                generated_only = generated_ids
+            
+            # Analyze a reasonable number of tokens
+            max_tokens_to_analyze = min(20, len(generated_only))
+            
+            # Import necessary libraries
+            import torch
+            
+            # Analyze the context and progression of tokens
+            context = ""
+            for i in range(max_tokens_to_analyze):
+                # Get the token text and ID
+                token_id = generated_only[i].item() if isinstance(generated_only[i], torch.Tensor) else generated_only[i]
+                token_text = self.tokenizer.decode([token_id])
+                context += token_text
+                
+                # For each token, print its position, ID, and text
+                print(f"Token {i+1}: ID={token_id}, '{token_text}'")
+                
+                # Every 5 tokens, show the accumulated context
+                if (i+1) % 5 == 0 or i == max_tokens_to_analyze-1:
+                    print(f"\nContext after {i+1} tokens: '{context}'\n")
+                
+            print(f"{'='*80}\n")
         except Exception as e:
             print(f"Error in token probability analysis: {e}")
     

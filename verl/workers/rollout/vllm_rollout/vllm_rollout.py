@@ -208,16 +208,27 @@ class vLLMRollout(BaseRollout):
         attention_mask = torch.cat((attention_mask, response_attention_mask), dim=-1)
 
         # all the tp ranks should contain the same data here. data in all ranks are valid
-        batch = TensorDict(
-            {
-                'prompts': idx,
-                'responses': response,
-                'input_ids': seq,  # here input_ids become the whole sentences
-                # 'old_log_probs': log_probs, # we will recompute old log prob with actor
-                'attention_mask': attention_mask,
-                'position_ids': position_ids
-            },
-            batch_size=batch_size)
+        # Create the batch dictionary with standard outputs
+        batch_dict = {
+            'prompts': idx,
+            'responses': response,
+            'input_ids': seq,  # here input_ids become the whole sentences
+            'attention_mask': attention_mask,
+            'position_ids': position_ids
+        }
+        
+        # Check if we're in validation mode
+        is_validation = prompts.meta_info.get('validate', False)
+        
+        # If in validation mode, include token probabilities for analysis
+        if is_validation:
+            # Include the log probabilities directly in the output
+            batch_dict['token_log_probs'] = log_probs
+            
+            # Also include a flag indicating these are log probabilities (not raw scores)
+            batch_dict['has_token_probs'] = torch.ones(1, dtype=torch.bool, device=idx.device)
+        
+        batch = TensorDict(batch_dict, batch_size=batch_size)
 
         # free vllm cache engine
         if self.config.free_cache_engine:

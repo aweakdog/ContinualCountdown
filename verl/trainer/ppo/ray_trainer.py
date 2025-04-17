@@ -561,13 +561,16 @@ class RayPPOTrainer(object):
             if hasattr(self.config, 'critic') and hasattr(self.config.critic, 'optim'):
                 self.config.critic.optim.total_training_steps = total_training_steps
             
-    def _analyze_generation_probabilities(self, input_batch, output_batch, group):
+    def _analyze_generation_probabilities(self, input_batch, output_batch, group, round_num=None, epoch=None, global_step=None):
         """Analyze token probabilities from the actual generated output
         
         Args:
             input_batch: The input batch with prompts
             output_batch: The output batch with generated sequences
             group: The current group being validated
+            round_num: The current round number (optional)
+            epoch: The current epoch number (optional)
+            global_step: The current global step (optional)
         """
         # Only run this analysis on the main process (rank 0) to avoid duplicate outputs
         if hasattr(self, 'rank') and self.rank != 0:
@@ -575,6 +578,12 @@ class RayPPOTrainer(object):
             
         try:
             import math
+            import os
+            
+            # Get current round, epoch, and step information if not provided
+            current_round = round_num if round_num is not None else getattr(self, 'current_round', 0)
+            current_epoch = epoch if epoch is not None else getattr(self, 'current_epoch', 0)
+            current_step = global_step if global_step is not None else getattr(self, 'global_steps', 0)
             
             # Get the input prompt from the non_tensor_batch
             if hasattr(input_batch, 'non_tensor_batch') and 'target' in input_batch.non_tensor_batch:
@@ -649,31 +658,43 @@ class RayPPOTrainer(object):
                 full_text = self.tokenizer.decode(sequences, skip_special_tokens=True)
                 generated_text = self.tokenizer.decode(generated_only, skip_special_tokens=True)
                 
-                print(f"\n{'='*80}\nCASE STUDY - TOKEN ANALYSIS FOR GROUP {group}\n{'='*80}")
+                # Print header with round, group, epoch, and step information
+                print(f"\n{'='*80}")
+                print(f"CASE STUDY - TOKEN ANALYSIS - Round: {current_round}, Group: {group}, Epoch: {current_epoch}, Step: {current_step}")
+                print(f"{'='*80}")
                 print(f"Target: {target}")
                 print(f"Numbers: {nums}")
                 print(f"Full text: {full_text}")
                 print(f"Generated text: {generated_text}")
                 print("\nToken-by-token probability analysis:")
                 
-                # Analyze only the first 1024 tokens of the generated sequence for efficiency
-                # hacky for case study 1024
-                max_tokens_to_analyze = min(1024, len(generated_only))
+                # Get the maximum number of tokens to analyze (limit to 1024 for efficiency)
+                max_tokens_to_analyze = min(len(generated_only), 1024)
                 
-                # For each generated token, analyze its probability
+                # For each token, print its probability along with round, group, epoch info
                 for i in range(max_tokens_to_analyze):
                     if i >= len(token_log_probs):
                         break
                         
-                    # Get the token and its log probability
                     token_id = generated_only[i].item()
                     token_text = self.tokenizer.decode([token_id])
+                    # Replace any line breaks with spaces for cleaner output
+                    token_text = token_text.replace('\n', ' ').replace('\r', ' ')
                     log_prob = token_log_probs[i].item()
                     
-                    # Convert log probability to probability
-                    prob = math.exp(log_prob)
+                    # Safely convert log probability to probability with error handling
+                    try:
+                        # For very negative log probs, math.exp can cause overflow
+                        if log_prob < -100:
+                            prob = 0.0  # Effectively zero probability
+                        else:
+                            prob = math.exp(log_prob)
+                    except (OverflowError, ValueError):
+                        # Handle math range error
+                        prob = 0.0
                     
-                    print(f"Token {i+1}: '{token_text}' - Probability: {prob:.4f} (log prob: {log_prob:.4f})")
+                    # Include round, group, epoch in the output for easier data extraction
+                    print(f"Round: {current_round}, Group: {group}, Epoch: {current_epoch}, Step: {current_step}, Token {i+1}: '{token_text}' - Probability: {prob:.4f} (log prob: {log_prob:.4f})")
             else:
                 # We don't have token probabilities from vLLM
                 print("Token probabilities not available from vLLM output.")
@@ -790,7 +811,13 @@ class RayPPOTrainer(object):
                 # Case study: Analyze token probabilities for one sample (only for the first batch)
                 if cnt == 2:  # This is the first batch (cnt starts at 1 and is incremented before processing)
                     # Use the actual generated output for token probability analysis
-                    self._analyze_generation_probabilities(test_batch, test_output_gen_batch, group)
+                    # Pass current round, epoch, and global step for easier plotting
+                    current_round = getattr(self, 'current_round', 0)
+                    current_epoch = getattr(self, 'current_epoch', 0)
+                    self._analyze_generation_probabilities(test_batch, test_output_gen_batch, group, 
+                                                         round_num=current_round, 
+                                                         epoch=current_epoch, 
+                                                         global_step=self.global_steps)
                 
                 test_batch = test_batch.union(test_output_gen_batch)
 
@@ -1049,6 +1076,9 @@ class RayPPOTrainer(object):
             print("="*50 + "\n")
         
             for round_num in range(self.config.data.total_rounds):
+                # Store the current round as an instance variable for access in validation
+                self.current_round = round_num
+                
                 # Use groups in order from input files
                 for group in self.ordered_groups:
                     print(f'Starting training on group: {group}')
@@ -1082,6 +1112,8 @@ class RayPPOTrainer(object):
                     total_steps_for_group = 0
                     
                     for epoch in range(self.config.data.epochs_per_group):
+                        # Store the current epoch as an instance variable for access in validation
+                        self.current_epoch = epoch
                         print(f"Starting epoch {epoch} for group {group} - will run {steps_per_epoch} steps")
                         
                         # Run only the specified number of steps for this epoch
@@ -1101,7 +1133,7 @@ class RayPPOTrainer(object):
                             # Process the batch
 
                             
-                            print(f'Intotal we have Round num: {self.config.data.total_rounds}, Group num {len(self.ordered_groups)}, Epoch num {self.config.data.epochs_per_group}, Step num {len(current_dataloader)}')
+                            print(f'Intotal we have Round num: {self.config.data.total_rounds}, Group num {len(self.ordered_groups)}, Epoch num {self.config.data.epochs_per_group}, Step num {steps_per_epoch}')
                             print(f'Round {round_num}, Group {group}, Epoch {epoch}, Step {self.global_steps}')
                             metrics = {}
                             timing_raw = {}

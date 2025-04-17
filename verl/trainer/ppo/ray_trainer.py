@@ -570,6 +570,13 @@ class RayPPOTrainer(object):
             group: The current group being validated
         """
         try:
+            # Print debug information about the structure of the output batch
+            print(f"\n{'='*80}\nDEBUG - OUTPUT BATCH STRUCTURE\n{'='*80}")
+            if hasattr(output_batch, 'tensor_batch'):
+                print("tensor_batch keys:", list(output_batch.tensor_batch.keys()))
+            if hasattr(output_batch, 'non_tensor_batch'):
+                print("non_tensor_batch keys:", list(output_batch.non_tensor_batch.keys()))
+            
             # Select the first sample for case study
             sample_idx = 0
             
@@ -580,59 +587,64 @@ class RayPPOTrainer(object):
                 prompt_text = self.tokenizer.decode(input_ids, skip_special_tokens=True)
             else:
                 prompt_text = "[Input prompt not available]"
+                print("Input batch structure:")
+                if hasattr(input_batch, 'tensor_batch'):
+                    print("input tensor_batch keys:", list(input_batch.tensor_batch.keys()))
+                if hasattr(input_batch, 'non_tensor_batch'):
+                    print("input non_tensor_batch keys:", list(input_batch.non_tensor_batch.keys()))
             
-            # Access output_ids from the correct location in the DataProto
-            if hasattr(output_batch, 'tensor_batch') and 'output_ids' in output_batch.tensor_batch:
-                generated_ids = output_batch.tensor_batch['output_ids'][sample_idx]
-            elif hasattr(output_batch, 'non_tensor_batch') and 'output_ids' in output_batch.non_tensor_batch:
-                generated_ids = output_batch.non_tensor_batch['output_ids'][sample_idx]
-            else:
-                # Try to access it directly if it's a DataProtoItem
-                try:
-                    generated_ids = output_batch[sample_idx].output_ids
-                except (AttributeError, IndexError):
-                    print("Cannot find output_ids in the output batch")
-                    return
-            
-            # Get the generated text
-            generated_text = self.tokenizer.decode(generated_ids, skip_special_tokens=True)
-            
-            # Since we can't get token probabilities directly from the output (output_scores=False in generate),
-            # we'll provide a detailed token analysis instead
-            print(f"\n{'='*80}\nCASE STUDY - DETAILED TOKEN ANALYSIS FOR GROUP {group}\n{'='*80}")
-            print(f"Prompt: {prompt_text}")
-            print(f"Generated: {generated_text}")
-            print("\nToken-by-token analysis:")
-            
-            # Get only the generated part (exclude prompt)
+            # Look for sequences in the output batch - this is the standard HF output format
             if hasattr(output_batch, 'tensor_batch') and 'sequences' in output_batch.tensor_batch:
-                full_sequence = output_batch.tensor_batch['sequences'][sample_idx]
-                # The generated tokens are after the prompt length
-                prompt_length = input_ids.shape[0]
-                generated_only = full_sequence[prompt_length:]
+                sequences = output_batch.tensor_batch['sequences']
+                print(f"Found sequences in tensor_batch with shape: {sequences.shape}")
+                
+                # Get the generated text from the sequences
+                generated_text = self.tokenizer.decode(sequences[sample_idx], skip_special_tokens=True)
+                
+                # Since we can't get token probabilities directly from the output (output_scores=False in generate),
+                # we'll provide a detailed token analysis instead
+                print(f"\n{'='*80}\nCASE STUDY - DETAILED TOKEN ANALYSIS FOR GROUP {group}\n{'='*80}")
+                print(f"Prompt: {prompt_text}")
+                print(f"Generated: {generated_text}")
+                print("\nToken-by-token analysis:")
+                
+                # Get only the generated part (exclude prompt)
+                if hasattr(input_batch, 'tensor_batch') and 'input_ids' in input_batch.tensor_batch:
+                    # The generated tokens are after the prompt length
+                    prompt_length = input_ids.shape[0]
+                    generated_only = sequences[sample_idx][prompt_length:]
+                    print(f"Analyzing tokens from position {prompt_length} onward (after prompt)")
+                else:
+                    # If we can't determine prompt length, just analyze the whole sequence
+                    generated_only = sequences[sample_idx]
+                    print("Analyzing full sequence (including prompt)")
+                
+                # Analyze a reasonable number of tokens
+                max_tokens_to_analyze = min(20, len(generated_only))
+                
+                # Import necessary libraries
+                import torch
+                
+                # Analyze the context and progression of tokens
+                context = ""
+                for i in range(max_tokens_to_analyze):
+                    # Get the token text and ID
+                    token_id = generated_only[i].item() if isinstance(generated_only[i], torch.Tensor) else generated_only[i]
+                    token_text = self.tokenizer.decode([token_id])
+                    context += token_text
+                    
+                    # For each token, print its position, ID, and text
+                    print(f"Token {i+1}: ID={token_id}, '{token_text}'")
+                    
+                    # Every 5 tokens, show the accumulated context
+                    if (i+1) % 5 == 0 or i == max_tokens_to_analyze-1:
+                        print(f"\nContext after {i+1} tokens: '{context}'\n")
             else:
-                generated_only = generated_ids
-            
-            # Analyze a reasonable number of tokens
-            max_tokens_to_analyze = min(20, len(generated_only))
-            
-            # Import necessary libraries
-            import torch
-            
-            # Analyze the context and progression of tokens
-            context = ""
-            for i in range(max_tokens_to_analyze):
-                # Get the token text and ID
-                token_id = generated_only[i].item() if isinstance(generated_only[i], torch.Tensor) else generated_only[i]
-                token_text = self.tokenizer.decode([token_id])
-                context += token_text
-                
-                # For each token, print its position, ID, and text
-                print(f"Token {i+1}: ID={token_id}, '{token_text}'")
-                
-                # Every 5 tokens, show the accumulated context
-                if (i+1) % 5 == 0 or i == max_tokens_to_analyze-1:
-                    print(f"\nContext after {i+1} tokens: '{context}'\n")
+                print("Could not find 'sequences' in the output batch. Available keys:")
+                if hasattr(output_batch, 'tensor_batch'):
+                    print("tensor_batch keys:", list(output_batch.tensor_batch.keys()))
+                if hasattr(output_batch, 'non_tensor_batch'):
+                    print("non_tensor_batch keys:", list(output_batch.non_tensor_batch.keys()))
                 
             print(f"{'='*80}\n")
         except Exception as e:

@@ -656,8 +656,9 @@ class RayPPOTrainer(object):
                 print(f"Generated text: {generated_text}")
                 print("\nToken-by-token probability analysis:")
                 
-                # Analyze only the first 20 tokens of the generated sequence for efficiency
-                max_tokens_to_analyze = min(20, len(generated_only))
+                # Analyze only the first 1024 tokens of the generated sequence for efficiency
+                # hacky for case study 1024
+                max_tokens_to_analyze = min(1024, len(generated_only))
                 
                 # For each generated token, analyze its probability
                 for i in range(max_tokens_to_analyze):

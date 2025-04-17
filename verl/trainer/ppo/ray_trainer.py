@@ -420,12 +420,18 @@ class RayPPOTrainer(object):
             
             # Calculate total training steps after both train and validation dataloaders are created
             self._calculate_total_training_steps()
-    def _create_limited_dataloader(self, group, sample_size):
-        """Create a new dataloader with a limited sample size from the original dataset"""
+    def _create_limited_dataloader(self, group, sample_size, epoch=None):
+        """Create a new dataloader with a limited sample size from the original dataset
+        
+        Args:
+            group: The group to create a limited dataloader for
+            sample_size: The maximum number of samples to use
+            epoch: If provided, use a deterministic seed based on the epoch number
+                  to ensure different samples for each epoch without recreating the dataset
+        """
         from torch.utils.data import DataLoader, Subset
         import random
         import numpy as np
-        from verl.utils.dataset.rl_dataset import collate_fn
         
         # Get the original dataset for this group
         dataset = self.train_datasets[group]
@@ -434,8 +440,17 @@ class RayPPOTrainer(object):
         total_samples = len(dataset)
         samples_to_use = min(sample_size, total_samples)
         
-        # Randomly sample indices without replacement
-        indices = random.sample(range(total_samples), samples_to_use)
+        # If epoch is provided, use a deterministic seed based on the group and epoch
+        if epoch is not None:
+            # Create a deterministic seed based on the group and epoch
+            # This ensures different samples for each epoch without recreating the dataset
+            seed = hash(f"{group}_{epoch}") % 10000
+            rng = random.Random(seed)
+            indices = rng.sample(range(total_samples), samples_to_use)
+            print(f"Using deterministic sampling for group {group}, epoch {epoch} with seed {seed}")
+        else:
+            # Use standard random sampling
+            indices = random.sample(range(total_samples), samples_to_use)
         
         # Create a subset dataset with the sampled indices
         subset_dataset = Subset(dataset, indices)
@@ -737,31 +752,38 @@ class RayPPOTrainer(object):
         self.actor_rollout_wg = all_wg['actor_rollout']
         self.actor_rollout_wg.init_model()
 
-    def _reset_learning_rates(self, group=None, current_dataloader=None):
+    def _reset_learning_rates(self, group=None, current_dataloader=None, steps_per_epoch=None, epochs=None):
         """Reset learning rates of actor and critic to their default values
         
-        If group is provided, also recalculate total_training_steps based on that group's dataloader
-        If current_dataloader is provided, use it instead of the default dataloader for the group
+        Args:
+            group: The group to reset learning rates for
+            current_dataloader: If provided, calculate steps based on this dataloader
+            steps_per_epoch: If provided, use this value directly for steps per epoch
+            epochs: If provided, use this value for number of epochs, otherwise use config value
         """
         # If using curriculum learning and a group is specified, update total_training_steps for this group
         if self.config.data.get('curriculum_learning', False) and group is not None:
-            # Determine which dataloader to use for calculating steps
-            if current_dataloader is not None:
-                # Use the provided dataloader (which might be a limited one)
+            # Determine how to calculate total steps
+            if steps_per_epoch is not None:
+                # Use the provided steps_per_epoch directly
+                epochs_to_use = epochs if epochs is not None else self.config.data.epochs_per_group
+                steps_for_group = steps_per_epoch * epochs_to_use
+                print(f'Using provided steps_per_epoch: {steps_per_epoch} for {epochs_to_use} epochs')
+            elif current_dataloader is not None:
+                # Calculate based on dataloader length
                 dataloader_to_use = current_dataloader
-                print(f'Using provided dataloader for calculating steps (likely a limited one)')
+                steps_for_group = len(dataloader_to_use) * self.config.data.epochs_per_group
+                print(f'Calculating from dataloader: {len(dataloader_to_use)} steps per epoch')
             elif hasattr(self, 'train_dataloaders') and group in self.train_dataloaders:
                 # Use the default dataloader for this group
                 dataloader_to_use = self.train_dataloaders[group]
-                print(f'Using default dataloader for calculating steps')
+                steps_for_group = len(dataloader_to_use) * self.config.data.epochs_per_group
+                print(f'Using default dataloader: {len(dataloader_to_use)} steps per epoch')
             else:
-                print(f'Warning: No dataloader available for group {group}, skipping total_training_steps update')
+                print(f'Warning: No dataloader or steps_per_epoch available for group {group}')
                 return
                 
-            # Calculate steps for this specific group
-            steps_for_group = len(dataloader_to_use) * self.config.data.epochs_per_group
-            
-            print(f'Updating total_training_steps for group {group}: {steps_for_group} steps (dataloader size: {len(dataloader_to_use)})')
+            print(f'Updating total_training_steps for group {group}: {steps_for_group} steps')
             
             # Update the optimizer configs directly - this is hacky but necessary
             from omegaconf import OmegaConf, open_dict
@@ -899,28 +921,46 @@ class RayPPOTrainer(object):
                     print("sample_sizes:", sample_sizes)
                     print("group:", group, "type:", type(group))
                     
-                    # Create a temporary limited dataloader to calculate the correct number of steps
-                    # This is important because we want the learning rate schedule to be based on
-                    # the actual number of steps we'll be training on
+                    # Calculate the number of steps per epoch based on sample size and batch size
                     if sample_size > 0:
-                        temp_limited_dataloader = self._create_limited_dataloader(group, sample_size)
-                        # Reset learning rates using the limited dataloader size
-                        self._reset_learning_rates(group=group, current_dataloader=temp_limited_dataloader)
+                        batch_size = self.config.data.train_batch_size
+                        steps_per_epoch = max(1, sample_size // batch_size)
+                        print(f"Using original dataloader but limiting to {steps_per_epoch} steps per epoch")
+                        print(f"Sample size: {sample_size}, Batch size: {batch_size}")
+                        
+                        # Reset learning rates by directly passing the steps_per_epoch
+                        # This is much more efficient than creating a dummy dataloader
+                        self._reset_learning_rates(group=group, steps_per_epoch=steps_per_epoch)
                     else:
                         # Use the full dataloader if no sample size is specified
+                        steps_per_epoch = len(self.train_dataloaders[group])
                         self._reset_learning_rates(group=group, current_dataloader=self.train_dataloaders[group])
                     
+                    # Always use the original dataloader - no need to create limited ones
+                    current_dataloader = self.train_dataloaders[group]
+                    dataloader_iter = iter(current_dataloader)
+                    
+                    # Track total steps for this group
+                    total_steps_for_group = 0
+                    
                     for epoch in range(self.config.data.epochs_per_group):
-                        # Create a new limited dataloader for each epoch if sample size is specified
-                        if sample_size > 0:
-                            print(f'Creating limited dataloader for group {group}, epoch {epoch} with sample size {sample_size}')
-                            limited_dataloader = self._create_limited_dataloader(group, sample_size)
-                            print(f'Created limited dataloader with {len(limited_dataloader)} batches')
-                            current_dataloader = limited_dataloader
-                        else:
-                            current_dataloader = self.train_dataloaders[group]
-                            print(f'Using full dataloader with {len(current_dataloader)} batches for epoch {epoch}')
-                        for batch_dict in current_dataloader:
+                        print(f"Starting epoch {epoch} for group {group} - will run {steps_per_epoch} steps")
+                        
+                        # Run only the specified number of steps for this epoch
+                        for step in range(steps_per_epoch):
+                            try:
+                                # Try to get the next batch
+                                batch_dict = next(dataloader_iter)
+                            except StopIteration:
+                                # If we've reached the end of the dataloader, create a new iterator
+                                print(f"Reached end of dataloader, creating new iterator for group {group}")
+                                dataloader_iter = iter(current_dataloader)
+                                batch_dict = next(dataloader_iter)
+                            
+                            # Increment step counter
+                            total_steps_for_group += 1
+                            
+                            # Process the batch
 
                             
                             print(f'Intotal we have Round num: {self.config.data.total_rounds}, Group num {len(self.ordered_groups)}, Epoch num {self.config.data.epochs_per_group}, Step num {len(current_dataloader)}')

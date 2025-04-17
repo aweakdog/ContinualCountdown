@@ -600,11 +600,30 @@ class RayPPOTrainer(object):
             sequences = output_batch.batch['input_ids'][0]
             
             # Get the original input_ids to determine where the generated part starts
+            prompt_length = None
+            
+            # Try several methods to determine the prompt length
             if hasattr(input_batch, 'batch') and 'input_ids' in input_batch.batch:
+                # Method 1: Get from input batch directly
                 input_ids = input_batch.batch['input_ids'][0]
                 prompt_length = input_ids.shape[0]
+            elif hasattr(output_batch, 'batch') and 'prompts' in output_batch.batch:
+                # Method 2: Get from prompts in output batch
+                prompt_length = output_batch.batch['prompts'].shape[1]
+            elif hasattr(input_batch, 'non_tensor_batch') and 'prompt' in input_batch.non_tensor_batch:
+                # Method 3: Try to get from non-tensor batch
+                prompt_text = input_batch.non_tensor_batch['prompt'][0]
+                tokenized = self.tokenizer(prompt_text, return_tensors="pt")
+                prompt_length = tokenized.input_ids.shape[1]
             else:
-                print("Could not determine prompt length from input batch.")
+                # Method 4: Use a default prompt based on the problem
+                prompt_text = f"A conversation between User and Assistant. The user asks a question, and the Assistant solves it. The assistant first thinks about the reasoning process in the mind and then provides the user with the answer.\nUser: Using the numbers {nums}, create an equation that equals {target}. You can use basic arithmetic operations (+, -, *, /) and each number can only be used once. Show your work in <think> </think> tags. And return the final answer in <answer> </answer> tags, for example <answer> (1 + 2) / 3 </answer>.\nAssistant:"
+                print(prompt_text)
+                tokenized = self.tokenizer(prompt_text, return_tensors="pt")
+                prompt_length = tokenized.input_ids.shape[1]
+                
+            if prompt_length is None:
+                print("Could not determine prompt length using any method.")
                 return
             
             # Check if we have token probabilities from vLLM

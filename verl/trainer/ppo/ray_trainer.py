@@ -574,13 +574,28 @@ class RayPPOTrainer(object):
             sample_idx = 0
             
             # Get the input prompt and generated text
-            input_ids = input_batch[sample_idx].input_ids
-            prompt_text = self.tokenizer.decode(input_ids, skip_special_tokens=True)
+            # The input_ids are in the tensor_batch of the DataProto object
+            if hasattr(input_batch, 'tensor_batch') and 'input_ids' in input_batch.tensor_batch:
+                input_ids = input_batch.tensor_batch['input_ids'][sample_idx]
+                prompt_text = self.tokenizer.decode(input_ids, skip_special_tokens=True)
+            else:
+                prompt_text = "[Input prompt not available]"
             
             # Check if scores are available in the output batch
             if hasattr(output_batch, 'non_tensor_batch') and 'scores' in output_batch.non_tensor_batch:
                 scores = output_batch.non_tensor_batch['scores']
-                generated_ids = output_batch[sample_idx].output_ids
+                # Access output_ids from the correct location in the DataProto
+                if hasattr(output_batch, 'tensor_batch') and 'output_ids' in output_batch.tensor_batch:
+                    generated_ids = output_batch.tensor_batch['output_ids'][sample_idx]
+                elif hasattr(output_batch, 'non_tensor_batch') and 'output_ids' in output_batch.non_tensor_batch:
+                    generated_ids = output_batch.non_tensor_batch['output_ids'][sample_idx]
+                else:
+                    # Try to access it directly if it's a DataProtoItem
+                    try:
+                        generated_ids = output_batch[sample_idx].output_ids
+                    except (AttributeError, IndexError):
+                        print("Cannot find output_ids in the output batch")
+                        return
                 generated_text = self.tokenizer.decode(generated_ids, skip_special_tokens=True)
                 
                 # Get token probabilities for the generated sequence

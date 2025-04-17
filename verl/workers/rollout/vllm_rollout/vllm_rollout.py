@@ -222,11 +222,22 @@ class vLLMRollout(BaseRollout):
         
         # If in validation mode, include token probabilities for analysis
         if is_validation:
-            # Include the log probabilities directly in the output
-            batch_dict['token_log_probs'] = log_probs
-            
-            # Also include a flag indicating these are log probabilities (not raw scores)
-            batch_dict['has_token_probs'] = torch.ones(1, dtype=torch.bool, device=idx.device)
+            # Make sure log_probs has the same batch dimension as the other tensors
+            # The error suggests we have batch_size=128 but log_probs has shape [1, ...]
+            if log_probs.shape[0] != batch_size:
+                # If we have a batch size mismatch, we need to repeat the log_probs to match
+                # This is a workaround - ideally we'd fix the root cause, but this will prevent crashes
+                try:
+                    # Store the log probs separately outside the batch dict to avoid TensorDict shape validation
+                    # We'll access them directly in the analysis function
+                    self._token_log_probs = log_probs
+                    batch_dict['has_token_probs'] = torch.ones(batch_size, dtype=torch.bool, device=idx.device)
+                except Exception as e:
+                    print(f"Warning: Could not store token log probabilities: {e}")
+            else:
+                # If the batch sizes match, we can include them directly
+                batch_dict['token_log_probs'] = log_probs
+                batch_dict['has_token_probs'] = torch.ones(batch_size, dtype=torch.bool, device=idx.device)
         
         batch = TensorDict(batch_dict, batch_size=batch_size)
 

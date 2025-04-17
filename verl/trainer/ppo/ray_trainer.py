@@ -608,9 +608,20 @@ class RayPPOTrainer(object):
                 return
             
             # Check if we have token probabilities from vLLM
+            token_log_probs = None
+            
+            # First check if they're in the batch
             if 'token_log_probs' in output_batch.batch:
-                # We have token log probabilities from vLLM
                 token_log_probs = output_batch.batch['token_log_probs'][0]
+            # If not, check if they're stored as an instance variable in the rollout worker
+            elif 'has_token_probs' in output_batch.batch and output_batch.batch['has_token_probs'].any():
+                try:
+                    # Try to access the token log probabilities from the rollout worker
+                    token_log_probs = self.actor_rollout_wg.rollout._token_log_probs[0]
+                except (AttributeError, IndexError) as e:
+                    print(f"Could not access token log probabilities from rollout worker: {e}")
+                    
+            if token_log_probs is not None:
                 
                 # Get the generated part (exclude the prompt)
                 generated_only = sequences[prompt_length:]

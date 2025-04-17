@@ -561,6 +561,72 @@ class RayPPOTrainer(object):
             if hasattr(self.config, 'critic') and hasattr(self.config.critic, 'optim'):
                 self.config.critic.optim.total_training_steps = total_training_steps
             
+    def _log_token_probabilities(self, output_batch, input_batch, group):
+        """Analyze and log token probabilities for a case study sample
+        
+        Args:
+            output_batch: The generated output batch with scores
+            input_batch: The input batch with prompts
+            group: The current group being validated
+        """
+        try:
+            # Select the first sample for case study
+            sample_idx = 0
+            
+            # Get the input prompt and generated text
+            input_ids = input_batch[sample_idx].input_ids
+            prompt_text = self.tokenizer.decode(input_ids, skip_special_tokens=True)
+            
+            # Check if scores are available in the output batch
+            if hasattr(output_batch, 'non_tensor_batch') and 'scores' in output_batch.non_tensor_batch:
+                scores = output_batch.non_tensor_batch['scores']
+                generated_ids = output_batch[sample_idx].output_ids
+                generated_text = self.tokenizer.decode(generated_ids, skip_special_tokens=True)
+                
+                # Get token probabilities for the generated sequence
+                if sample_idx < len(scores) and len(scores) > 0:
+                    sample_scores = scores[sample_idx]
+                    
+                    # Convert scores to probabilities using softmax
+                    import torch.nn.functional as F
+                    import torch
+                    
+                    print(f"\n{'='*80}\nCASE STUDY - TOKEN PROBABILITIES FOR GROUP {group}\n{'='*80}")
+                    print(f"Prompt: {prompt_text}")
+                    print(f"Generated: {generated_text}")
+                    print("\nToken-by-token analysis:")
+                    
+                    # Process each token and its probability
+                    for i, token_id in enumerate(generated_ids):
+                        if i < len(sample_scores):
+                            # Get the token text
+                            token_text = self.tokenizer.decode([token_id])
+                            
+                            # Get the probability for this token
+                            logits = sample_scores[i]
+                            probs = F.softmax(torch.tensor(logits), dim=-1)
+                            token_prob = probs[token_id].item()
+                            
+                            # Get top 3 alternative tokens
+                            top_indices = torch.topk(probs, 4).indices.tolist()
+                            alternatives = []
+                            for idx in top_indices:
+                                if idx != token_id:
+                                    alt_token = self.tokenizer.decode([idx])
+                                    alt_prob = probs[idx].item()
+                                    alternatives.append(f"{alt_token} ({alt_prob:.4f})")
+                                    if len(alternatives) >= 3:
+                                        break
+                            
+                            print(f"Token {i+1}: '{token_text}' - Probability: {token_prob:.4f}")
+                            print(f"  Top alternatives: {', '.join(alternatives)}")
+                    
+                    print(f"{'='*80}\n")
+            else:
+                print("No token scores available in the output batch. Make sure 'output_scores' is enabled in meta_info.")
+        except Exception as e:
+            print(f"Error in token probability analysis: {e}")
+    
     def _validate_small(self, group=None):
         """Quick validation using a single batch from the dataloader."""
         if not group:
@@ -593,15 +659,21 @@ class RayPPOTrainer(object):
         test_gen_batch.meta_info = {
             'eos_token_id': self.tokenizer.eos_token_id,
             'pad_token_id': self.tokenizer.pad_token_id,
-            'recompute_log_prob': False,
+            'recompute_log_prob': True,  # Enable log probability computation for token analysis
             'do_sample': False,
             'validate': True,
+            'return_dict_in_generate': True,  # Return detailed generation info
+            'output_scores': True,  # Return scores for token probability analysis
         }
 
         # Generate and evaluate
         test_gen_batch_padded, pad_size = pad_dataproto_to_divisor(test_gen_batch, self.actor_rollout_wg.world_size)
         test_output_gen_batch_padded = self.actor_rollout_wg.generate_sequences(test_gen_batch_padded)
         test_output_gen_batch = unpad_dataproto(test_output_gen_batch_padded, pad_size=pad_size)
+        
+        # Case study: Analyze token probabilities for one sample
+        self._log_token_probabilities(test_output_gen_batch, test_batch, group)
+        
         test_batch = test_batch.union(test_output_gen_batch)
         
         # Get rewards

@@ -671,8 +671,7 @@ class RayPPOTrainer(object):
         test_output_gen_batch_padded = self.actor_rollout_wg.generate_sequences(test_gen_batch_padded)
         test_output_gen_batch = unpad_dataproto(test_output_gen_batch_padded, pad_size=pad_size)
         
-        # Case study: Analyze token probabilities for one sample
-        self._log_token_probabilities(test_output_gen_batch, test_batch, group)
+        # We'll do token probability analysis in the full _validate method instead
         
         test_batch = test_batch.union(test_output_gen_batch)
         
@@ -714,9 +713,11 @@ class RayPPOTrainer(object):
                 test_gen_batch.meta_info = {
                     'eos_token_id': self.tokenizer.eos_token_id,
                     'pad_token_id': self.tokenizer.pad_token_id,
-                    'recompute_log_prob': False,
+                    'recompute_log_prob': True,  # Enable log probability computation for token analysis
                     'do_sample': False,
                     'validate': True,
+                    'return_dict_in_generate': True,  # Return detailed generation info
+                    'output_scores': True,  # Return scores for token probability analysis
                 }
 
                 # pad to be divisible by dp_size
@@ -726,6 +727,10 @@ class RayPPOTrainer(object):
                 test_output_gen_batch = unpad_dataproto(test_output_gen_batch_padded, pad_size=pad_size)
                 print('validation generation end')
 
+                # Case study: Analyze token probabilities for one sample (only for the first batch)
+                if cnt == 2:  # This is the first batch (cnt starts at 1 and is incremented before processing)
+                    self._log_token_probabilities(test_output_gen_batch, test_batch, group)
+                
                 test_batch = test_batch.union(test_output_gen_batch)
 
                 # evaluate using reward_function

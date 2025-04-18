@@ -503,7 +503,7 @@ class RayPPOTrainer(object):
             self.val_dataloaders[group] = DataLoader(
                 dataset=self.val_datasets[group],
                 batch_size=self.config.data.val_batch_size,
-                shuffle=False,
+                shuffle=True,
                 drop_last=True,
                 collate_fn=collate_fn)
 
@@ -706,64 +706,6 @@ class RayPPOTrainer(object):
             import traceback
             traceback.print_exc()
     
-
-    
-    def _validate_small(self, group=None):
-        """Quick validation using a single batch from the dataloader."""
-        if not group:
-            return {}
-            
-        # Check if val_dataloaders exists and contains the group
-        if not hasattr(self, 'val_dataloaders') or group not in self.val_dataloaders:
-            print(f"Warning: No validation dataloader found for group {group}")
-            return {}
-            
-        # Get the next batch from the validation dataloader
-        if not hasattr(self, '_val_iterators'):
-            self._val_iterators = {}
-        if group not in self._val_iterators:
-            self._val_iterators[group] = iter(self.val_dataloaders[group])
-            
-        try:
-            test_data = next(self._val_iterators[group])
-        except StopIteration:
-            # Reset iterator when we've gone through all batches
-            self._val_iterators[group] = iter(self.val_dataloaders[group])
-            test_data = next(self._val_iterators[group])
-        
-        test_batch = DataProto.from_single_dict(test_data)
-        
-        if self.config.reward_model.enable and test_batch[0].non_tensor_batch['reward_model']['style'] == 'model':
-            return {}
-
-        test_gen_batch = test_batch.pop(['input_ids', 'attention_mask', 'position_ids'])
-        test_gen_batch.meta_info = {
-            'eos_token_id': self.tokenizer.eos_token_id,
-            'pad_token_id': self.tokenizer.pad_token_id,
-            'recompute_log_prob': True,  # Enable log probability computation for token analysis
-            'do_sample': False,
-            'validate': True,
-            'return_dict_in_generate': True,  # Return detailed generation info
-            'output_scores': True,  # Return scores for token probability analysis
-        }
-
-        # Generate and evaluate
-        test_gen_batch_padded, pad_size = pad_dataproto_to_divisor(test_gen_batch, self.actor_rollout_wg.world_size)
-        test_output_gen_batch_padded = self.actor_rollout_wg.generate_sequences(test_gen_batch_padded)
-        test_output_gen_batch = unpad_dataproto(test_output_gen_batch_padded, pad_size=pad_size)
-        
-        # We'll do token probability analysis in the full _validate method instead
-        
-        test_batch = test_batch.union(test_output_gen_batch)
-        
-        # Get rewards
-        reward_tensor = self.val_reward_fn(test_batch)
-        data_source = test_batch.non_tensor_batch.get('data_source', ['unknown'] * reward_tensor.shape[0])
-        
-        # Calculate metrics
-        reward_mean = reward_tensor.sum(-1).mean().item()
-        return {f'val/test_score_quick/{data_source[0]}': reward_mean}
-        
     def _validate(self, group=None):
         """Full validation on all test data. Used less frequently for thorough evaluation."""
         reward_tensor_lst = []

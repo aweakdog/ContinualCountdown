@@ -1017,16 +1017,16 @@ class RayPPOTrainer(object):
 
         # perform validation before training
         # currently, we only support validation using the reward_function.
-        if self.val_reward_fn is not None and self.config.trainer.get('val_before_train', True):
-            # Check if ordered_groups is initialized
-            if hasattr(self, 'ordered_groups') and self.ordered_groups:
-                val_metrics = self._validate(self.ordered_groups[0]) # for debug
-                pprint(f'Initial validation metrics: {val_metrics}')
-                logger.log(data=val_metrics, step=self.global_steps)
-                if self.config.trainer.get('val_only', False):
-                    return
-            else:
-                print("Warning: Cannot perform validation before training because ordered_groups is not initialized yet.")
+        #if self.val_reward_fn is not None and self.config.trainer.get('val_before_train', True):
+        #    # Check if ordered_groups is initialized
+        #    if hasattr(self, 'ordered_groups') and self.ordered_groups:
+        #        val_metrics = self._validate(self.ordered_groups[0]) # for debug
+        #        pprint(f'Initial validation metrics: {val_metrics}')
+        #        logger.log(data=val_metrics, step=self.global_steps)
+        #        if self.config.trainer.get('val_only', False):
+        #            return
+        #    else:
+        #        print("Warning: Cannot perform validation before training because ordered_groups is not initialized yet.")
 
         # we start from step 1
         self.global_steps += 1

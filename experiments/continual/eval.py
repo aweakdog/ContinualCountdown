@@ -504,6 +504,370 @@ class ContinualEvaluator:
         print(f"  - Metrics: {os.path.join(self.metrics_dir, f'consolidated_metrics_{model_size}.json')}")
 
 
+def extract_token_probabilities(log_file: str, model_size: str) -> List[Dict]:
+    """Extract token probabilities from training log file for visualization.
+    
+    Args:
+        log_file: Path to the log file
+        model_size: Size of the model ("0.5b", "1.5b", "3b")
+        
+    Returns:
+        List of dictionaries containing token probability data
+    """
+    if not os.path.exists(log_file):
+        print(f"Warning: Log file not found: {log_file}")
+        return []
+    
+    with open(log_file, 'r') as f:
+        content = f.read()
+    
+    # Remove ANSI color codes
+    content = re.sub(r'\x1b\[[0-9;]*[a-zA-Z]', '', content)
+    
+    # Extract problem information
+    problem_pattern = r'\(main_task pid=\d+\) Target: (\d+) \| Numbers: \[([^\]]+)\]\s*\n.*?\(main_task pid=\d+\) Extracted equation: ([^\n]+)'
+    problems = re.findall(problem_pattern, content)
+    
+    # Extract token probability analysis sections
+    analysis_pattern = r'\(main_task pid=\d+\) Token-by-token probability analysis:\s*\n((?:\(main_task pid=\d+\) Round: \d+, Group: \d+, Epoch: \d+, Step: \d+, Token \d+: .+\n)+)'
+    analyses = re.findall(analysis_pattern, content)
+    
+    results = []
+    
+    for i, analysis_block in enumerate(analyses):
+        try:
+            # Extract individual token probability lines
+            token_pattern = r'\(main_task pid=\d+\) Round: (\d+), Group: (\d+), Epoch: (\d+), Step: (\d+), Token (\d+): \'([^\']+)\' - Probability: ([0-9.]+) \(log prob: ([-.0-9]+)\)'
+            token_matches = re.findall(token_pattern, analysis_block)
+            
+            if not token_matches:
+                continue
+                
+            # Group tokens by round, group, epoch, step
+            round_num = token_matches[0][0]
+            group_num = token_matches[0][1]
+            epoch_num = token_matches[0][2]
+            step_num = token_matches[0][3]
+            
+            # Extract tokens and probabilities
+            tokens = []
+            probabilities = []
+            
+            for match in token_matches:
+                token_text = match[5].strip()
+                probability = float(match[6])
+                
+                tokens.append(token_text)
+                probabilities.append(probability)
+            
+            # Try to find matching problem information
+            target = "Unknown"
+            numbers = "Unknown"
+            equation = "Unknown"
+            
+            # Use the problem information if available (might not match exactly)
+            if i < len(problems):
+                target = problems[i][0]
+                numbers = problems[i][1]
+                equation = problems[i][2]
+            
+            results.append({
+                'round': round_num,
+                'group': group_num,
+                'epoch': epoch_num,
+                'step': step_num,
+                'target': target,
+                'numbers': numbers,
+                'equation': equation,
+                'tokens': tokens,
+                'probabilities': probabilities
+            })
+            
+        except Exception as e:
+            print(f"Error processing token probability section: {e}")
+    
+    return results
+
+def visualize_token_probabilities(token_data: List[Dict], model_size: str, plots_dir: str):
+    """Create visualizations of token probabilities.
+    
+    Args:
+        token_data: List of dictionaries containing token probability data
+        model_size: Size of the model ("0.5b", "1.5b", "3b")
+        plots_dir: Directory to save the plots
+    """
+    if not token_data:
+        print("No token probability data to visualize")
+        return
+    
+    # Create directory for case study plots
+    case_study_dir = os.path.join(plots_dir, f"case_study_{model_size}")
+    os.makedirs(case_study_dir, exist_ok=True)
+    
+    for i, data in enumerate(token_data):
+        try:
+            tokens = data['tokens']
+            probs = data['probabilities']
+            target = data['target']
+            numbers = data['numbers']
+            equation = data['equation']
+            round_num = data['round']
+            group_num = data['group']
+            epoch_num = data['epoch']
+            step_num = data['step']
+            
+            # Skip if we have no tokens or probabilities
+            if not tokens or not probs:
+                continue
+                
+            # Create a figure for this example with a proper axes object
+            fig, ax = plt.subplots(figsize=(15, 8))
+            
+            # Remove all tokens after the 'special-token' token
+            if '<|endoftext|>' in tokens:
+                special_token_idx = tokens.index('<|endoftext|>')
+                # Keep the special token as the last token
+                tokens = tokens[:special_token_idx + 1]
+                probs = probs[:special_token_idx + 1]
+                print(f"Truncated tokens at 'special-token' (position {special_token_idx})")
+                
+            # Limit the number of tokens to prevent image size issues
+            max_tokens = 200  # Maximum tokens to display
+            if len(tokens) > max_tokens:
+                tokens = tokens[:max_tokens]
+                probs = probs[:max_tokens]
+                print(f"Warning: Limited visualization to {max_tokens} tokens to prevent image size issues")
+            
+            # Create a custom colormap from red (low prob) to green (high prob)
+            from matplotlib.colors import LinearSegmentedColormap
+            colors_list = [(0.9, 0.2, 0.2), (0.9, 0.5, 0.2), (0.6, 0.7, 0.2), (0.2, 0.8, 0.2)]  # Red to green
+            cmap = LinearSegmentedColormap.from_list('RedToGreen', colors_list)
+            
+            # Normalize probabilities for coloring
+            norm = plt.Normalize(0, max(probs))
+            colors = [cmap(norm(p)) for p in probs]
+            
+            # Calculate a reasonable font size based on token count
+            font_size = max(8, min(12, 1000 / len(tokens)))
+            
+            # Set up parameters for token layout - treating tokens as a whole sentence
+            max_width = 0.7  # Reduced width to avoid tiling the entire image
+            token_padding = 0.0  # No padding between tokens for a completely cohesive sentence
+            # Fixed line height in figure fraction units for consistent spacing
+            line_height = 0.005  # Smaller value for tighter line spacing
+            
+            # Start position
+            current_x = 0.05  # Left margin
+            current_y = 0.95  # Top margin
+            
+            # Track token positions for drawing
+            token_positions = []
+            
+            # Join tokens into a continuous sentence with proper spacing
+            # First pass: calculate positions and line breaks
+            
+            # Use a consistent width for all characters since we're using a monospace font
+            # Fixed character width in figure fraction units
+            char_width = 0.006
+            
+            for j, token in enumerate(tokens):
+                # With monospace font, all characters (including spaces) have the same width
+                token_width = len(token) * char_width
+                
+                # Special handling for token spacing
+                # Only consider the previous token when determining spacing
+                needs_space = True
+                
+                if j > 0:
+                    prev_token = tokens[j-1]
+                    
+                    # Check if previous token is punctuation or number-only
+                    is_prev_punctuation = all(c in '.,!?:;()[]{}+-*/=<>"\'' for c in prev_token)
+                    is_prev_number = all(c.isdigit() or c in '.-+' for c in prev_token)
+                    
+                    # Don't add space if:
+                    # - Previous token is punctuation or number
+                    # - Previous token ends with a space
+                    if is_prev_punctuation or is_prev_number or prev_token.endswith((' ', '\n')):
+                        needs_space = False
+                else:
+                    needs_space = False  # First token doesn't need leading space
+                
+                # Add space between tokens if needed
+                if needs_space:
+                    current_x += char_width  # Use the same width for spaces with monospace font
+                
+                # Check if we need to move to the next line
+                if current_x + token_width > max_width:
+                    current_x = 0.05  # Reset to left margin
+                    current_y -= line_height  # Move down
+                
+                # Store the position for this token
+                token_positions.append((current_x, current_y, token, probs[j], colors[j]))
+                
+                # Move to position for next token
+                current_x += token_width
+            
+            # Second pass: draw the tokens with colored text as a cohesive sentence
+            # Use a monospace font where all characters have the same width
+            from matplotlib.font_manager import FontProperties
+            mono_font = FontProperties(family='monospace', weight='normal')
+            
+            # Create a single text string with precise positioning to preserve spaces
+            # Group tokens by line position (y_pos) to handle line breaks
+            lines = {}
+            for x_pos, y_pos, token, prob, color in token_positions:
+                if y_pos not in lines:
+                    lines[y_pos] = []
+                lines[y_pos].append((x_pos, token, color))
+            
+            # Sort lines by y position (top to bottom)
+            sorted_y_positions = sorted(lines.keys(), reverse=True)
+            
+            # Draw each line as a series of individual characters to preserve exact spacing
+            for y_pos in sorted_y_positions:
+                tokens_in_line = sorted(lines[y_pos], key=lambda x: x[0])  # Sort by x position
+                
+                for x_pos, token, color in tokens_in_line:
+                    # Draw each character individually with precise positioning
+                    for i, char in enumerate(token):
+                        # Calculate exact position for each character
+                        char_x = x_pos + (i * char_width)
+                        ax.text(char_x, y_pos, char,
+                                fontsize=font_size,
+                                color=color,  # Color the text directly
+                                fontproperties=mono_font,  # Use monospace font
+                                ha='center', va='top')  # Center each character in its position
+            
+            # Set plot properties
+            ax.set_xlim(0, 1)
+            # Adjust y-axis limit based on the lowest token position to ensure all tokens are visible
+            min_y = min([pos[1] for pos in token_positions]) - line_height if token_positions else 0
+            ax.set_ylim(max(0, min_y - 0.05), 1)
+            ax.axis('off')
+            
+            # Add colorbar for reference with explicit axes
+            sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
+            sm.set_array([])
+            cbar = fig.colorbar(sm, ax=ax, orientation='horizontal', pad=0.05, aspect=40)
+            cbar.set_label('Token Probability')
+            
+            # Add title with problem information
+            title = f"Target: {target} | Numbers: [{numbers}] | Equation: {equation}\n"
+            title += f"Round: {round_num}, Group: {group_num}, Epoch: {epoch_num}, Step: {step_num}"
+            ax.set_title(title, fontsize=12)
+            
+            # Only show token count in statistics
+            stats_text = f"Total Tokens: {len(tokens)}"
+            fig.text(0.5, 0.01, stats_text, ha='center', fontsize=10)
+            
+            # Save the figure
+            save_path = os.path.join(case_study_dir, f"prob_viz_R{round_num}_G{group_num}_E{epoch_num}_S{step_num}_T{target}.png")
+            plt.savefig(save_path, dpi=300, bbox_inches='tight')
+            plt.close()
+            
+            print(f"Created token probability visualization: {save_path}")
+        except Exception as e:
+            print(f"Error creating visualization for example {i}: {e}")
+
+# Add token probability visualization to the evaluator class
+def add_token_probability_analysis(self, log_file: str):
+    """Extract and visualize token probabilities from the log file."""
+    print(f"\nExtracting token probabilities from {log_file}...")
+    token_data = extract_token_probabilities(log_file, self.model_size)
+    
+    if token_data:
+        print(f"Found {len(token_data)} examples with token probability data")
+        visualize_token_probabilities(token_data, self.model_size, self.plots_dir)
+        print(f"Token probability visualizations saved to: {os.path.join(self.plots_dir, f'case_study_{self.model_size}')}")
+    else:
+        print("No token probability data found in the log file")
+
+# Add the method to the ContinualEvaluator class
+ContinualEvaluator.add_token_probability_analysis = add_token_probability_analysis
+
+# Update the evaluate_model method to include token probability analysis
+def updated_evaluate_model(self, model_size: str):
+    """Evaluate a specific model size."""
+    print(f"\nEvaluating Qwen {model_size} model...")
+    
+    # Updated log file paths - use absolute paths
+    # Handle special case for 3b model which might use different naming convention
+    if model_size == "3b":
+        model_size_prefix = "3B"
+    else:
+        model_size_prefix = model_size.upper()
+        
+    log_patterns = [
+        os.path.join(self.logs_dir, f"ContinualCountdown{model_size_prefix}_curriculum_*.log"),
+        os.path.join(self.logs_dir, f"ContinualCountdown{model_size_prefix}_R*_*.log"),
+        os.path.join(self.logs_dir, f"ContinualCountdown{model_size_prefix}_SingleRun.log")
+    ]
+    
+    # Try each log pattern
+    found_logs = []
+    for pattern in log_patterns:
+        found_logs.extend(glob.glob(pattern))
+    
+    if not found_logs:
+        print(f"Error: No log files found matching patterns: {log_patterns}")
+        print(f"Searched in directory: {self.logs_dir}")
+        print("Available log files:")
+        try:
+            for f in os.listdir(self.logs_dir):
+                if f.endswith('.log'):
+                    print(f"  - {f}")
+        except Exception as e:
+            print(f"  Error listing directory: {e}")
+        return
+        
+    # Use the most recent log file
+    log_file = max(found_logs, key=os.path.getmtime)
+    print(f"Reading metrics from {log_file}")
+    metrics = extract_metrics_from_log(log_file)
+    
+    # Extract group metrics for the group-based plot
+    group_metrics = extract_group_metrics_from_log(log_file)
+    
+    if not metrics:
+        print("Error: No metrics found to evaluate")
+        print("Please check that training is outputting metrics in the expected format:")
+        print("  - step:<number>")
+        print("  - critic/score/mean:<number>")
+        print("  - actor/pg_loss:<number>")
+        print("  - actor/grad_norm:<number>")
+        print("  - actor/entropy_loss:<number>")
+        print("  - response_length/mean:<number>")
+        return
+    
+    # Save metrics
+    self.metrics = metrics
+    self.save_metrics()
+    
+    # Create standard plots
+    plot_path = os.path.join(self.plots_dir, f"training_metrics_{model_size}.png")
+    self.plot_metrics(metrics, plot_path)
+    
+    # Create group-based plots if we have group metrics
+    if group_metrics:
+        group_plot_path_prefix = os.path.join(self.plots_dir, f"plot_{model_size}")
+        self.plot_by_group(group_metrics, group_plot_path_prefix)
+        print(f"Group-based plots saved to: {self.plots_dir}")
+    else:
+        print("No group metrics found for group-based plots")
+    
+    # Add token probability analysis
+    self.add_token_probability_analysis(log_file)
+    
+    print(f"\n{model_size.upper()} evaluation completed successfully!")
+    print("Results can be found in:")
+    print(f"  - Plots: {plot_path}")
+    print(f"  - Token Probability Visualizations: {os.path.join(self.plots_dir, f'case_study_{model_size}')}")
+    print(f"  - Metrics: {os.path.join(self.metrics_dir, f'consolidated_metrics_{model_size}.json')}")
+
+# Replace the original evaluate_model method
+ContinualEvaluator.evaluate_model = updated_evaluate_model
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Evaluate continual learning results")
     parser.add_argument("--model-size", choices=["0.5b", "1.5b", "3b"], default="0.5b", help="Model size to evaluate")

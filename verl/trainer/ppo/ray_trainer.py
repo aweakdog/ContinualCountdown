@@ -430,6 +430,7 @@ class RayPPOTrainer(object):
                   to ensure different samples for each epoch without recreating the dataset
         """
         from torch.utils.data import DataLoader, Subset
+        from verl.utils.dataset.rl_dataset import collate_fn
         import random
         import numpy as np
         

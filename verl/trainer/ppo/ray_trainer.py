@@ -419,7 +419,7 @@ class RayPPOTrainer(object):
                 collate_fn=collate_fn)
             
             # Calculate total training steps after both train and validation dataloaders are created
-            #self._calculate_total_training_steps()
+            self._calculate_total_training_steps()
     def _create_limited_dataloader(self, group, sample_size, epoch=None):
         """Create a new dataloader with a limited sample size from the original dataset
         
@@ -1031,24 +1031,16 @@ class RayPPOTrainer(object):
                     print("sample_sizes:", sample_sizes)
                     print("group:", group, "type:", type(group))
                     
-                    # Calculate the number of steps per epoch based on sample size and batch size
+                    # Create a temporary limited dataloader to calculate the correct number of steps
+                    # This is important because we want the learning rate schedule to be based on
+                    # the actual number of steps we'll be training on
                     if sample_size > 0:
-                        batch_size = self.config.data.train_batch_size
-                        steps_per_epoch = max(1, sample_size // batch_size)
-                        print(f"Using original dataloader but limiting to {steps_per_epoch} steps per epoch")
-                        print(f"Sample size: {sample_size}, Batch size: {batch_size}")
-                        
-                        # Reset learning rates by directly passing the steps_per_epoch
-                        # This is much more efficient than creating a dummy dataloader
-                        self._reset_learning_rates(group=group, steps_per_epoch=steps_per_epoch)
+                        temp_limited_dataloader = self._create_limited_dataloader(group, sample_size)
+                        # Reset learning rates using the limited dataloader size
+                        self._reset_learning_rates(group=group, current_dataloader=temp_limited_dataloader)
                     else:
                         # Use the full dataloader if no sample size is specified
-                        steps_per_epoch = len(self.train_dataloaders[group])
                         self._reset_learning_rates(group=group, current_dataloader=self.train_dataloaders[group])
-                    
-                    # Always use the original dataloader - no need to create limited ones
-                    current_dataloader = self.train_dataloaders[group]
-                    dataloader_iter = iter(current_dataloader)
                     
                     # Track total steps for this group
                     total_steps_for_group = 0
@@ -1056,18 +1048,18 @@ class RayPPOTrainer(object):
                     for epoch in range(self.config.data.epochs_per_group):
                         # Store the current epoch as an instance variable for access in validation
                         self.current_epoch = epoch
-                        print(f"Starting epoch {epoch} for group {group} - will run {steps_per_epoch} steps")
                         
-                        # Run only the specified number of steps for this epoch
-                        for step in range(steps_per_epoch):
-                            try:
-                                # Try to get the next batch
-                                batch_dict = next(dataloader_iter)
-                            except StopIteration:
-                                # If we've reached the end of the dataloader, create a new iterator
-                                print(f"Reached end of dataloader, creating new iterator for group {group}")
-                                dataloader_iter = iter(current_dataloader)
-                                batch_dict = next(dataloader_iter)
+                        # Create a new limited dataloader for each epoch if sample size is specified
+                        if sample_size > 0:
+                            print(f'Creating limited dataloader for group {group}, epoch {epoch} with sample size {sample_size}')
+                            limited_dataloader = self._create_limited_dataloader(group, sample_size, epoch=epoch)
+                            print(f'Created limited dataloader with {len(limited_dataloader)} batches')
+                            current_dataloader = limited_dataloader
+                        else:
+                            current_dataloader = self.train_dataloaders[group]
+                            print(f'Using full dataloader with {len(current_dataloader)} batches for epoch {epoch}')
+                            
+                        for batch_dict in current_dataloader:
                             
                             # Increment step counter
                             total_steps_for_group += 1

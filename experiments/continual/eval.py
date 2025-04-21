@@ -519,72 +519,125 @@ def extract_token_probabilities(log_file: str, model_size: str) -> List[Dict]:
         return []
     
     with open(log_file, 'r') as f:
-        content = f.read()
+        lines = f.readlines()
     
-    # Remove ANSI color codes
-    content = re.sub(r'\x1b\[[0-9;]*[a-zA-Z]', '', content)
+    # Remove ANSI color codes from each line
+    cleaned_lines = [re.sub(r'\x1b\[[0-9;]*[a-zA-Z]', '', line) for line in lines]
     
-    # Extract problem information
+    # Extract problem information from the cleaned content
+    content = ''.join(cleaned_lines)
     problem_pattern = r'\(main_task pid=\d+\) Target: (\d+) \| Numbers: \[([^\]]+)\]\s*\n.*?\(main_task pid=\d+\) Extracted equation: ([^\n]+)'
     problems = re.findall(problem_pattern, content)
     
-    # Extract token probability analysis sections
-    analysis_pattern = r'\(main_task pid=\d+\) Token-by-token probability analysis:\s*\n((?:\(main_task pid=\d+\) Round: \d+, Group: \d+, Epoch: \d+, Step: \d+, Token \d+: .+\n)+)'
-    analyses = re.findall(analysis_pattern, content)
-    
+    # Process lines to extract token probability data
     results = []
+    current_tokens = []
+    current_round = None
+    current_group = None
+    current_epoch = None
+    current_step = None
+    current_target = "Unknown"
+    current_numbers = "Unknown"
+    current_equation = "Unknown"
+    in_token_analysis = False
+    problem_index = 0
     
-    for i, analysis_block in enumerate(analyses):
-        try:
-            # Extract individual token probability lines
-            token_pattern = r'\(main_task pid=\d+\) Round: (\d+), Group: (\d+), Epoch: (\d+), Step: (\d+), Token (\d+): \'([^\']+)\' - Probability: ([0-9.]+) \(log prob: ([-.0-9]+)\)'
-            token_matches = re.findall(token_pattern, analysis_block)
-            
-            if not token_matches:
-                continue
-                
-            # Group tokens by round, group, epoch, step
-            round_num = token_matches[0][0]
-            group_num = token_matches[0][1]
-            epoch_num = token_matches[0][2]
-            step_num = token_matches[0][3]
-            
-            # Extract tokens and probabilities
-            tokens = []
-            probabilities = []
-            
-            for match in token_matches:
-                token_text = match[5].strip()
-                probability = float(match[6])
-                
-                tokens.append(token_text)
-                probabilities.append(probability)
+    for i, line in enumerate(cleaned_lines):
+        # Check for token analysis section start
+        if "Token-by-token probability analysis:" in line:
+            in_token_analysis = True
+            current_tokens = []
             
             # Try to find matching problem information
-            target = "Unknown"
-            numbers = "Unknown"
-            equation = "Unknown"
+            if problem_index < len(problems):
+                current_target = problems[problem_index][0]
+                current_numbers = problems[problem_index][1]
+                current_equation = problems[problem_index][2]
+                problem_index += 1
+            else:
+                current_target = "Unknown"
+                current_numbers = "Unknown"
+                current_equation = "Unknown"
             
-            # Use the problem information if available (might not match exactly)
-            if i < len(problems):
-                target = problems[i][0]
-                numbers = problems[i][1]
-                equation = problems[i][2]
+            continue
+        
+        # If we're in a token analysis section, process token lines
+        if in_token_analysis:
+            # Check for token line pattern
+            token_match = re.search(r'Round: (\d+), Group: (\d+), Epoch: (\d+), Step: (\d+), Token (\d+): \'(.*?)\' - Probability: ([0-9.]+) \(log prob: ([-.0-9]+)\)', line)
             
-            results.append({
-                'round': round_num,
-                'group': group_num,
-                'epoch': epoch_num,
-                'step': step_num,
-                'target': target,
-                'numbers': numbers,
-                'equation': equation,
-                'tokens': tokens,
-                'probabilities': probabilities
-            })
+            if token_match:
+                # Extract token information
+                round_num = token_match.group(1)
+                group_num = token_match.group(2)
+                epoch_num = token_match.group(3)
+                step_num = token_match.group(4)
+                token_num = token_match.group(5)
+                token_text = token_match.group(6).strip()
+                probability = float(token_match.group(7))
+                
+                # Update current section information
+                current_round = round_num
+                current_group = group_num
+                current_epoch = epoch_num
+                current_step = step_num
+                
+                # Add token to current collection
+                current_tokens.append((token_num, token_text, probability))
             
-        except Exception as e:
-            print(f"Error processing token probability section: {e}")
+            # Check for end of token analysis section (empty line or new section start)
+            elif line.strip() == "" or "Starting" in line or "Finished" in line:
+                # If we have tokens, save the results
+                if current_tokens and current_round is not None:
+                    # Extract tokens and probabilities in order
+                    tokens = [t[1] for t in sorted(current_tokens, key=lambda x: int(x[0]))]
+                    probabilities = [p[2] for p in sorted(current_tokens, key=lambda x: int(x[0]))]
+                    
+                    results.append({
+                        'round': current_round,
+                        'group': current_group,
+                        'epoch': current_epoch,
+                        'step': current_step,
+                        'target': current_target,
+                        'numbers': current_numbers,
+                        'equation': current_equation,
+                        'tokens': tokens,
+                        'probabilities': probabilities
+                    })
+                
+                # Reset for next section
+                in_token_analysis = False
+                current_tokens = []
+                current_round = None
+                current_group = None
+                current_epoch = None
+                current_step = None
+            
+            # Handle continuation lines (broken token text)
+            elif "(main_task pid=" in line and not "Round:" in line:
+                # This is a continuation line, try to extract any content after the process ID
+                content_match = re.search(r'\(main_task pid=\d+\)\s*(.*)', line)
+                if content_match and content_match.group(1).strip() and current_tokens:
+                    # Append the content to the last token's text
+                    last_token_num, last_token_text, last_prob = current_tokens[-1]
+                    current_tokens[-1] = (last_token_num, last_token_text + " " + content_match.group(1).strip(), last_prob)
+    
+    # Handle any remaining tokens at the end of the file
+    if in_token_analysis and current_tokens and current_round is not None:
+        tokens = [t[1] for t in sorted(current_tokens, key=lambda x: int(x[0]))]
+        probabilities = [p[2] for p in sorted(current_tokens, key=lambda x: int(x[0]))]
+        
+        results.append({
+            'round': current_round,
+            'group': current_group,
+            'epoch': current_epoch,
+            'step': current_step,
+            'target': current_target,
+            'numbers': current_numbers,
+            'equation': current_equation,
+            'tokens': tokens,
+            'probabilities': probabilities
+        })
     
     return results
 
@@ -632,7 +685,7 @@ def visualize_token_probabilities(token_data: List[Dict], model_size: str, plots
                 print(f"Truncated tokens at 'special-token' (position {special_token_idx})")
                 
             # Limit the number of tokens to prevent image size issues
-            max_tokens = 200  # Maximum tokens to display
+            max_tokens = 1024  # Maximum tokens to display
             if len(tokens) > max_tokens:
                 tokens = tokens[:max_tokens]
                 probs = probs[:max_tokens]

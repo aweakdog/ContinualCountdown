@@ -60,7 +60,7 @@ class DataGenerator:
         os.system(f"chmod -R 777 {base_dir}")
 
 
-    def generate_group_data(self, group_idx: int, train_size: int = 256000, test_size: int = 256) -> Tuple[Dataset, Dataset]:
+    def generate_group_data(self, group_idx: int, train_size: int = 512000, test_size: int = 512) -> Tuple[Dataset, Dataset]:
         """Generate train and test data for a specific operator group"""
         candidate_operators = self.operator_groups[group_idx][0]
         neccessary_operators = self.operator_groups[group_idx][1]

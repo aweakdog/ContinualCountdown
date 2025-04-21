@@ -398,7 +398,7 @@ class RayPPOTrainer(object):
             self.train_dataloader = self.train_dataloaders[last_group]
             
             # Calculate total training steps after both train and validation dataloaders are created
-            self._calculate_total_training_steps()
+            #self._calculate_total_training_steps()
         else:
             # Regular training without curriculum
             self.train_dataset = RLHFDataset(
@@ -419,7 +419,7 @@ class RayPPOTrainer(object):
                 collate_fn=collate_fn)
             
             # Calculate total training steps after both train and validation dataloaders are created
-            self._calculate_total_training_steps()
+            #self._calculate_total_training_steps()
     def _create_limited_dataloader(self, group, sample_size, epoch=None):
         """Create a new dataloader with a limited sample size from the original dataset
         
@@ -525,42 +525,41 @@ class RayPPOTrainer(object):
         assert len(self.val_dataloader) >= 1
         print(f'Size of val dataloader: {len(self.val_dataloader)}')
 
-    def _calculate_total_training_steps(self):
-        """Calculate total training steps and inject into config
-        
-        For curriculum learning, this only sets a placeholder value that will be updated
-        by _reset_learning_rates for each group. For regular training, this calculates
-        the actual total_training_steps.
-        """
-        # For curriculum learning, just set a placeholder - real calculation happens in _reset_learning_rates
-        if self.config.data.get('curriculum_learning', False):
-            # Just set a placeholder value that will be updated by _reset_learning_rates for each group
-            total_training_steps = 1  # Placeholder, will be updated per group in _reset_learning_rates
-            print(f'Curriculum learning: Setting placeholder total_training_steps that will be updated per group')
-        else:
-            # Regular training without curriculum - calculate the actual value
-            if hasattr(self, 'train_dataloader'):
-                total_training_steps = len(self.train_dataloader) * self.config.trainer.total_epochs
-                print(f'Regular training: Calculated total_training_steps = {total_training_steps}')
-            else:
-                print("Warning: Cannot calculate total_training_steps because train_dataloader is not initialized yet.")
-                # Defer calculation until dataloaders are available
-                print("Deferring total_training_steps calculation until dataloaders are available")
-                return
-
-        # No need to override with config value as it doesn't exist
-
-        # Store the value
-        self.total_training_steps = total_training_steps
-        # total_training_steps = 15000 #hacky
-
-        # Update the optimizer configs directly - this is hacky but necessary
-        from omegaconf import OmegaConf, open_dict
-        OmegaConf.set_struct(self.config, True)
-        with open_dict(self.config):
-            self.config.actor_rollout_ref.actor.optim.total_training_steps = total_training_steps
-            if hasattr(self.config, 'critic') and hasattr(self.config.critic, 'optim'):
-                self.config.critic.optim.total_training_steps = total_training_steps
+#    def _calculate_total_training_steps(self):
+#        """Calculate total training steps and inject into config
+#        
+#        For curriculum learning, this only sets a placeholder value that will be updated
+#        by _reset_learning_rates for each group. For regular training, this calculates
+#        the actual total_training_steps.
+#        """
+#        # For curriculum learning, just set a placeholder - real calculation happens in _reset_learning_rates
+#        if self.config.data.get('curriculum_learning', False):
+#            # Just set a placeholder value that will be updated by _reset_learning_rates for each group
+#            total_training_steps = 1  # Placeholder, will be updated per group in _reset_learning_rates
+#            print(f'Curriculum learning: Setting placeholder total_training_steps that will be updated per group')
+#        else:
+#            # Regular training without curriculum - calculate the actual value
+#            if hasattr(self, 'train_dataloader'):
+#                total_training_steps = len(self.train_dataloader) * self.config.trainer.total_epochs
+#                print(f'Regular training: Calculated total_training_steps = {total_training_steps}')
+#            else:
+#                print("Warning: Cannot calculate total_training_steps because train_dataloader is not initialized yet.")
+#                # Defer calculation until dataloaders are available
+#                print("Deferring total_training_steps calculation until dataloaders are available")
+#                return
+#
+#        # No need to override with config value as it doesn't exist
+#
+#        # Store the value
+#        self.total_training_steps = total_training_steps
+#
+#        # Update the optimizer configs directly - this is hacky but necessary
+#        from omegaconf import OmegaConf, open_dict
+#        OmegaConf.set_struct(self.config, True)
+#        with open_dict(self.config):
+#            self.config.actor_rollout_ref.actor.optim.total_training_steps = total_training_steps
+#            if hasattr(self.config, 'critic') and hasattr(self.config.critic, 'optim'):
+#                self.config.critic.optim.total_training_steps = total_training_steps
             
     def _analyze_generation_probabilities(self, input_batch, output_batch, group, round_num=None, epoch=None, global_step=None):
         """Analyze token probabilities from the actual generated output

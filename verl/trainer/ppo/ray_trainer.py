@@ -1059,7 +1059,8 @@ class RayPPOTrainer(object):
                         else:
                             current_dataloader = self.train_dataloaders[group]
                             print(f'Using full dataloader with {len(current_dataloader)} batches for epoch {epoch}')
-                            
+                        steps_per_epoch = len(current_dataloader)
+                        
                         for batch_dict in current_dataloader:
                             
                             # Increment step counter

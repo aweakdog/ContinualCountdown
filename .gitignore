@@ -119,6 +119,8 @@ tests/e2e/toy_examples/deepspeed/synchronous/output.txt
 # prompt
 /prompt
 /data/*
+/data_bak/*
+/data_256000/*
 /metrics/*
 /models/*
 /plots/*

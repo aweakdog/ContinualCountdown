@@ -33,6 +33,7 @@ fi
 
 # Clean up previous checkpoints
 rm -rf ./checkpoints/continual_countdown3b
+rm -rf /scratch/pangroup/yliog/checkpoints/continual_countdown3b
 
 # Create all required directories first
 
@@ -115,7 +116,7 @@ python3 -m verl.trainer.main_ppo \
     data.val_batch_size=256 \
     data.max_response_length=1024 \
     ++data.curriculum_learning=true \
-    ++data.epochs_per_group=15 \
+    ++data.epochs_per_group=30 \
     ++data.total_rounds=10 \
     ++data.train_sample_size="$TRAIN_SAMPLE_SIZE" \
     actor_rollout_ref.model.path=$BASE_MODEL \
@@ -128,7 +129,7 @@ python3 -m verl.trainer.main_ppo \
     +actor_rollout_ref.model.attn_implementation=flash_attention_2 \
     +actor_rollout_ref.model.use_cache=false \
     actor_rollout_ref.actor.optim.lr=1e-6 \
-    actor_rollout_ref.actor.ppo_mini_batch_size=64 \
+    actor_rollout_ref.actor.ppo_mini_batch_size=32 \
     actor_rollout_ref.actor.ppo_micro_batch_size=8 \
     actor_rollout_ref.rollout.log_prob_micro_batch_size=8 \
     actor_rollout_ref.rollout.tensor_model_parallel_size=$ROLLOUT_TP_SIZE \
@@ -150,11 +151,11 @@ python3 -m verl.trainer.main_ppo \
     trainer.logger=['wandb','console'] \
     +logger.print_to_console=true \
     trainer.default_hdfs_dir=null \
-    trainer.default_local_dir=./checkpoints/continual_countdown3b \
+    trainer.default_local_dir=/scratch/pangroup/yliog/checkpoints/continual_countdown3b \
     trainer.n_gpus_per_node=$N_GPUS \
     trainer.nnodes=1 \
     trainer.save_freq=150 \
-    trainer.test_freq=20 \
+    trainer.test_freq=30 \
     trainer.project_name=ContinualCountdown3B \
     trainer.experiment_name=$WANDB_RUN_NAME \
     trainer.total_epochs=1 \

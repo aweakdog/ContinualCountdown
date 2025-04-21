@@ -552,6 +552,7 @@ class RayPPOTrainer(object):
 
         # Store the value
         self.total_training_steps = total_training_steps
+        # total_training_steps = 15000 #hacky
 
         # Update the optimizer configs directly - this is hacky but necessary
         from omegaconf import OmegaConf, open_dict

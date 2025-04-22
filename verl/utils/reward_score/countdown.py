@@ -84,6 +84,8 @@ def compute_score(solution_str, ground_truth, method='strict', format_score=0.1,
         print(f"Target: {target} | Numbers: {numbers}")
         print(f"Extracted equation: {equation}")
         print(f"Solution string: {solution_str}")
+    
+    format_score = 0
 
     if equation is None:
         if do_print:

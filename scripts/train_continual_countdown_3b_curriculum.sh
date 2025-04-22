@@ -11,6 +11,7 @@ fi
 
 # Configuration - Set environment variables from docker-compose.yml if not already set
 export NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-all}
+export CHECKPOINT_BASE_DIR=${CHECKPOINT_BASE_DIR:-/scratch/pangroup/yliog/checkpoints/continual_countdown3b}
 export BASE_MODEL=${BASE_MODEL:-"./model/qwen3b"}  # Path to mounted Qwen model
 export N_GPUS=${N_GPUS:-4}  # Using 4 A800 GPUs
 export ROLLOUT_TP_SIZE=${ROLLOUT_TP_SIZE:-2}  # Tensor parallel size optimized for 4 GPUs
@@ -33,7 +34,7 @@ fi
 
 # Clean up previous checkpoints
 rm -rf ./checkpoints/continual_countdown3b
-rm -rf /scratch/pangroup/yliog/checkpoints/continual_countdown3b
+rm -rf ${CHECKPOINT_BASE_DIR}
 
 # Create all required directories first
 
@@ -151,7 +152,7 @@ python3 -m verl.trainer.main_ppo \
     trainer.logger=['wandb','console'] \
     +logger.print_to_console=true \
     trainer.default_hdfs_dir=null \
-    trainer.default_local_dir=/scratch/pangroup/yliog/checkpoints/continual_countdown3b \
+    trainer.default_local_dir=${CHECKPOINT_BASE_DIR} \
     trainer.n_gpus_per_node=$N_GPUS \
     trainer.nnodes=1 \
     trainer.save_freq=150 \

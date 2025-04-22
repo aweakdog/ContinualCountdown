@@ -355,76 +355,91 @@ class ContinualEvaluator:
 
     def plot_by_group(self, group_metrics: Dict[int, Dict[int, List[Dict[str, float]]]], save_path_prefix: Optional[str] = None):
         """Create separate plots for each group showing concatenated scores across all rounds.
-        
-        Args:
-            group_metrics: Dictionary organized by group and round
-            save_path_prefix: Optional prefix for the save path
-        """
+        Also overlays the single-group baseline as a background for comparison."""
+        import os
         if not group_metrics:
             print("No group metrics to plot")
             return
-        
-        # Plot each group in a separate figure
+
         for group_id, rounds_data in sorted(group_metrics.items()):
-            # Create a new figure for each group
             plt.figure(figsize=(10, 6))
-            
-            # Get group name
             group_name = f"Group {group_id}"
-            
-            # Concatenate all scores from all rounds for this group
+
+            # --- BASELINE: Load and plot single-group log as background ---
+            baseline_log = os.path.join(self.logs_dir, f"ContinualCountdown3B_Group{group_id}.log")
+            if os.path.exists(baseline_log):
+                baseline_metrics = extract_metrics_from_log(baseline_log)
+                baseline_scores = [m.get('score', 0) for m in baseline_metrics]
+                if baseline_scores:
+                    # Repeat the baseline for each round
+                    num_rounds = len(rounds_data)
+                    baseline_scores_tiled = baseline_scores * num_rounds
+                    # If curriculum steps are not an integer multiple, trim or pad
+                    total_steps = sum(len(metrics_list) for metrics_list in rounds_data.values())
+                    if len(baseline_scores_tiled) > total_steps:
+                        baseline_scores_tiled = baseline_scores_tiled[:total_steps]
+                    elif len(baseline_scores_tiled) < total_steps:
+                        baseline_scores_tiled += [baseline_scores[-1]] * (total_steps - len(baseline_scores_tiled))
+                    baseline_steps = list(range(1, len(baseline_scores_tiled) + 1))
+                    # Smooth the repeated baseline
+                    window_size = 5
+                    smoothed_baseline = []
+                    for i in range(len(baseline_scores_tiled)):
+                        start_idx = max(0, i - window_size // 2)
+                        end_idx = min(len(baseline_scores_tiled), i + window_size // 2 + 1)
+                        window = baseline_scores_tiled[start_idx:end_idx]
+                        smoothed_baseline.append(sum(window) / len(window))
+                    plt.plot(
+                        baseline_steps,
+                        smoothed_baseline,
+                        color="gray",
+                        linestyle="--",
+                        linewidth=2,
+                        alpha=0.7,
+                        label="Single-group Baseline (smoothed, repeated)"
+                    )
+
+            # --- CURRICULUM: Plot curriculum (across-group) results ---
             all_scores = []
             for round_id, metrics_list in sorted(rounds_data.items()):
-                # Extract scores for this round
                 round_scores = [m.get('score', 0) for m in metrics_list]
                 all_scores.extend(round_scores)
-            
+
             if all_scores:
-                # Create steps for the concatenated data
                 steps = list(range(1, len(all_scores) + 1))
-                
-                # Apply smoothing to the data
                 smoothed_scores = []
-                window_size = 5  # Adjust this for more or less smoothing
-                
-                # Simple moving average smoothing
+                window_size = 5
                 for i in range(len(all_scores)):
                     start_idx = max(0, i - window_size // 2)
                     end_idx = min(len(all_scores), i + window_size // 2 + 1)
                     window = all_scores[start_idx:end_idx]
                     smoothed_scores.append(sum(window) / len(window))
-                
-                # Plot both raw data (light) and smoothed data (darker)
-                plt.plot(steps, all_scores, color='lightblue', linewidth=0.8, alpha=0.5)
-                plt.plot(steps, smoothed_scores, color='blue', linewidth=2)
-                
-                # Add vertical lines to separate rounds
-                round_boundaries = [0]  # Start with 0
+
+                plt.plot(steps, all_scores, color='lightblue', linewidth=0.8, alpha=0.5, label="Curriculum (raw)")
+                plt.plot(steps, smoothed_scores, color='blue', linewidth=2, label="Curriculum (smoothed)")
+
+                # Add round boundaries as before
+                round_boundaries = [0]
                 current_position = 0
-                
                 for round_id, metrics_list in sorted(rounds_data.items()):
                     current_position += len(metrics_list)
                     round_boundaries.append(current_position)
-                
-                # Draw vertical lines at round boundaries (except the first and last)
-                for boundary in round_boundaries[1:-1]:  # Skip first (0) and last (total length)
+                for boundary in round_boundaries[1:-1]:
                     plt.axvline(x=boundary, color='red', linestyle='--', alpha=0.5)
-                    plt.text(boundary, 0.02, f"R{round_boundaries.index(boundary)}", 
-                             color='red', ha='center', va='bottom', alpha=0.7)
-            
-            # Add labels and title
+                    plt.text(boundary, 0.02, f"R{round_boundaries.index(boundary)}", color='red', ha='center', va='bottom', alpha=0.7)
+
             plt.title(f'Training Scores for {group_name} - {self.model_size.upper()} Model', fontsize=16)
             plt.xlabel('Steps (Concatenated Across Rounds)', fontsize=12)
             plt.ylabel('Score', fontsize=12)
             plt.grid(True, alpha=0.3)
-            plt.ylim(0, 1.0)  # Set y-axis from 0 to 1 for consistency
-            
-            # Save the plot
+            plt.ylim(0, 1.0)
+            plt.legend()
+
             if save_path_prefix:
                 save_path = f"{save_path_prefix}_group{group_id}.png"
             else:
                 save_path = os.path.join(self.plots_dir, f"plot_group{group_id}_{self.model_size}.png")
-            
+
             plt.savefig(save_path, dpi=300, bbox_inches='tight')
             plt.close()
             print(f"Created plot for {group_name}: {save_path}")

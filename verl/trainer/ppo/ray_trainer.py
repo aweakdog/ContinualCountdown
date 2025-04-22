@@ -420,7 +420,7 @@ class RayPPOTrainer(object):
             
             # Calculate total training steps after both train and validation dataloaders are created
             self._calculate_total_training_steps()
-    def _create_limited_dataloader(self, group, sample_size, epoch=None):
+    def _create_limited_dataloader(self, group, sample_size, epoch=None, round_num=None):
         """Create a new dataloader with a limited sample size from the original dataset
         
         Args:
@@ -441,14 +441,22 @@ class RayPPOTrainer(object):
         total_samples = len(dataset)
         samples_to_use = min(sample_size, total_samples)
         
-        # If epoch is provided, use a deterministic seed based on the group and epoch
-        if epoch is not None:
-            # Create a deterministic seed based on the group and epoch
-            # This ensures different samples for each epoch without recreating the dataset
+        # If epoch and/or round_num are provided, use a deterministic seed based on the group, epoch, and round_num
+        if epoch is not None and round_num is not None:
+            seed = hash(f"{group}_{epoch}_{round_num}") % 10000
+            rng = random.Random(seed)
+            indices = rng.sample(range(total_samples), samples_to_use)
+            print(f"Using deterministic sampling for group {group}, epoch {epoch}, round {round_num} with seed {seed}")
+        elif epoch is not None:
             seed = hash(f"{group}_{epoch}") % 10000
             rng = random.Random(seed)
             indices = rng.sample(range(total_samples), samples_to_use)
             print(f"Using deterministic sampling for group {group}, epoch {epoch} with seed {seed}")
+        elif round_num is not None:
+            seed = hash(f"{group}_{round_num}") % 10000
+            rng = random.Random(seed)
+            indices = rng.sample(range(total_samples), samples_to_use)
+            print(f"Using deterministic sampling for group {group}, round {round_num} with seed {seed}")
         else:
             # Use standard random sampling
             indices = random.sample(range(total_samples), samples_to_use)
@@ -1036,7 +1044,7 @@ class RayPPOTrainer(object):
                     # This is important because we want the learning rate schedule to be based on
                     # the actual number of steps we'll be training on
                     if sample_size > 0:
-                        temp_limited_dataloader = self._create_limited_dataloader(group, sample_size)
+                        temp_limited_dataloader = self._create_limited_dataloader(group, sample_size, round_num=round_num)
                         # Reset learning rates using the limited dataloader size
                         self._reset_learning_rates(group=group, current_dataloader=temp_limited_dataloader)
                     else:
@@ -1053,7 +1061,7 @@ class RayPPOTrainer(object):
                         # Create a new limited dataloader for each epoch if sample size is specified
                         if sample_size > 0:
                             print(f'Creating limited dataloader for group {group}, epoch {epoch} with sample size {sample_size}')
-                            limited_dataloader = self._create_limited_dataloader(group, sample_size, epoch=epoch)
+                            limited_dataloader = self._create_limited_dataloader(group, sample_size, epoch=epoch, round_num=round_num)
                             print(f'Created limited dataloader with {len(limited_dataloader)} batches')
                             current_dataloader = limited_dataloader
                         else:

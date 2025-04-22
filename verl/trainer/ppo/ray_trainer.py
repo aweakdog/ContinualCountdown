@@ -442,24 +442,25 @@ class RayPPOTrainer(object):
         samples_to_use = min(sample_size, total_samples)
         
         # If epoch and/or round_num are provided, use a deterministic seed based on the group, epoch, and round_num
-        if epoch is not None and round_num is not None:
-            seed = hash(f"{group}_{epoch}_{round_num}") % 10000
-            rng = random.Random(seed)
-            indices = rng.sample(range(total_samples), samples_to_use)
-            print(f"Using deterministic sampling for group {group}, epoch {epoch}, round {round_num} with seed {seed}")
-        elif epoch is not None:
-            seed = hash(f"{group}_{epoch}") % 10000
-            rng = random.Random(seed)
-            indices = rng.sample(range(total_samples), samples_to_use)
-            print(f"Using deterministic sampling for group {group}, epoch {epoch} with seed {seed}")
-        elif round_num is not None:
-            seed = hash(f"{group}_{round_num}") % 10000
-            rng = random.Random(seed)
-            indices = rng.sample(range(total_samples), samples_to_use)
-            print(f"Using deterministic sampling for group {group}, round {round_num} with seed {seed}")
-        else:
-            # Use standard random sampling
-            indices = random.sample(range(total_samples), samples_to_use)
+        #if epoch is not None and round_num is not None:
+        #    seed = hash(f"{group}_{epoch}_{round_num}") % 10000
+        #    rng = random.Random(seed)
+        #    indices = rng.sample(range(total_samples), samples_to_use)
+        #    print(f"Using deterministic sampling for group {group}, epoch {epoch}, round {round_num} with seed {seed}")
+        #elif epoch is not None:
+        #    seed = hash(f"{group}_{epoch}") % 10000
+        #    rng = random.Random(seed)
+        #    indices = rng.sample(range(total_samples), samples_to_use)
+        #    print(f"Using deterministic sampling for group {group}, epoch {epoch} with seed {seed}")
+        #elif round_num is not None:
+        #    seed = hash(f"{group}_{round_num}") % 10000
+        #    rng = random.Random(seed)
+        #    indices = rng.sample(range(total_samples), samples_to_use)
+        #    print(f"Using deterministic sampling for group {group}, round {round_num} with seed {seed}")
+        #else:
+        #    # Use standard random sampling
+        #    indices = random.sample(range(total_samples), samples_to_use)
+        indices = random.sample(range(total_samples), samples_to_use)
         
         # Create a subset dataset with the sampled indices
         subset_dataset = Subset(dataset, indices)

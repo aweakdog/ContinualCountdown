@@ -77,7 +77,7 @@ def extract_thought(solution_str):
     
     return cleaned_equations
 
-def estimate_thought_reward(thoughts, available_numbers):
+def estimate_thought_reward(thoughts, available_numbers, do_print=False):
     """
     Calculate the reward for the thought: 0.01 per unique, valid result, up to a maximum of 0.1.
     Only count if the expression uses all available numbers exactly once and produces a new result.
@@ -88,9 +88,10 @@ def estimate_thought_reward(thoughts, available_numbers):
             result = evaluate_equation(expr)
             if result is not None and result not in seen_results:
                 seen_results[result] = expr
-    print("[estimate_thought_reward] Seen results and corresponding expressions:")  # DEBUG
-    for res, expr in seen_results.items():
-        print(f"  Result: {res} | Expression: {expr}")
+    if do_print and seen_results:
+        print("[estimate_thought_reward] Seen results and corresponding expressions:")  # DEBUG
+        for res, expr in seen_results.items():
+            print(f"  Result: {res} | Expression: {expr}")
     reward = 0.01 * len(seen_results)
     return min(reward, 0.1)
 
@@ -123,10 +124,10 @@ def compute_score(solution_str, ground_truth, method='strict', format_score=0.1,
         print(f"Extracted equation: {equation}")
         print(f"Solution string: {solution_str}")
 
-    print('solution string:',solution_str)
     thoughts = extract_thought(solution_str=solution_str)
-    print('extracted thoughts:',thoughts)
-    format_score = estimate_thought_reward(thoughts, numbers)
+    if do_print:
+        print('extracted thoughts:',thoughts)
+    format_score = estimate_thought_reward(thoughts, numbers, do_print)
 
     #if equation is None:
     #    if do_print:

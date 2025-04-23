@@ -57,6 +57,14 @@ def evaluate_equation(equation_str):
 
 
 def extract_thought(solution_str):
+
+    if "Assistant:" in solution_str:
+        solution_str = solution_str.split("Assistant:", 1)[1]
+    elif "<|im_start|>assistant" in solution_str:
+        solution_str = solution_str.split("<|im_start|>assistant", 1)[1]
+    else:
+        return None
+
     think_content = re.search(r'<think>(.*?)</think>', solution_str, re.DOTALL)
     if not think_content:
         return []
@@ -114,8 +122,11 @@ def compute_score(solution_str, ground_truth, method='strict', format_score=0.1,
         print(f"Target: {target} | Numbers: {numbers}")
         print(f"Extracted equation: {equation}")
         print(f"Solution string: {solution_str}")
-    
-    format_score = estimate_thought_reward(extract_thought(solution_str=solution_str), numbers)
+
+    print('solution string:',solution_str)
+    thoughts = extract_thought(solution_str=solution_str)
+    print('extracted thoughts:',thoughts)
+    format_score = estimate_thought_reward(thoughts, numbers)
 
     #if equation is None:
     #    if do_print:

@@ -136,21 +136,8 @@ target_group_train() {
 }
 
 # Main logic
-if [ "$#" -ne 1 ]; then
-    echo "Usage: $0 <group_id|all>"
-    exit 1
-fi
 
-if [ "$1" = "all" ]; then
-    for gid in "${groups[@]}"; do
-        target_group_train $gid
-echo "==== Finished group $gid ===="
-    done
-else
-    group_id=$1
-    if ! [[ "$group_id" =~ ^[0-3]$ ]]; then
-        echo "Error: group_id must be 0, 1, 2, or 3"
-        exit 1
-    fi
-    target_group_train $group_id
-fi
+for gid in "${groups[@]}"; do
+    target_group_train $gid
+    echo "==== Finished group $gid ===="
+done

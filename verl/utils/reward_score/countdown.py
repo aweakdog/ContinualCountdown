@@ -57,25 +57,68 @@ def evaluate_equation(equation_str):
 
 
 def extract_thought(solution_str):
+    """
+    提取数学表达式（可含括号），要求至少有3个运算符（+,-,*,/），括号不算运算符
+    
+    Args:
+        solution_str (str): 包含数学表达式的文本
+        
+    Returns:
+        list: 符合条件的数学表达式列表，若无则返回空列表
+    """
+    # 输入检查
+    if not solution_str or not isinstance(solution_str, str):
+        return []
 
-    if "Assistant:" in solution_str:
-        solution_str = solution_str.split("Assistant:", 1)[1]
-    elif "<|im_start|>assistant" in solution_str:
-        solution_str = solution_str.split("<|im_start|>assistant", 1)[1]
-    else:
-        return None
-
-    think_content = re.search(r'<think>(.*?)</think>', solution_str, re.DOTALL)
-    if not think_content:
+    # 提取助手回复内容
+    markers = ["Assistant:", "<|im_start|>assistant", "<|im_start|> assistant", "assistant:"]
+    for marker in markers:
+        if marker.lower() in solution_str.lower():
+            solution_str = solution_str.split(marker, 1)[1]
+            break
+    
+    # 提取<think>标签内容
+    think_match = re.search(r'<think>(.*?)</think>', solution_str, re.DOTALL | re.IGNORECASE)
+    if not think_match:
         return []
     
-    think_text = think_content.group(1)
+    think_text = think_match.group(1)
     
-    equations = re.findall(r'\b(?:\d+[+\-*/() ]+)+\d+\b', think_text)
+    # 匹配可能含括号的数学表达式
+    pattern = r'''
+        (?:                             # 表达式主体
+            \(                          # 左括号
+                (?:                     # 括号内容
+                    [^()]*              # 非括号字符
+                    |                   # 或
+                    \( [^()]* \)        # 一层嵌套括号
+                )+                      
+            \)                          # 右括号
+            |                           # 或
+            \d+                         # 数字
+        )                               # 主体结束
+        (?:                             # 运算符+操作数组
+            \s*                         # 空格
+            ([+\-*/])                   # 运算符（捕获到分组1）
+            \s*                         # 空格
+            (?:                         # 操作数
+                \( [^()]+ \)            # 括号表达式
+                |                       # 或
+                \d+                     # 数字
+            )                           # 操作数结束
+        )+                              # 至少一组运算符+操作数
+    '''
     
-    cleaned_equations = [eq.strip() for eq in equations]
+    # 提取并筛选
+    equations = []
+    for match in re.finditer(pattern, think_text, re.VERBOSE):
+        eq = match.group(0).strip()
+        # 计算实际运算符数量（只统计+,-,*,/）
+        operator_count = len(re.findall(r'[+\-*/]', eq))
+        if operator_count >= 3:
+            equations.append(eq)
     
-    return cleaned_equations
+    return equations
 
 def estimate_thought_reward(thoughts, available_numbers, do_print=False):
     """

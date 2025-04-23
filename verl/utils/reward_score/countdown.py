@@ -74,13 +74,15 @@ def estimate_thought_reward(thoughts, available_numbers):
     Calculate the reward for the thought: 0.01 per unique, valid result, up to a maximum of 0.1.
     Only count if the expression uses all available numbers exactly once and produces a new result.
     """
-    seen_results = set()
+    seen_results = dict()
     for expr in set(thoughts):
         if validate_equation(expr, available_numbers):
             result = evaluate_equation(expr)
             if result is not None and result not in seen_results:
-                seen_results.add(result)
-    print(f"[estimate_thought_reward] Seen results: {seen_results}")  # DEBUG
+                seen_results[result] = expr
+    print("[estimate_thought_reward] Seen results and corresponding expressions:")  # DEBUG
+    for res, expr in seen_results.items():
+        print(f"  Result: {res} | Expression: {expr}")
     reward = 0.01 * len(seen_results)
     return min(reward, 0.1)
 

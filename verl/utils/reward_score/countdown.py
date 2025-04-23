@@ -56,6 +56,36 @@ def evaluate_equation(equation_str):
         return None
 
 
+def extract_thought(solution_str):
+    think_content = re.search(r'<think>(.*?)</think>', solution_str, re.DOTALL)
+    if not think_content:
+        return []
+    
+    think_text = think_content.group(1)
+    
+    equations = re.findall(r'\b(?:\d+[+\-*/() ]+)+\d+\b', think_text)
+    
+    cleaned_equations = [eq.strip() for eq in equations]
+    
+    return cleaned_equations
+
+def estimate_thought_reward(thoughts, available_numbers):
+    """
+    Calculate the reward for the thought: 0.01 per unique, valid result, up to a maximum of 0.1.
+    Only count if the expression uses all available numbers exactly once and produces a new result.
+    """
+    seen_results = dict()
+    for expr in set(thoughts):
+        if validate_equation(expr, available_numbers):
+            result = evaluate_equation(expr)
+            if result is not None and result not in seen_results:
+                seen_results[result] = expr
+    print("[estimate_thought_reward] Seen results and corresponding expressions:")  # DEBUG
+    for res, expr in seen_results.items():
+        print(f"  Result: {res} | Expression: {expr}")
+    reward = 0.01 * len(seen_results)
+    return min(reward, 0.1)
+
 def compute_score(solution_str, ground_truth, method='strict', format_score=0.1, score=1.):
     """The scoring function for countdown task.
     
@@ -85,12 +115,16 @@ def compute_score(solution_str, ground_truth, method='strict', format_score=0.1,
         print(f"Extracted equation: {equation}")
         print(f"Solution string: {solution_str}")
     
-    format_score = 0
+    format_score = estimate_thought_reward(extract_thought(solution_str=solution_str), numbers)
 
+    #if equation is None:
+    #    if do_print:
+    #        print(f"No equation found")
+    #    return 0
     if equation is None:
         if do_print:
             print(f"No equation found")
-        return 0
+        return format_score 
     
     # Validate equation uses correct numbers
     if not validate_equation(equation, numbers):

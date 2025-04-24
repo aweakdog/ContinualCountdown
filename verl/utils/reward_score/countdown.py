@@ -71,7 +71,7 @@ def extract_thought(solution_str):
         return []
 
     # 提取助手回复内容
-    markers = ["Assistant:", "<|im_start|>assistant", "<|im_start|> assistant", "assistant:"]
+    markers = ["Assistant:", "assistant", " assistant", "assistant:"]
     for marker in markers:
         if marker.lower() in solution_str.lower():
             solution_str = solution_str.split(marker, 1)[1]
@@ -84,25 +84,11 @@ def extract_thought(solution_str):
     
     think_text = think_match.group(1)
     
-    # 匹配可能含括号的数学表达式
-    pattern = r'''
-        (?:                             # 表达式主体
-            \(                          # 左括号
-                (?:                     # 括号内容
-                    [^()]*              # 非括号字符
-                    |                   # 或
-                    \( [^()]* \)        # 一层嵌套括号
-                )+                      
-            \)                          # 右括号
-            |                           # 或
-            \d+                         # 数字
-        )                               # 主体结束
-        (?:                             # 运算符+操作数组
-            \s*                         # 空格
-            ([+\-*/])                   # 运算符（捕获到分组1）
-            \s*                         # 空格
-            (?:                         # 操作数
-                \( [^()]+ \)            # 括号表达式
+    # 分割候选表达式
+    delimiters = [';', ',', '\n', '|']
+    candidate_expressions = []
+    for delimiter in delimiters:
+        candidate_expressions.extend(think_text.split(delimiter))
                 |                       # 或
                 \d+                     # 数字
             )                           # 操作数结束

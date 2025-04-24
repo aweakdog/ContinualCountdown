@@ -60,68 +60,89 @@ def evaluate_equation(equation_str):
     except Exception as e:
         return None
 
-
-
 def extract_complex_expressions(text):
     """
-    准确提取含括号且至少3个运算符的数学表达式
-    （运算符仅统计+,-,*,/，括号不计入运算符）
+    准确提取含括号和空格的数学表达式（至少3个运算符）
     """
-    # 定义基础元素
-    integer = Word(nums)
-    lpar, rpar = map(Suppress, "()")
-    operator = oneOf("+ - * /")
+    # 定义基础元素（完全支持空格）
+    integer = Regex(r'\d+').setWhitespaceChars(' \t')
+    lpar = Suppress(White().leaveWhitespace() + '(' + White().leaveWhitespace())
+    rpar = Suppress(White().leaveWhitespace() + ')' + White().leaveWhitespace())
+    operator = oneOf("+ - * /").setWhitespaceChars(" \t")
     
-    # 定义表达式语法（支持完整运算符优先级）
+    # 构建表达式解析器
     expr = Forward()
-    term = integer | Group(lpar + expr + rpar)
-    expr <<= infixNotation(term, [
+    atom = Group(lpar + expr + rpar) | integer
+    expr <<= infixNotation(atom, [
         (oneOf("* /"), 2, opAssoc.LEFT),
         (oneOf("+ -"), 2, opAssoc.LEFT),
-    ])
+    ]) + StringEnd()
     
-    # 提取并筛选表达式
+    # 改进的正则匹配候选表达式
+    candidate_pattern = r'''
+        (?:                     
+            \( \s*              # 开括号和空格
+            (?:                 
+                [^()]          # 非括号字符
+                |             
+                \( [^()]* \)    # 一层嵌套括号
+            )*                 
+            \s* \)             # 闭括号和空格
+            |                   # 或
+            \d+                 # 数字
+        )
+        (?:                     # 运算符和操作数组
+            \s*                 # 空格
+            [+\-*/]             # 运算符
+            \s*                 # 空格
+            (?:                 
+                \( [^()]+ \)    # 括号表达式
+                |             
+                \d+             # 数字
+            )                 
+        ){2,}                  # 至少2个（总共至少3个运算符）
+    '''
+    
     valid_exprs = []
-    for tokens, start, end in expr.scanString(text):
-        try:
-            # 转换为标准表达式字符串
-            expr_str = text[start:end]
-            # 统计运算符数量（排除括号）
-            op_count = len(re.findall(r'[+\-*/]', expr_str))
-            if op_count >= 3:
-                valid_exprs.append(expr_str)
-        except ParseException:
+    
+    # 提取候选表达式
+    for match in re.finditer(candidate_pattern, text, re.VERBOSE):
+        expr_str = match.group(0).strip()
+        
+        # 基础验证
+        if expr_str.count('(') != expr_str.count(')'):
             continue
+            
+        # 统计运算符数量
+        op_count = len(re.findall(r'[+\-*/]', expr_str))
+        if op_count < 3:
+            continue
+            
+        # 保留原始格式（合并多余空格）
+        normalized = ' '.join(expr_str.split())
+        valid_exprs.append(normalized)
     
     return valid_exprs
 
+def extract_think_content(text):
+    """提取think标签内容"""
+    think_match = re.search(
+        r'<think>(.*?)</think>', 
+        text, 
+        flags=re.DOTALL | re.IGNORECASE
+    )
+    return think_match.group(1) if think_match else None
+
 def extract_thought(solution_str):
-    """
-    从助手的回复中提取符合条件的数学表达式
-    """
-    # 输入校验和预处理
+    """主提取函数"""
     if not isinstance(solution_str, str):
         return []
     
-    # 提取助手回复内容
-    markers = ["Assistant:", "<|im_start|>assistant", "assistant:"]
-    for marker in markers:
-        if marker.lower() in solution_str.lower():
-            solution_str = solution_str.split(marker, 1)[1]
-            break
-    
-    # 提取<think>标签内容
-    think_match = re.search(r'<think>(.*?)</think>', solution_str, 
-                          flags=re.DOTALL | re.IGNORECASE)
-    if not think_match:
+    think_text = extract_think_content(solution_str)
+    if not think_text:
         return []
     
-    think_text = think_match.group(1)
-    
-    # 提取并返回符合条件的表达式
     return extract_complex_expressions(think_text)
-
-
 
 def estimate_thought_reward(thoughts, available_numbers, do_print=False):
     """

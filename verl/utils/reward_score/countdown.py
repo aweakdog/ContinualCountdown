@@ -167,7 +167,7 @@ def extract_think_contents(text):
         flags=re.DOTALL | re.IGNORECASE
     )
 
-def extract_thought(solution_str, number_of_numbers):
+def extract_thought(solution_str, number_of_numbers=4):
     """主提取函数"""
     if not isinstance(solution_str, str):
         return []

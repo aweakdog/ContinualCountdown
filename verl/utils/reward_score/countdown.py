@@ -5,8 +5,11 @@ import operator
 import sympy
 from sympy.parsing.sympy_parser import parse_expr
 from sympy.core.sympify import SympifyError
+
 from pyparsing import (Word, nums, oneOf, Forward, Group, Suppress, 
-                      ZeroOrMore, ParseException, infixNotation, opAssoc)
+                      ZeroOrMore, ParseException, infixNotation, opAssoc,
+                      ParseSyntaxException, White, Regex, StringEnd)
+
 
 
 def extract_solution(solution_str):

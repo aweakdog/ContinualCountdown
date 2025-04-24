@@ -63,7 +63,6 @@ def evaluate_equation(equation_str):
     except Exception as e:
         return None
 
-import re
 def extract_complex_expressions(s, number_of_numbers):
     allowed_chars = set('0123456789+-*/(). ')
     start_chars = set('0123456789(')
@@ -137,9 +136,9 @@ def extract_complex_expressions(s, number_of_numbers):
                 num_point = 0
                 while j < n :
                     if s[j] in digits or s[j] ==".":
-                        j += 1
                         if s[j] == ".":
                             num_point += 1
+                        j += 1
                     else:
                         break
                 if num_point>=2:
@@ -167,7 +166,7 @@ def extract_think_contents(text):
         flags=re.DOTALL | re.IGNORECASE
     )
 
-def extract_thought(solution_str, number_of_numbers=4):
+def extract_thought(solution_str, number_of_numbers):
     """主提取函数"""
     if not isinstance(solution_str, str):
         return []

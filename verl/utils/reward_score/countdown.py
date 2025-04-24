@@ -203,21 +203,21 @@ def compute_score(solution_str, ground_truth, method='strict', format_score=0.1,
         print('extracted thoughts:',thoughts)
     format_score = estimate_thought_reward(thoughts, numbers, do_print)
 
-    if equation is None:
-        if do_print:
-            print(f"No equation found")
-        return 0
+    #if equation is None:
+    #    if do_print:
+    #        print(f"No equation found")
+    #    return 0
 
     if equation is None:
         if do_print:
             print(f"No equation found")
         return format_score 
     
-    ## Validate equation uses correct numbers
-    #if not validate_equation(equation, numbers):
-    #    if do_print:
-    #        print(f"Invalid equation")
-    #    return format_score
+    # Validate equation uses correct numbers
+    if not validate_equation(equation, numbers):
+        if do_print:
+            print(f"Invalid equation")
+        return format_score
         
     # Evaluate equation
     try:

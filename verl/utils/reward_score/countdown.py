@@ -2,6 +2,11 @@ import re
 import random
 import ast
 import operator
+import sympy
+from sympy.parsing.sympy_parser import parse_expr
+from sympy.core.sympify import SympifyError
+from pyparsing import (Word, nums, oneOf, Forward, Group, Suppress, 
+                      ZeroOrMore, ParseException, infixNotation, opAssoc)
 
 
 def extract_solution(solution_str):
@@ -56,55 +61,67 @@ def evaluate_equation(equation_str):
         return None
 
 
+
+def extract_complex_expressions(text):
+    """
+    准确提取含括号且至少3个运算符的数学表达式
+    （运算符仅统计+,-,*,/，括号不计入运算符）
+    """
+    # 定义基础元素
+    integer = Word(nums)
+    lpar, rpar = map(Suppress, "()")
+    operator = oneOf("+ - * /")
+    
+    # 定义表达式语法（支持完整运算符优先级）
+    expr = Forward()
+    term = integer | Group(lpar + expr + rpar)
+    expr <<= infixNotation(term, [
+        (oneOf("* /"), 2, opAssoc.LEFT),
+        (oneOf("+ -"), 2, opAssoc.LEFT),
+    ])
+    
+    # 提取并筛选表达式
+    valid_exprs = []
+    for tokens, start, end in expr.scanString(text):
+        try:
+            # 转换为标准表达式字符串
+            expr_str = text[start:end]
+            # 统计运算符数量（排除括号）
+            op_count = len(re.findall(r'[+\-*/]', expr_str))
+            if op_count >= 3:
+                valid_exprs.append(expr_str)
+        except ParseException:
+            continue
+    
+    return valid_exprs
+
 def extract_thought(solution_str):
     """
-    提取数学表达式（可含括号），要求至少有3个运算符（+,-,*,/），括号不算运算符
-    
-    Args:
-        solution_str (str): 包含数学表达式的文本
-        
-    Returns:
-        list: 符合条件的数学表达式列表，若无则返回空列表
+    从助手的回复中提取符合条件的数学表达式
     """
-    # 输入检查
-    if not solution_str or not isinstance(solution_str, str):
+    # 输入校验和预处理
+    if not isinstance(solution_str, str):
         return []
-
+    
     # 提取助手回复内容
-    markers = ["Assistant:", "assistant", " assistant", "assistant:"]
+    markers = ["Assistant:", "<|im_start|>assistant", "assistant:"]
     for marker in markers:
         if marker.lower() in solution_str.lower():
             solution_str = solution_str.split(marker, 1)[1]
             break
     
     # 提取<think>标签内容
-    think_match = re.search(r'<think>(.*?)</think>', solution_str, re.DOTALL | re.IGNORECASE)
+    think_match = re.search(r'<think>(.*?)</think>', solution_str, 
+                          flags=re.DOTALL | re.IGNORECASE)
     if not think_match:
         return []
     
     think_text = think_match.group(1)
     
-    # 分割候选表达式
-    delimiters = [';', ',', '\n', '|']
-    candidate_expressions = []
-    for delimiter in delimiters:
-        candidate_expressions.extend(think_text.split(delimiter))
-                |                       # 或
-                \d+                     # 数字
-            )                           # 操作数结束
-        )+                              # 至少一组运算符+操作数
-    '''
-    
-    # 提取并筛选
-    equations = []
-    for match in re.finditer(pattern, think_text, re.VERBOSE):
-        eq = match.group(0).strip()
-        # 计算实际运算符数量（只统计+,-,*,/）
-        operator_count = len(re.findall(r'[+\-*/]', eq))
-        if operator_count >= 3:
-            equations.append(eq)
-    
-    return equations
+    # 提取并返回符合条件的表达式
+    return extract_complex_expressions(think_text)
+
+
 
 def estimate_thought_reward(thoughts, available_numbers, do_print=False):
     """

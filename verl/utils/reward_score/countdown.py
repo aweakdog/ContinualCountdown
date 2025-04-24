@@ -63,68 +63,100 @@ def evaluate_equation(equation_str):
     except Exception as e:
         return None
 
-def extract_complex_expressions(text):
-    """
-    准确提取含括号和空格的数学表达式（至少3个运算符）
-    """
-    # 定义基础元素（完全支持空格）
-    integer = Regex(r'\d+').setWhitespaceChars(' \t')
-    lpar = Suppress(White().leaveWhitespace() + '(' + White().leaveWhitespace())
-    rpar = Suppress(White().leaveWhitespace() + ')' + White().leaveWhitespace())
-    operator = oneOf("+ - * /").setWhitespaceChars(" \t")
-    
-    # 构建表达式解析器
-    expr = Forward()
-    atom = Group(lpar + expr + rpar) | integer
-    expr <<= infixNotation(atom, [
-        (oneOf("* /"), 2, opAssoc.LEFT),
-        (oneOf("+ -"), 2, opAssoc.LEFT),
-    ]) + StringEnd()
-    
-    # 改进的正则匹配候选表达式
-    candidate_pattern = r'''
-        (?:                     
-            \( \s*              # 开括号和空格
-            (?:                 
-                [^()]          # 非括号字符
-                |             
-                \( [^()]* \)    # 一层嵌套括号
-            )*                 
-            \s* \)             # 闭括号和空格
-            |                   # 或
-            \d+                 # 数字
-        )
-        (?:                     # 运算符和操作数组
-            \s*                 # 空格
-            [+\-*/]             # 运算符
-            \s*                 # 空格
-            (?:                 
-                \( [^()]+ \)    # 括号表达式
-                |             
-                \d+             # 数字
-            )                 
-        ){2,}                  # 至少2个（总共至少3个运算符）
-    '''
-    
+import re
+def extract_complex_expressions(s, number_of_numbers):
+    allowed_chars = set('0123456789+-*/(). ')
+    start_chars = set('0123456789(')
+    digits = set('0123456789')
+    operators = set("+-*/")
+    n = len(s)
     valid_exprs = []
-    
-    # 提取候选表达式
-    for match in re.finditer(candidate_pattern, text, re.VERBOSE):
-        expr_str = match.group(0).strip()
-        
-        # 基础验证
-        if expr_str.count('(') != expr_str.count(')'):
+    i = 0
+    while i < n:
+        if s[i] not in start_chars or s[i-1] in digits or s[i-1]==".":
+            i += 1
             continue
+        max_vaild_j = i-1
+        j = i
+        numbers = 0
+        stack = [0]  # 0 empty, 1 digit, 2 operator, 3 (digit+operator)digit
+        while j < n:
+            # print(i,j,s[i:j], "checking", s[j], max_vaild_j)
+            if s[j] not in allowed_chars:
+                break
+            # print("112")
+            if s[j] =='.':
+                break
+            if s[j] ==' ':
+                j += 1
+                continue
+            if s[j] == '(':
+                stack.append(0)
+                j += 1
+                continue
+
+            if s[j] == ')':
+                if stack[-1] == 0 or stack[-1] == 1 or stack[-1] == 2:
+                    # i = j + 1
+                    break
+                stack.pop()
+                if len(stack) == 0:
+                    break
+
+                if stack[-1] == 1 or stack[-1] == 3:
+                    break
+                if stack[-1] == 0:
+                    stack[-1] = 1
+                else:
+                    stack[-1] = 3
+                if len(stack) == 1 and stack[-1] == 3:
+                    max_vaild_j = j
+                    max_vaild_j_numbers = numbers
+                j += 1
+                continue
             
-        # 统计运算符数量
-        op_count = len(re.findall(r'[+\-*/]', expr_str))
-        if op_count < 3:
-            continue
+
+            if s[j] in operators:
+                if len(stack) == 0:
+                    break
+                if stack[-1] == 0 or stack[-1] == 2:
+                    break
+                stack[-1] = 2
+                j += 1
+                continue
             
-        # 保留原始格式（合并多余空格）
-        normalized = ' '.join(expr_str.split())
-        valid_exprs.append(normalized)
-    
+            if s[j] in digits:
+                if stack[-1] == 1 or stack[-1] == 3:
+                    break
+                if stack[-1] == 0:
+                    stack[-1] = 1
+                else:
+                    stack[-1] = 3
+                if s[j]=='0' and j < n - 1 and s[j+1] in digits:
+                    break
+                num_point = 0
+                while j < n :
+                    if s[j] in digits or s[j] ==".":
+                        j += 1
+                        if s[j] == ".":
+                            num_point += 1
+                    else:
+                        break
+                if num_point>=2:
+                    break
+                numbers += 1
+                j -= 1
+                if len(stack) == 1 and stack[-1] == 3:
+                    max_vaild_j = j
+                    max_vaild_j_numbers = numbers
+                j += 1
+                continue
+        if max_vaild_j > i:
+            if max_vaild_j_numbers == number_of_numbers:
+                valid_exprs.append(s[i:max_vaild_j+1])
+            i = max_vaild_j + 1
+        else:
+            i = i + 1
     return valid_exprs
 
 def extract_think_contents(text):
@@ -135,7 +167,7 @@ def extract_think_contents(text):
         flags=re.DOTALL | re.IGNORECASE
     )
 
-def extract_thought(solution_str):
+def extract_thought(solution_str, number_of_numbers):
     """主提取函数"""
     if not isinstance(solution_str, str):
         return []
@@ -146,7 +178,7 @@ def extract_thought(solution_str):
     
     results = []
     for think_text in think_texts:
-        results.extend(extract_complex_expressions(think_text))
+        results.extend(extract_complex_expressions(think_text, number_of_numbers))
     
     return results
 

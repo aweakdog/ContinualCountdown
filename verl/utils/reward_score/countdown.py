@@ -127,25 +127,29 @@ def extract_complex_expressions(text):
     
     return valid_exprs
 
-def extract_think_content(text):
-    """提取think标签内容"""
-    think_match = re.search(
+def extract_think_contents(text):
+    """提取所有think标签内容"""
+    return re.findall(
         r'<think>(.*?)</think>', 
         text, 
         flags=re.DOTALL | re.IGNORECASE
     )
-    return think_match.group(1) if think_match else None
 
 def extract_thought(solution_str):
     """主提取函数"""
     if not isinstance(solution_str, str):
         return []
     
-    think_text = extract_think_content(solution_str)
-    if not think_text:
+    think_texts = extract_think_contents(solution_str)
+    if not think_texts:
         return []
     
-    return extract_complex_expressions(think_text)
+    results = []
+    for think_text in think_texts:
+        results.extend(extract_complex_expressions(think_text))
+    
+    return results
+
 
 def estimate_thought_reward(thoughts, available_numbers, do_print=False):
     """
@@ -175,7 +179,7 @@ def compute_score(solution_str, ground_truth, method='strict', format_score=0.1,
         format_score: the score for correct format but wrong answer
         score: the score for the correct answer
     """
-    # Handle both simple and extended ground truth formats
+    # Handle both simple and extenged ground truth formats
     if isinstance(ground_truth, dict) and 'ground_truth' in ground_truth:
         ground_truth = ground_truth['ground_truth']
     target = ground_truth['target']
@@ -204,16 +208,16 @@ def compute_score(solution_str, ground_truth, method='strict', format_score=0.1,
             print(f"No equation found")
         return 0
 
-    #if equation is None:
-    #    if do_print:
-    #        print(f"No equation found")
-    #    return format_score 
-    
-    # Validate equation uses correct numbers
-    if not validate_equation(equation, numbers):
+    if equation is None:
         if do_print:
-            print(f"Invalid equation")
-        return format_score
+            print(f"No equation found")
+        return format_score 
+    
+    ## Validate equation uses correct numbers
+    #if not validate_equation(equation, numbers):
+    #    if do_print:
+    #        print(f"Invalid equation")
+    #    return format_score
         
     # Evaluate equation
     try:

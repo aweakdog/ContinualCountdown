@@ -170,16 +170,10 @@ def extract_think_contents(text):
     return None
 
 def extract_thought(solution_str, number_of_numbers=4):
-    """主提取函数"""
+    """主提取函数：从整个solution_str中提取所有算式"""
     if not isinstance(solution_str, str):
         return []
-    
-    think_text = extract_think_contents(solution_str)
-    if not think_text:
-        return []
-    
-    results = extract_complex_expressions(think_text, number_of_numbers)
-    return results
+    return extract_complex_expressions(solution_str, number_of_numbers)
 
 
 def estimate_thought_reward(thoughts, available_numbers, do_print=False):

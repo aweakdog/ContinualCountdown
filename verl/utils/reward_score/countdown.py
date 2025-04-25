@@ -159,26 +159,26 @@ def extract_complex_expressions(s, number_of_numbers):
     return valid_exprs
 
 def extract_think_contents(text):
-    """提取所有think标签内容"""
-    return re.findall(
+    """提取最后一个think标签内容"""
+    matches = re.findall(
         r'<think>(.*?)</think>', 
         text, 
         flags=re.DOTALL | re.IGNORECASE
     )
+    if matches:
+        return matches[-1]
+    return None
 
 def extract_thought(solution_str, number_of_numbers=4):
     """主提取函数"""
     if not isinstance(solution_str, str):
         return []
     
-    think_texts = extract_think_contents(solution_str)
-    if not think_texts:
+    think_text = extract_think_contents(solution_str)
+    if not think_text:
         return []
     
-    results = []
-    for think_text in think_texts:
-        results.extend(extract_complex_expressions(think_text, number_of_numbers))
-    
+    results = extract_complex_expressions(think_text, number_of_numbers)
     return results
 
 
@@ -242,7 +242,7 @@ def compute_score(solution_str, ground_truth, method='strict', format_score=0.1,
     if equation is None:
         if do_print:
             print(f"No equation found")
-        return format_score 
+        return format_score * 0.01 # no answer punishment
     
     # Validate equation uses correct numbers
     if not validate_equation(equation, numbers):

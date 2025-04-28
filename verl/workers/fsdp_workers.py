@@ -117,7 +117,8 @@ class ActorRolloutRefWorker(Worker):
                                override_model_config,
                                use_remove_padding=False,
                                enable_gradient_checkpointing=False,
-                               trust_remote_code=False):
+                               trust_remote_code=False,
+                               enable_grad_analyze=False):
         from verl.utils.model import print_model_size, update_model_config
         from verl.utils.torch_dtypes import PrecisionType
         from transformers import AutoModelForCausalLM, AutoConfig
@@ -177,8 +178,7 @@ class ActorRolloutRefWorker(Worker):
 
         if self.rank == 0:
             print_model_size(actor_module)
-        analyze_grad_mode = True  # TODO parameter
-        if self.rank == 0 and analyze_mode_grad:
+        if self.rank == 0 and enable_grad_analyze:
             analyze_model_grad()
 
         log_gpu_memory_usage('After init from HF AutoModel', logger=logger)
@@ -287,7 +287,7 @@ class ActorRolloutRefWorker(Worker):
         return rollout, rollout_sharding_manager
 
     @register(dispatch_mode=Dispatch.ONE_TO_ALL)
-    def init_model(self):
+    def init_model(self, enable_grad_analyze=None):
         from verl.workers.actor import DataParallelPPOActor
         # This is used to import external_lib into the huggingface systems
         import_external_libs(self.config.model.get('external_lib', None))
@@ -296,6 +296,10 @@ class ActorRolloutRefWorker(Worker):
         override_model_config = OmegaConf.to_container(self.config.model.get('override_config', OmegaConf.create()))
 
         use_remove_padding = self.config.model.get('use_remove_padding', False)
+
+        # Determine whether to enable gradient analysis
+        if enable_grad_analyze is None:
+            enable_grad_analyze = bool(getattr(self.config.model, 'enable_grad_analyze', False))
 
         if self._is_actor or self._is_rollout:
             # we need the model for actor and rollout
@@ -312,7 +316,8 @@ class ActorRolloutRefWorker(Worker):
                 override_model_config=override_model_config,
                 use_remove_padding=use_remove_padding,
                 enable_gradient_checkpointing=self.config.model.get('enable_gradient_checkpointing', False),
-                trust_remote_code=self.config.model.get('trust_remote_code', False))
+                trust_remote_code=self.config.model.get('trust_remote_code', False),
+                enable_grad_analyze=enable_grad_analyze)
 
             # get the original unwrapped module
             self.actor_module = self.actor_module_fsdp._fsdp_wrapped_module

@@ -129,6 +129,7 @@ python3 -m verl.trainer.main_ppo \
     +actor_rollout_ref.model.device_map=auto \
     +actor_rollout_ref.model.attn_implementation=flash_attention_2 \
     +actor_rollout_ref.model.use_cache=false \
+    +actor_rollout_ref.model.enable_grad_analyze=true \
     actor_rollout_ref.actor.optim.lr=1e-6 \
     actor_rollout_ref.actor.ppo_mini_batch_size=32 \
     actor_rollout_ref.actor.ppo_micro_batch_size=8 \

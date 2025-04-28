@@ -179,7 +179,13 @@ class ActorRolloutRefWorker(Worker):
         if self.rank == 0:
             print_model_size(actor_module)
         if self.rank == 0 and enable_grad_analyze:
-            analyze_model_grad()
+            if hasattr(self, 'actor_grad_analyzer') and self.actor_grad_analyzer is not None:
+                # You need to provide a valid input batch for analysis. This is a placeholder.
+                print("[GradientAnalyzer] Running gradient analysis at model init...")
+                # Example: nullspace_ratio, layer_contribution, zero_vectors = self.actor_grad_analyzer.analyze_gradients(inputs)
+                print("[GradientAnalyzer] Please provide a valid input batch to analyze_gradients.")
+            else:
+                print("[GradientAnalyzer] GradientAnalyzer is not initialized. Skipping gradient analysis.")
 
         log_gpu_memory_usage('After init from HF AutoModel', logger=logger)
 
@@ -394,20 +400,30 @@ class ActorRolloutRefWorker(Worker):
             estimated_flops, promised_flops = self.flops_counter.estimate_flops(global_num_tokens, delta_time)
             metrics['mfu/actor'] = estimated_flops * self.config.actor.ppo_epochs / promised_flops / self.world_size
 
-            # Analyze gradients using GradientAnalyzer after policy update
-            if hasattr(self, 'actor_grad_analyzer') and self.actor_grad_analyzer is not None:
+            # Analyze gradients using GradientAnalyzer after policy update (if enabled)
+            if (
+                hasattr(self, 'actor_grad_analyzer') and self.actor_grad_analyzer is not None and
+                getattr(self.config.model, 'enable_grad_analyze', False)
+            ):
+                batch = data.batch
                 try:
-                    batch = data.batch
-                    if 'input_ids' in batch:
-                        actor_inputs = batch['input_ids']
+                    if all(k in batch for k in ('input_ids', 'attention_mask', 'position_ids')):
+                        actor_inputs = (
+                            batch['input_ids'],
+                            batch['attention_mask'],
+                            batch['position_ids']
+                        )
+                        nullspace_ratio, layer_contribution, zero_vectors = self.actor_grad_analyzer.analyze_gradients(actor_inputs)
+                        import torch.distributed
+                        if not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0:
+                            print(f"[GradientAnalyzer] Nullspace ratio: {nullspace_ratio}")
+                            print(f"[GradientAnalyzer] Zero vector ratio: {zero_vectors}")
                     else:
-                        actor_inputs = next(iter(batch.values()))
-                    nullspace_ratio, layer_contribution, zero_vectors = self.actor_grad_analyzer.analyze_gradients(actor_inputs)
-                    import torch.distributed
-                    if not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0:
-                        print(f"[GradientAnalyzer] Nullspace ratio: {nullspace_ratio}")
-                        print(f"[GradientAnalyzer] Layer contributions: {layer_contribution}")
+                        import torch.distributed
+                        if not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0:
+                            print("[GradientAnalyzer] Skipping analysis: input_ids, attention_mask, or position_ids missing in batch.")
                 except Exception as e:
+                    import torch.distributed
                     if not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0:
                         print(f"[GradientAnalyzer] Analysis failed: {e}")
 

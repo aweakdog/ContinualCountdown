@@ -178,15 +178,26 @@ class ActorRolloutRefWorker(Worker):
 
         if self.rank == 0:
             print_model_size(actor_module)
-        if self.rank == 0 and enable_grad_analyze:
-            if hasattr(self, 'actor_grad_analyzer') and self.actor_grad_analyzer is not None:
-                # You need to provide a valid input batch for analysis. This is a placeholder.
-                print("[GradientAnalyzer] Running gradient analysis at model init...")
-                # Example: nullspace_ratio, layer_contribution, zero_vectors = self.actor_grad_analyzer.analyze_gradients(inputs)
-                print("[GradientAnalyzer] Please provide a valid input batch to analyze_gradients.")
-            else:
-                print("[GradientAnalyzer] GradientAnalyzer is not initialized. Skipping gradient analysis.")
-
+        # Analyze gradients using GradientAnalyzer after policy update (if enabled)
+        if (
+            hasattr(self, 'actor_grad_analyzer') and self.actor_grad_analyzer is not None and
+            getattr(self.config.model, 'enable_grad_analyze', False)
+        ):
+            import torch.distributed
+            # Get frequency from config (default 1000)
+            frequency = getattr(self.config.model, 'grad_analyze_frequency', 1) # 1 default
+            if not hasattr(self, '_grad_analyze_step'): self._grad_analyze_step = 0
+            self._grad_analyze_step += 1
+            # Run only on rank 0 and at specified frequency
+            if (not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0):
+                if frequency > 0 and self._grad_analyze_step % frequency == 0:
+                    try:
+                        grad_dict = self.actor_grad_analyzer.extract_full_state_gradients(self.actor_module_fsdp)
+                        nullspace_ratio, zero_vector_ratio = self.actor_grad_analyzer.compute_nullspace_ratio(grad_dict)
+                        print(f"[GradientAnalyzer] Nullspace ratio: {nullspace_ratio}")
+                        print(f"[GradientAnalyzer] Zero vector ratio: {zero_vector_ratio}")
+                    except Exception as e:
+                        print(f"[GradientAnalyzer] Nullspace analysis failed: {e}")
         log_gpu_memory_usage('After init from HF AutoModel', logger=logger)
 
         # We wrap FSDP for rollout as well
@@ -396,41 +407,6 @@ class ActorRolloutRefWorker(Worker):
             with Timer(name='update_policy', logger=None) as timer:
                 metrics = self.actor.update_policy(data=data)
             delta_time = timer.last
-            global_num_tokens = data.meta_info['global_token_num']
-            estimated_flops, promised_flops = self.flops_counter.estimate_flops(global_num_tokens, delta_time)
-            metrics['mfu/actor'] = estimated_flops * self.config.actor.ppo_epochs / promised_flops / self.world_size
-
-            # Analyze gradients using GradientAnalyzer after policy update (if enabled)
-            if (
-                hasattr(self, 'actor_grad_analyzer') and self.actor_grad_analyzer is not None and
-                getattr(self.config.model, 'enable_grad_analyze', False)
-            ):
-                batch = data.batch
-                try:
-                    if all(k in batch for k in ('input_ids', 'attention_mask', 'position_ids')):
-                        actor_inputs = (
-                            batch['input_ids'],
-                            batch['attention_mask'],
-                            batch['position_ids']
-                        )
-                        nullspace_ratio, layer_contribution, zero_vectors = self.actor_grad_analyzer.analyze_gradients(actor_inputs)
-                        import torch.distributed
-                        if not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0:
-                            print(f"[GradientAnalyzer] Nullspace ratio: {nullspace_ratio}")
-                            print(f"[GradientAnalyzer] Zero vector ratio: {zero_vectors}")
-                    else:
-                        import torch.distributed
-                        if not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0:
-                            print("[GradientAnalyzer] Skipping analysis: input_ids, attention_mask, or position_ids missing in batch.")
-                except Exception as e:
-                    import torch.distributed
-                    if not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0:
-                        print(f"[GradientAnalyzer] Analysis failed: {e}")
-
-            self.actor_lr_scheduler.step()
-            lr = self.actor_lr_scheduler.get_last_lr()[0]
-            metrics['actor/lr'] = lr
-
             log_gpu_memory_usage('After update policy', logger=logger)
 
             # TODO: here, we should return all metrics

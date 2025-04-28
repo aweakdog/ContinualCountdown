@@ -23,6 +23,8 @@ import torch
 import torch.distributed
 import verl.utils.hdfs_io as hdfs_io
 import verl.utils.torch_functional as verl_F
+from verl.utils.redo_utils.Gradanalyzer import GradientAnalyzer
+
 from omegaconf import DictConfig, open_dict
 from verl import DataProto
 from verl.single_controller.base import Worker
@@ -175,6 +177,9 @@ class ActorRolloutRefWorker(Worker):
 
         if self.rank == 0:
             print_model_size(actor_module)
+        analyze_grad_mode = True  # TODO parameter
+        if self.rank == 0 and analyze_mode_grad:
+            analyze_model_grad()
 
         log_gpu_memory_usage('After init from HF AutoModel', logger=logger)
 
@@ -349,6 +354,12 @@ class ActorRolloutRefWorker(Worker):
 
         if self._is_actor:
             self.flops_counter = FlopsCounter(self.actor_model_config)
+            # Instantiate GradientAnalyzer for the actor model
+            try:
+                self.actor_grad_analyzer = GradientAnalyzer(self.actor_module_fsdp)
+            except Exception as e:
+                print(f"[GradientAnalyzer] Initialization failed: {e}")
+                self.actor_grad_analyzer = None
 
         torch.cuda.empty_cache()
 
@@ -377,6 +388,23 @@ class ActorRolloutRefWorker(Worker):
             global_num_tokens = data.meta_info['global_token_num']
             estimated_flops, promised_flops = self.flops_counter.estimate_flops(global_num_tokens, delta_time)
             metrics['mfu/actor'] = estimated_flops * self.config.actor.ppo_epochs / promised_flops / self.world_size
+
+            # Analyze gradients using GradientAnalyzer after policy update
+            if hasattr(self, 'actor_grad_analyzer') and self.actor_grad_analyzer is not None:
+                try:
+                    batch = data.batch
+                    if 'input_ids' in batch:
+                        actor_inputs = batch['input_ids']
+                    else:
+                        actor_inputs = next(iter(batch.values()))
+                    nullspace_ratio, layer_contribution, zero_vectors = self.actor_grad_analyzer.analyze_gradients(actor_inputs)
+                    import torch.distributed
+                    if not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0:
+                        print(f"[GradientAnalyzer] Nullspace ratio: {nullspace_ratio}")
+                        print(f"[GradientAnalyzer] Layer contributions: {layer_contribution}")
+                except Exception as e:
+                    if not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0:
+                        print(f"[GradientAnalyzer] Analysis failed: {e}")
 
             self.actor_lr_scheduler.step()
             lr = self.actor_lr_scheduler.get_last_lr()[0]

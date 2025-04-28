@@ -61,6 +61,15 @@ class GradientAnalyzer:
 
                 # Use closure to capture index range
                 def hook(grad, start=start_idx, end=end_idx):
+                    # Diagnostic: print sizes on first call
+                    if not hasattr(self, '_hook_warned'):
+                        print(f"[GradientAnalyzer] Hook called: grad.size={grad.numel()}, slice=({start}:{end}), grad_buffer.size={self.grad_buffer.numel()}")
+                        self._hook_warned = True
+                    expected_size = end - start
+                    actual_size = grad.numel()
+                    assert actual_size == expected_size, (
+                        f"GradientAnalyzer hook size mismatch: grad.numel()={actual_size}, expected={expected_size}, slice=({start}:{end}), grad_buffer.size={self.grad_buffer.numel()}"
+                    )
                     self.grad_buffer[start:end] = grad.contiguous().view(-1)
 
                 handle = p.register_hook(hook)

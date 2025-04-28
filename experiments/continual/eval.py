@@ -353,13 +353,30 @@ class ContinualEvaluator:
         with open(consolidated_path, 'w') as f:
             json.dump(self.metrics, f, indent=2)
 
-    def plot_by_group(self, group_metrics: Dict[int, Dict[int, List[Dict[str, float]]]], save_path_prefix: Optional[str] = None):
+    def plot_by_group(self, group_metrics: Dict[int, Dict[int, List[Dict[str, float]]]], save_path_prefix: Optional[str] = None, smooth_strength: float = 0.9):
         """Create separate plots for each group showing concatenated scores across all rounds.
-        Also overlays the single-group baseline as a background for comparison."""
+        Also overlays the single-group baseline as a background for comparison.
+        Args:
+            group_metrics: Dict mapping group_id to a dict of round_id to list of score dicts.
+            save_path_prefix: Optional prefix for saving plots.
+            smooth_strength: Smoothing strength from 0 (no smoothing) to 1 (max smoothing, EMA). Default 0.5.
+        """
         import os
         if not group_metrics:
             print("No group metrics to plot")
             return
+
+        def smooth_ema(data, smooth_strength):
+            if smooth_strength <= 0:
+                return data
+            alpha = 1 - min(max(smooth_strength, 0), 1)  # invert so higher = smoother
+            smoothed = []
+            for i, x in enumerate(data):
+                if i == 0:
+                    smoothed.append(x)
+                else:
+                    smoothed.append(alpha * x + (1 - alpha) * smoothed[-1])
+            return smoothed
 
         for group_id, rounds_data in sorted(group_metrics.items()):
             plt.figure(figsize=(10, 6))
@@ -381,14 +398,8 @@ class ContinualEvaluator:
                     elif len(baseline_scores_tiled) < total_steps:
                         baseline_scores_tiled += [baseline_scores[-1]] * (total_steps - len(baseline_scores_tiled))
                     baseline_steps = list(range(1, len(baseline_scores_tiled) + 1))
-                    # Smooth the repeated baseline
-                    window_size = 5
-                    smoothed_baseline = []
-                    for i in range(len(baseline_scores_tiled)):
-                        start_idx = max(0, i - window_size // 2)
-                        end_idx = min(len(baseline_scores_tiled), i + window_size // 2 + 1)
-                        window = baseline_scores_tiled[start_idx:end_idx]
-                        smoothed_baseline.append(sum(window) / len(window))
+                    # Smooth the repeated baseline using EMA
+                    smoothed_baseline = smooth_ema(baseline_scores_tiled, smooth_strength)
                     plt.plot(
                         baseline_steps,
                         smoothed_baseline,
@@ -407,13 +418,7 @@ class ContinualEvaluator:
 
             if all_scores:
                 steps = list(range(1, len(all_scores) + 1))
-                smoothed_scores = []
-                window_size = 5
-                for i in range(len(all_scores)):
-                    start_idx = max(0, i - window_size // 2)
-                    end_idx = min(len(all_scores), i + window_size // 2 + 1)
-                    window = all_scores[start_idx:end_idx]
-                    smoothed_scores.append(sum(window) / len(window))
+                smoothed_scores = smooth_ema(all_scores, smooth_strength)
 
                 plt.plot(steps, all_scores, color='lightblue', linewidth=0.8, alpha=0.5, label="Curriculum (raw)")
                 plt.plot(steps, smoothed_scores, color='blue', linewidth=2, label="Curriculum (smoothed)")

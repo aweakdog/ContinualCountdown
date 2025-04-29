@@ -19,6 +19,9 @@ actor_rollout_ref:
     enable_gradient_checkpointing: False
   actor:
     redo_enabled: false
+    redo_metric_freq: 1
+    redo_reset_freq: 1000
+    redo_tau: 0.1
     strategy: megatron  # This is for backward-compatibility
     ppo_mini_batch_size: 256
     ppo_micro_batch_size: 64
@@ -78,6 +81,9 @@ actor_rollout_ref:
 
 critic:
   redo_enabled: false
+  redo_metric_freq: 1
+  redo_reset_freq: 1000
+  redo_tau: 0.1
   strategy: megatron
   optim:
     lr: 1e-5

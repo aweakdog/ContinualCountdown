@@ -119,6 +119,7 @@ class GradientAnalyzer:
             model: The PyTorch model to analyze
             seed: Optional random seed
         """
+        print("[DEBUG] GradientAnalyzer __init__ called!")
         if seed is not None:
             print(f"Setting seed to {seed}")
             np.random.seed(seed)

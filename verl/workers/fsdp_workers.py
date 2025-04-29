@@ -178,6 +178,7 @@ class ActorRolloutRefWorker(Worker):
 
         if self.rank == 0:
             print_model_size(actor_module)
+        print("[DEBUG] Checking GradientAnalyzer usage:", hasattr(self, 'actor_grad_analyzer'), getattr(self, 'actor_grad_analyzer', None) is not None, getattr(self.config.model, 'enable_grad_analyze', False))
         # Analyze gradients using GradientAnalyzer after policy update (if enabled)
         if (
             hasattr(self, 'actor_grad_analyzer') and self.actor_grad_analyzer is not None and
@@ -191,13 +192,16 @@ class ActorRolloutRefWorker(Worker):
             # Run only on rank 0 and at specified frequency
             if (not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0):
                 if frequency > 0 and self._grad_analyze_step % frequency == 0:
+                    import traceback
                     try:
+                        print("[DEBUG] Calling GradientAnalyzer.extract_full_state_gradients...")
                         grad_dict = self.actor_grad_analyzer.extract_full_state_gradients(self.actor_module_fsdp)
                         nullspace_ratio, zero_vector_ratio = self.actor_grad_analyzer.compute_nullspace_ratio(grad_dict)
                         print(f"[GradientAnalyzer] Nullspace ratio: {nullspace_ratio}")
                         print(f"[GradientAnalyzer] Zero vector ratio: {zero_vector_ratio}")
                     except Exception as e:
                         print(f"[GradientAnalyzer] Nullspace analysis failed: {e}")
+                        traceback.print_exc()
         log_gpu_memory_usage('After init from HF AutoModel', logger=logger)
 
         # We wrap FSDP for rollout as well
@@ -378,6 +382,7 @@ class ActorRolloutRefWorker(Worker):
             self.flops_counter = FlopsCounter(self.actor_model_config)
             # Instantiate GradientAnalyzer for the actor model
             try:
+                print("[DEBUG] Instantiating GradientAnalyzer for actor model...")
                 self.actor_grad_analyzer = GradientAnalyzer(self.actor_module_fsdp)
             except Exception as e:
                 print(f"[GradientAnalyzer] Initialization failed: {e}")

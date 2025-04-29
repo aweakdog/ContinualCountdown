@@ -23,7 +23,6 @@ import torch
 import torch.distributed
 import verl.utils.hdfs_io as hdfs_io
 import verl.utils.torch_functional as verl_F
-from verl.utils.redo_utils.gradanalyzer import VerlGradientAnalyzer
 from verl.utils.redo_utils.redo import VerlGradientReDo
 from omegaconf import DictConfig, open_dict
 from verl import DataProto
@@ -337,11 +336,6 @@ class ActorRolloutRefWorker(Worker):
             self.actor_redo_reset_freq = getattr(self.config, 'redo_reset_freq', 1000)
             self.actor_redo_metric_freq = getattr(self.config, 'redo_metric_freq', 1)
             if self.actor_redo_enabled:
-                # Defensive: re-register hooks after checkpoint/model load
-                self.actor_gradanalyzer = VerlGradientAnalyzer(self.actor_module_fsdp)
-                import os
-                print(f"[PID {os.getpid()}][Actor] Grad buffer size: {self.actor_gradanalyzer.grad_buffer.shape}")
-                print(f"[PID {os.getpid()}][Actor] Total model parameters: {sum(p.numel() for p in self.actor_module_fsdp.parameters())}")
                 self.actor_gradredo = VerlGradientReDo(self.actor_module_fsdp, tau=self.actor_redo_tau, frequency=self.actor_redo_reset_freq, optimizer=self.actor_optimizer)
 
         if self._is_rollout:
@@ -422,8 +416,10 @@ class ActorRolloutRefWorker(Worker):
         with self.ulysses_sharding_manager:
             data = self.ulysses_sharding_manager.preprocess_data(data=data)
             # perform training
+            metrics = {}
+            # FSDP-safe gradient analysis metrics (if any) should already be in 'metrics' dict
             with Timer(name='update_policy', logger=None) as timer:
-                metrics = self.actor.update_policy(data=data)
+                metrics.update(self.actor.update_policy(data=data))
             delta_time = timer.last
             global_num_tokens = data.meta_info['global_token_num']
             estimated_flops, promised_flops = self.flops_counter.estimate_flops(global_num_tokens, delta_time)
@@ -733,10 +729,6 @@ class CriticWorker(Worker):
         self.critic_redo_reset_freq = getattr(self.config, 'redo_reset_freq', 1000)
         self.critic_redo_metric_freq = getattr(self.config, 'redo_metric_freq', 1)
         if self.critic_redo_enabled:
-            self.critic_gradanalyzer = VerlGradientAnalyzer(self.critic_module)
-            import os
-            print(f"[PID {os.getpid()}][Critic] Grad buffer size: {self.critic_gradanalyzer.grad_buffer.shape}")
-            print(f"[PID {os.getpid()}][Critic] Total model parameters: {sum(p.numel() for p in self.critic_module.parameters())}")
             self.critic_gradredo = VerlGradientReDo(self.critic_module, tau=self.critic_redo_tau, frequency=self.critic_redo_reset_freq, optimizer=self.critic_optimizer)
 
         self.flops_counter = FlopsCounter(self.critic_model_config)
@@ -772,6 +764,7 @@ class CriticWorker(Worker):
     def update_critic(self, data: DataProto):
         # Periodically print plasticity metrics and do redo
         self.critic_update_step += 1
+        metrics = {}
         # Print metrics & perform neuron reset only if enabled
         if getattr(self, 'critic_redo_enabled', True):
             if self.critic_update_step % self.critic_redo_metric_freq == 0:
@@ -820,7 +813,7 @@ class CriticWorker(Worker):
             data = self.ulysses_sharding_manager.preprocess_data(data=data)
 
             with Timer(name='update_critic', logger=None) as timer:
-                metrics = self.critic.update_critic(data=data)
+                metrics.update(self.critic.update_critic(data=data))
             delta_time = timer.last
 
             global_num_tokens = data.meta_info['global_token_num']

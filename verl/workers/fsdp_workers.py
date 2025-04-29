@@ -366,6 +366,7 @@ class ActorRolloutRefWorker(Worker):
     def update_actor(self, data: DataProto):
         # Periodically print plasticity metrics and do redo
         self.actor_update_step += 1
+        metrics = {}
         # Print metrics & perform neuron reset only if enabled
         if getattr(self, 'actor_redo_enabled', True):
             if self.actor_update_step % self.actor_redo_metric_freq == 0:
@@ -416,7 +417,7 @@ class ActorRolloutRefWorker(Worker):
         with self.ulysses_sharding_manager:
             data = self.ulysses_sharding_manager.preprocess_data(data=data)
             # perform training
-            metrics = {}
+            #metrics = {}
             # FSDP-safe gradient analysis metrics (if any) should already be in 'metrics' dict
             with Timer(name='update_policy', logger=None) as timer:
                 metrics.update(self.actor.update_policy(data=data))

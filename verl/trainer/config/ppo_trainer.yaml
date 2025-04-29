@@ -19,6 +19,7 @@ actor_rollout_ref:
     enable_gradient_checkpointing: False
     use_remove_padding: False
   actor:
+    redo_enabled: false
     strategy: fsdp  # This is for backward-compatibility
     ppo_mini_batch_size: 256
     ppo_micro_batch_size: 64
@@ -84,6 +85,7 @@ actor_rollout_ref:
     n: 1 # > 1 for grpo
 
 critic:
+  redo_enabled: false
   strategy: fsdp
   optim:
     lr: 1e-5

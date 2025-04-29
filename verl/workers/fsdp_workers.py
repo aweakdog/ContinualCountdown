@@ -331,13 +331,17 @@ class ActorRolloutRefWorker(Worker):
             self.actor = DataParallelPPOActor(config=self.config.actor,
                                               actor_module=self.actor_module_fsdp,
                                               actor_optimizer=self.actor_optimizer)
-            # Initialize verl-compatible analyzer and redo for actor
+            # (Re-)initialize verl-compatible analyzer and redo for actor after checkpoint/model load
             self.actor_redo_enabled = getattr(self.config, 'redo_enabled', True)
             self.actor_redo_tau = getattr(self.config, 'redo_tau', 0.1)
             self.actor_redo_reset_freq = getattr(self.config, 'redo_reset_freq', 1000)
             self.actor_redo_metric_freq = getattr(self.config, 'redo_metric_freq', 1)
             if self.actor_redo_enabled:
+                # Defensive: re-register hooks after checkpoint/model load
                 self.actor_gradanalyzer = VerlGradientAnalyzer(self.actor_module_fsdp)
+                import os
+                print(f"[PID {os.getpid()}][Actor] Grad buffer size: {self.actor_gradanalyzer.grad_buffer.shape}")
+                print(f"[PID {os.getpid()}][Actor] Total model parameters: {sum(p.numel() for p in self.actor_module_fsdp.parameters())}")
                 self.actor_gradredo = VerlGradientReDo(self.actor_module_fsdp, tau=self.actor_redo_tau, frequency=self.actor_redo_reset_freq, optimizer=self.actor_optimizer)
 
         if self._is_rollout:
@@ -371,16 +375,33 @@ class ActorRolloutRefWorker(Worker):
         # Print metrics & perform neuron reset only if enabled
         if getattr(self, 'actor_redo_enabled', True):
             if self.actor_update_step % self.actor_redo_metric_freq == 0:
-                nullspace_ratio, zero_grad_ratio, zero_grad_count, total = self.actor_gradanalyzer.analyze_gradients(return_counts=True)
+                from verl.utils.redo_utils.fsdp_grad_gather import gather_full_grad
                 import torch.distributed as dist
-                num = torch.tensor(float(zero_grad_count), device='cuda')
-                denom = torch.tensor(float(total), device='cuda')
-                dist.all_reduce(num, op=dist.ReduceOp.SUM)
-                dist.all_reduce(denom, op=dist.ReduceOp.SUM)
-                global_zero_grad_ratio = (num / denom).item() if denom.item() > 0 else 0.0
-                global_nullspace_ratio = global_zero_grad_ratio  # logic matches analyzer
-                if dist.get_rank() == 0:
-                    print(f"[GLOBAL][Actor] Step {self.actor_update_step}: nullspace_ratio={global_nullspace_ratio:.6f}, zero_grad_ratio={global_zero_grad_ratio:.6f}")
+                full_grad = gather_full_grad(self.actor_module_fsdp)
+                # Compute zero grad ratio
+                if dist.get_rank() == 0 and full_grad is not None:
+                    zero_grad_count = (full_grad == 0).sum().item()
+                    total = full_grad.numel()
+                    zero_grad_ratio = zero_grad_count / (total + 1e-8)
+                    metrics['actor/zero_grad_ratio'] = zero_grad_ratio
+                    print(f"[FSDP][Rank 0] Zero grad ratio: {zero_grad_ratio:.6f} ({zero_grad_count}/{total})")
+                # Compute nullspace ratio (parameters whose grad is all zero)
+                nullspace_count = 0
+                total_params = 0
+                tau = getattr(self, 'actor_redo_tau', 0.0)
+                for p in self.actor_module_fsdp.parameters():
+                    if p.requires_grad:
+                        total_params += 1
+                        if p.grad is not None and p.grad.abs().max().item() < tau:
+                            nullspace_count += 1
+                nullspace_count_tensor = torch.tensor([nullspace_count], device='cuda')
+                total_params_tensor = torch.tensor([total_params], device='cuda')
+                dist.all_reduce(nullspace_count_tensor, op=dist.ReduceOp.SUM)
+                dist.all_reduce(total_params_tensor, op=dist.ReduceOp.SUM)
+                if dist.get_rank() == 0 and total_params_tensor.item() > 0:
+                    nullspace_ratio = nullspace_count_tensor.item() / (total_params_tensor.item() + 1e-8)
+                    metrics['actor/nullspace_ratio'] = nullspace_ratio
+                    print(f"[FSDP][Rank 0] Actor nullspace ratio: {nullspace_ratio:.6f} ({nullspace_count_tensor.item()}/{total_params_tensor.item()})")  # logic matches analyzer
             if self.actor_update_step % self.actor_redo_reset_freq == 0:
                 print(f"[Actor] Step {self.actor_update_step}: Performing Gradient-based neuron reset (tau={self.actor_redo_tau})")
                 self.actor_gradredo.step()
@@ -713,6 +734,9 @@ class CriticWorker(Worker):
         self.critic_redo_metric_freq = getattr(self.config, 'redo_metric_freq', 1)
         if self.critic_redo_enabled:
             self.critic_gradanalyzer = VerlGradientAnalyzer(self.critic_module)
+            import os
+            print(f"[PID {os.getpid()}][Critic] Grad buffer size: {self.critic_gradanalyzer.grad_buffer.shape}")
+            print(f"[PID {os.getpid()}][Critic] Total model parameters: {sum(p.numel() for p in self.critic_module.parameters())}")
             self.critic_gradredo = VerlGradientReDo(self.critic_module, tau=self.critic_redo_tau, frequency=self.critic_redo_reset_freq, optimizer=self.critic_optimizer)
 
         self.flops_counter = FlopsCounter(self.critic_model_config)
@@ -751,19 +775,38 @@ class CriticWorker(Worker):
         # Print metrics & perform neuron reset only if enabled
         if getattr(self, 'critic_redo_enabled', True):
             if self.critic_update_step % self.critic_redo_metric_freq == 0:
-                nullspace_ratio, zero_grad_ratio, zero_grad_count, total = self.critic_gradanalyzer.analyze_gradients(return_counts=True)
+                from verl.utils.redo_utils.fsdp_grad_gather import gather_full_grad
                 import torch.distributed as dist
-                num = torch.tensor(float(zero_grad_count), device='cuda')
-                denom = torch.tensor(float(total), device='cuda')
-                dist.all_reduce(num, op=dist.ReduceOp.SUM)
-                dist.all_reduce(denom, op=dist.ReduceOp.SUM)
-                global_zero_grad_ratio = (num / denom).item() if denom.item() > 0 else 0.0
-                global_nullspace_ratio = global_zero_grad_ratio
-                if dist.get_rank() == 0:
-                    print(f"[GLOBAL][Critic] Step {self.critic_update_step}: nullspace_ratio={global_nullspace_ratio:.6f}, zero_grad_ratio={global_zero_grad_ratio:.6f}")
+                full_grad = gather_full_grad(self.critic_module)
+                # Compute zero grad ratio
+                if dist.get_rank() == 0 and full_grad is not None:
+                    zero_grad_count = (full_grad == 0).sum().item()
+                    total = full_grad.numel()
+                    zero_grad_ratio = zero_grad_count / (total + 1e-8)
+                    metrics['critic/zero_grad_ratio'] = zero_grad_ratio
+                    print(f"[FSDP][Rank 0] Critic zero grad ratio: {zero_grad_ratio:.6f} ({zero_grad_count}/{total})")
+                # Compute nullspace ratio (parameters whose grad is all zero)
+                nullspace_count = 0
+                total_params = 0
+                tau = getattr(self, 'critic_redo_tau', 0.0)
+                for p in self.critic_module.parameters():
+                    if p.requires_grad:
+                        total_params += 1
+                        if p.grad is not None and p.grad.abs().max().item() < tau:
+                            nullspace_count += 1
+                nullspace_count_tensor = torch.tensor([nullspace_count], device='cuda')
+                total_params_tensor = torch.tensor([total_params], device='cuda')
+                dist.all_reduce(nullspace_count_tensor, op=dist.ReduceOp.SUM)
+                dist.all_reduce(total_params_tensor, op=dist.ReduceOp.SUM)
+                if dist.get_rank() == 0 and total_params_tensor.item() > 0:
+                    nullspace_ratio = nullspace_count_tensor.item() / (total_params_tensor.item() + 1e-8)
+                    metrics['critic/nullspace_ratio'] = nullspace_ratio
+                    print(f"[FSDP][Rank 0] Critic nullspace ratio: {nullspace_ratio:.6f} ({nullspace_count_tensor.item()}/{total_params_tensor.item()})")
             if self.critic_update_step % self.critic_redo_reset_freq == 0:
                 print(f"[Critic] Step {self.critic_update_step}: Performing Gradient-based neuron reset (tau={self.critic_redo_tau})")
-                self.critic_gradredo.step()
+                if self.critic_redo_enabled:
+                    self.critic_gradredo = VerlGradientReDo(self.critic_module, tau=self.critic_redo_tau, frequency=self.critic_redo_reset_freq, optimizer=self.critic_optimizer)
+                    self.critic_gradredo.step()
         data = data.to('cuda')
         if self._is_offload_param:
             load_fsdp_param_and_grad(module=self.critic_module,

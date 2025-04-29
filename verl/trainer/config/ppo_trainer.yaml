@@ -18,7 +18,7 @@ actor_rollout_ref:
     override_config: { }
     enable_gradient_checkpointing: False
     use_remove_padding: False
-    enable_grad_analyze: true
+    enable_grad_analyze: false
     grad_analyze_frequency: 1
   actor:
     strategy: fsdp  # This is for backward-compatibility

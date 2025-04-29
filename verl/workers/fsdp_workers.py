@@ -361,22 +361,22 @@ class ActorRolloutRefWorker(Worker):
     def update_actor(self, data: DataProto):
         # Periodically print plasticity metrics and do redo
         self.actor_update_step += 1
-        # Print metrics
-        if self.actor_update_step % self.actor_redo_metric_freq == 0:
-            nullspace_ratio, zero_grad_ratio, zero_grad_count, total = self.actor_gradanalyzer.analyze_gradients(return_counts=True)
-            import torch.distributed as dist
-            num = torch.tensor(float(zero_grad_count), device='cuda')
-            denom = torch.tensor(float(total), device='cuda')
-            dist.all_reduce(num, op=dist.ReduceOp.SUM)
-            dist.all_reduce(denom, op=dist.ReduceOp.SUM)
-            global_zero_grad_ratio = (num / denom).item() if denom.item() > 0 else 0.0
-            global_nullspace_ratio = global_zero_grad_ratio  # logic matches analyzer
-            if dist.get_rank() == 0:
-                print(f"[GLOBAL][Actor] Step {self.actor_update_step}: nullspace_ratio={global_nullspace_ratio:.6f}, zero_grad_ratio={global_zero_grad_ratio:.6f}")
-        # Perform neuron reset
-        if self.actor_update_step % self.actor_redo_reset_freq == 0:
-            print(f"[Actor] Step {self.actor_update_step}: Performing Gradient-based neuron reset (tau={self.actor_redo_tau})")
-            self.actor_gradredo.step()
+        # Print metrics & perform neuron reset only if enabled
+        if getattr(self, 'actor_redo_enabled', True):
+            if self.actor_update_step % self.actor_redo_metric_freq == 0:
+                nullspace_ratio, zero_grad_ratio, zero_grad_count, total = self.actor_gradanalyzer.analyze_gradients(return_counts=True)
+                import torch.distributed as dist
+                num = torch.tensor(float(zero_grad_count), device='cuda')
+                denom = torch.tensor(float(total), device='cuda')
+                dist.all_reduce(num, op=dist.ReduceOp.SUM)
+                dist.all_reduce(denom, op=dist.ReduceOp.SUM)
+                global_zero_grad_ratio = (num / denom).item() if denom.item() > 0 else 0.0
+                global_nullspace_ratio = global_zero_grad_ratio  # logic matches analyzer
+                if dist.get_rank() == 0:
+                    print(f"[GLOBAL][Actor] Step {self.actor_update_step}: nullspace_ratio={global_nullspace_ratio:.6f}, zero_grad_ratio={global_zero_grad_ratio:.6f}")
+            if self.actor_update_step % self.actor_redo_reset_freq == 0:
+                print(f"[Actor] Step {self.actor_update_step}: Performing Gradient-based neuron reset (tau={self.actor_redo_tau})")
+                self.actor_gradredo.step()
         data = data.to('cuda')
 
         assert self._is_actor
@@ -698,8 +698,10 @@ class CriticWorker(Worker):
                                             critic_module=self.critic_module,
                                             critic_optimizer=self.critic_optimizer)
         # Initialize verl-compatible analyzer and redo for critic
-        self.critic_gradanalyzer = VerlGradientAnalyzer(self.critic_module)
-        self.critic_gradredo = VerlGradientReDo(self.critic_module, tau=self.critic_redo_tau, frequency=self.critic_redo_reset_freq, optimizer=self.critic_optimizer)
+        self.critic_redo_enabled = getattr(self.config, 'redo_enabled', True)
+        if self.critic_redo_enabled:
+            self.critic_gradanalyzer = VerlGradientAnalyzer(self.critic_module)
+            self.critic_gradredo = VerlGradientReDo(self.critic_module, tau=self.critic_redo_tau, frequency=self.critic_redo_reset_freq, optimizer=self.critic_optimizer)
 
         self.flops_counter = FlopsCounter(self.critic_model_config)
 
@@ -734,22 +736,22 @@ class CriticWorker(Worker):
     def update_critic(self, data: DataProto):
         # Periodically print plasticity metrics and do redo
         self.critic_update_step += 1
-        # Print metrics
-        if self.critic_update_step % self.critic_redo_metric_freq == 0:
-            nullspace_ratio, zero_grad_ratio, zero_grad_count, total = self.critic_gradanalyzer.analyze_gradients(return_counts=True)
-            import torch.distributed as dist
-            num = torch.tensor(float(zero_grad_count), device='cuda')
-            denom = torch.tensor(float(total), device='cuda')
-            dist.all_reduce(num, op=dist.ReduceOp.SUM)
-            dist.all_reduce(denom, op=dist.ReduceOp.SUM)
-            global_zero_grad_ratio = (num / denom).item() if denom.item() > 0 else 0.0
-            global_nullspace_ratio = global_zero_grad_ratio
-            if dist.get_rank() == 0:
-                print(f"[GLOBAL][Critic] Step {self.critic_update_step}: nullspace_ratio={global_nullspace_ratio:.6f}, zero_grad_ratio={global_zero_grad_ratio:.6f}")
-        # Perform neuron reset
-        if self.critic_update_step % self.critic_redo_reset_freq == 0:
-            print(f"[Critic] Step {self.critic_update_step}: Performing Gradient-based neuron reset (tau={self.critic_redo_tau})")
-            self.critic_gradredo.step()
+        # Print metrics & perform neuron reset only if enabled
+        if getattr(self, 'critic_redo_enabled', True):
+            if self.critic_update_step % self.critic_redo_metric_freq == 0:
+                nullspace_ratio, zero_grad_ratio, zero_grad_count, total = self.critic_gradanalyzer.analyze_gradients(return_counts=True)
+                import torch.distributed as dist
+                num = torch.tensor(float(zero_grad_count), device='cuda')
+                denom = torch.tensor(float(total), device='cuda')
+                dist.all_reduce(num, op=dist.ReduceOp.SUM)
+                dist.all_reduce(denom, op=dist.ReduceOp.SUM)
+                global_zero_grad_ratio = (num / denom).item() if denom.item() > 0 else 0.0
+                global_nullspace_ratio = global_zero_grad_ratio
+                if dist.get_rank() == 0:
+                    print(f"[GLOBAL][Critic] Step {self.critic_update_step}: nullspace_ratio={global_nullspace_ratio:.6f}, zero_grad_ratio={global_zero_grad_ratio:.6f}")
+            if self.critic_update_step % self.critic_redo_reset_freq == 0:
+                print(f"[Critic] Step {self.critic_update_step}: Performing Gradient-based neuron reset (tau={self.critic_redo_tau})")
+                self.critic_gradredo.step()
         data = data.to('cuda')
         if self._is_offload_param:
             load_fsdp_param_and_grad(module=self.critic_module,

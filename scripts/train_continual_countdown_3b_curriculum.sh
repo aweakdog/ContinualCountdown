@@ -148,9 +148,11 @@ python3 -m verl.trainer.main_ppo \
     +critic.model.attn_implementation=flash_attention_2 \
     +critic.model.use_cache=false \
     critic.ppo_micro_batch_size=8 \
+    actor_rollout_ref.actor.redo_enabled=true \
     actor_rollout_ref.actor.redo_metric_freq=1 \
     actor_rollout_ref.actor.redo_reset_freq=1000 \
     actor_rollout_ref.actor.redo_tau=0.1 \
+    critic.redo_enabled=true \
     critic.redo_metric_freq=1 \
     critic.redo_reset_freq=1000 \
     critic.redo_tau=0.1 \

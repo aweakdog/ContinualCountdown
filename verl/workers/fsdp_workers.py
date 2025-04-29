@@ -54,6 +54,8 @@ class ActorRolloutRefWorker(Worker):
 
     def __init__(self, config: DictConfig, role: str):
         super().__init__()
+        self.actor_update_step = 0
+        self.critic_update_step = 0
         self.config = config
         import torch.distributed
         if not torch.distributed.is_initialized():
@@ -545,6 +547,8 @@ class CriticWorker(Worker):
 
     def __init__(self, config):
         super().__init__()
+        self.actor_update_step = 0
+        self.critic_update_step = 0
         import torch.distributed
         if not torch.distributed.is_initialized():
             torch.distributed.init_process_group(backend="nccl")
@@ -841,6 +845,8 @@ class RewardModelWorker(Worker):
 
     def __init__(self, config):
         super().__init__()
+        self.actor_update_step = 0
+        self.critic_update_step = 0
         import torch.distributed
         if not torch.distributed.is_initialized():
             torch.distributed.init_process_group(backend="nccl")

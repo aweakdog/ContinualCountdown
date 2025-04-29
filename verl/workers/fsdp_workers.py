@@ -330,8 +330,13 @@ class ActorRolloutRefWorker(Worker):
                                               actor_module=self.actor_module_fsdp,
                                               actor_optimizer=self.actor_optimizer)
             # Initialize verl-compatible analyzer and redo for actor
-            self.actor_gradanalyzer = VerlGradientAnalyzer(self.actor_module_fsdp)
-            self.actor_gradredo = VerlGradientReDo(self.actor_module_fsdp, tau=self.actor_redo_tau, frequency=self.actor_redo_reset_freq, optimizer=self.actor_optimizer)
+            self.actor_redo_enabled = getattr(self.config, 'redo_enabled', True)
+            self.actor_redo_tau = getattr(self.config, 'redo_tau', 0.1)
+            self.actor_redo_reset_freq = getattr(self.config, 'redo_reset_freq', 1000)
+            self.actor_redo_metric_freq = getattr(self.config, 'redo_metric_freq', 1)
+            if self.actor_redo_enabled:
+                self.actor_gradanalyzer = VerlGradientAnalyzer(self.actor_module_fsdp)
+                self.actor_gradredo = VerlGradientReDo(self.actor_module_fsdp, tau=self.actor_redo_tau, frequency=self.actor_redo_reset_freq, optimizer=self.actor_optimizer)
 
         if self._is_rollout:
             self.rollout, self.rollout_sharding_manager = self._build_rollout()
@@ -699,6 +704,9 @@ class CriticWorker(Worker):
                                             critic_optimizer=self.critic_optimizer)
         # Initialize verl-compatible analyzer and redo for critic
         self.critic_redo_enabled = getattr(self.config, 'redo_enabled', True)
+        self.critic_redo_tau = getattr(self.config, 'redo_tau', 0.1)
+        self.critic_redo_reset_freq = getattr(self.config, 'redo_reset_freq', 1000)
+        self.critic_redo_metric_freq = getattr(self.config, 'redo_metric_freq', 1)
         if self.critic_redo_enabled:
             self.critic_gradanalyzer = VerlGradientAnalyzer(self.critic_module)
             self.critic_gradredo = VerlGradientReDo(self.critic_module, tau=self.critic_redo_tau, frequency=self.critic_redo_reset_freq, optimizer=self.critic_optimizer)

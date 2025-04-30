@@ -257,8 +257,12 @@ class DataParallelPPOCritic(BasePPOCritic):
                         print(f"[FSDP][Rank 0][Critic] Zero grad ratio (avg across ranks): {zero_grad_ratio_tensor.item():.6f}")
                     # SVD expects [batch_size, num_params], so for now batch_size=1
                     grad_matrix = local_grad_matrix / (local_grad_matrix.norm(dim=1, keepdim=True) + 1e-8)
-                    grad_matrix_cpu = grad_matrix.cpu()
-                    U, S, Vh = torch.linalg.svd(grad_matrix_cpu)
+                    max_params = 4096
+                    num_local_params = grad_matrix.shape[1]
+                    if num_local_params > max_params:
+                        idx = torch.randperm(num_local_params, device=grad_matrix.device)[:max_params]
+                        grad_matrix = grad_matrix[:, idx]
+                    U, S, Vh = torch.linalg.svd(grad_matrix)
                     relative_tol = tol * S[0]
                     small_singular_indices = torch.where(S < relative_tol)[0]
                     nullspace_dim = len(small_singular_indices)

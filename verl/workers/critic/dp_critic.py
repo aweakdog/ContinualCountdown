@@ -42,6 +42,8 @@ class DataParallelPPOCritic(BasePPOCritic):
     def __init__(self, config, critic_module: nn.Module, critic_optimizer: optim.Optimizer):
         super().__init__(config=config)
         self.fsdp_grad_metric_enabled = getattr(config, "fsdp_grad_metric_enabled", False)
+        print("[DEBUG][Critic] Config keys at init:", list(config.keys()) if hasattr(config, 'keys') else type(config))
+        print("[DEBUG][Critic] fsdp_grad_metric_enabled in config:", getattr(config, "fsdp_grad_metric_enabled", None))
         super().__init__(config=config)
         self.critic_module = critic_module
         self.critic_optimizer = critic_optimizer

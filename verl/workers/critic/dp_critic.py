@@ -244,6 +244,12 @@ class DataParallelPPOCritic(BasePPOCritic):
                 tau = getattr(self.config, 'redo_tau', 0.04)
                 total_neurons = 0
                 dormant_neurons = 0
+                reset_freq = getattr(self.config, 'redo_reset_freq', 1000)
+                do_reset = (self.critic_optimizer is not None and hasattr(self, '_step_count') and (self._step_count % reset_freq == 0))
+                if not hasattr(self, '_step_count'):
+                    self._step_count = 0
+                self._step_count += 1
+                from verl.utils.redo_utils.gradient_redo import ModifiedGradientReDo
                 for layer in self.critic_module.modules():
                     if isinstance(layer, (nn.Linear, nn.Conv2d, nn.LayerNorm)):
                         if layer.weight.grad is None:
@@ -283,6 +289,9 @@ class DataParallelPPOCritic(BasePPOCritic):
                             raise ValueError(f"Unknown redo_mode: {mode}")
                         total_neurons += mask.numel()
                         dormant_neurons += mask.sum().item()
+                        if do_reset and mask.sum() > 0:
+                            ModifiedGradientReDo._reset_single_layer(layer, mask)
+                            print(f"[ReDo][Critic] Reset {mask.sum().item()} dormant neurons in {type(layer).__name__} at step {self._step_count}")
                 nullspace_ratio = dormant_neurons / (total_neurons + 1e-8) if total_neurons > 0 else 0.0
                 nullspace_ratio_tensor = torch.tensor([nullspace_ratio], device=next(self.critic_module.parameters()).device)
                 dist.all_reduce(nullspace_ratio_tensor, op=dist.ReduceOp.SUM)

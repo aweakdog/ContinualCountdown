@@ -358,7 +358,7 @@ class DataParallelPPOActor(BasePPOActor):
                         max_params = 4096
                         num_local_params = grad_matrix.shape[1]
                         if num_local_params > max_params:
-                            idx = torch.randperm(num_local_params, device=grad_matrix.device)[:max_params]
+                            idx = torch.randperm(num_local_params, device='cpu')[:max_params].to(grad_matrix.device)
                             grad_matrix = grad_matrix[:, idx]
                         U, S, Vh = torch.linalg.svd(grad_matrix)
                         relative_tol = tol * S[0]

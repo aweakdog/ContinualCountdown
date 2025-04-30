@@ -312,6 +312,40 @@ class DataParallelPPOActor(BasePPOActor):
                 }
                 append_to_dict(metrics, data)
 
+            # FSDP gradient analysis after backward, before optimizer step
+            if getattr(self, 'fsdp_grad_metric_enabled', False):
+                from verl.utils.redo_utils.fsdp_grad_gather import gather_full_grad
+                import torch.distributed as dist
+                print("[DEBUG][Actor] Checking parameter gradients before gather_full_grad...")
+                for name, p in self.actor_module.named_parameters():
+                    print(f"[DEBUG][Actor] {name}: grad is None? {p.grad is None}, shape: {p.grad.shape if p.grad is not None else 'N/A'}")
+                full_grad = gather_full_grad(self.actor_module)
+                if full_grad is not None:
+                    print(f"[DEBUG][Actor] full_grad shape: {full_grad.shape}, numel: {full_grad.numel()}")
+                    if dist.get_rank() == 0:
+                        zero_grad_count = (full_grad == 0).sum().item()
+                        total = full_grad.numel()
+                        zero_grad_ratio = zero_grad_count / (total + 1e-8)
+                        metrics['actor/zero_grad_ratio'] = zero_grad_ratio
+                        print(f"[FSDP][Rank 0][Actor] Zero grad ratio: {zero_grad_ratio:.6f} ({zero_grad_count}/{total})")
+                    nullspace_count = 0
+                    total_params = 0
+                    tau = getattr(self, 'actor_redo_tau', 0.0)
+                    for p in self.actor_module.parameters():
+                        if p.requires_grad:
+                            total_params += 1
+                            if p.grad is not None and p.grad.abs().max().item() < tau:
+                                nullspace_count += 1
+                    nullspace_count_tensor = torch.tensor([nullspace_count], device='cuda')
+                    total_params_tensor = torch.tensor([total_params], device='cuda')
+                    dist.all_reduce(nullspace_count_tensor, op=dist.ReduceOp.SUM)
+                    dist.all_reduce(total_params_tensor, op=dist.ReduceOp.SUM)
+                    if dist.get_rank() == 0 and total_params_tensor.item() > 0:
+                        nullspace_ratio = nullspace_count_tensor.item() / (total_params_tensor.item() + 1e-8)
+                        metrics['actor/nullspace_ratio'] = nullspace_ratio
+                        print(f"[FSDP][Rank 0][Actor] nullspace ratio: {nullspace_ratio:.6f} ({nullspace_count_tensor.item()}/{total_params_tensor.item()})")
+                else:
+                    print(f"[DEBUG][Actor][Rank {dist.get_rank()}] full_grad is None (not rank 0, expected in FSDP)")
             grad_norm = self._optimizer_step()
             data = {'actor/grad_norm': grad_norm.detach().item()}
             append_to_dict(metrics, data)

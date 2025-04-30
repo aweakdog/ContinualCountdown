@@ -392,42 +392,6 @@ class ActorRolloutRefWorker(Worker):
             lr = self.actor_lr_scheduler.get_last_lr()[0]
             metrics['actor/lr'] = lr
 
-            # FSDP gradient analysis after backward
-            if getattr(self, 'actor_redo_enabled', True) and self.actor_update_step % self.actor_redo_metric_freq == 0:
-                from verl.utils.redo_utils.fsdp_grad_gather import gather_full_grad
-                import torch.distributed as dist
-                print("[DEBUG] Checking parameter gradients before gather_full_grad...")
-                for name, p in self.actor_module_fsdp.named_parameters():
-                    print(f"[DEBUG] {name}: grad is None? {p.grad is None}, shape: {p.grad.shape if p.grad is not None else 'N/A'}")
-                full_grad = gather_full_grad(self.actor_module_fsdp)
-                if full_grad is not None:
-                    print(f"[DEBUG] full_grad shape: {full_grad.shape}, numel: {full_grad.numel()}")
-                    # Compute zero grad ratio
-                    if dist.get_rank() == 0:
-                        zero_grad_count = (full_grad == 0).sum().item()
-                        total = full_grad.numel()
-                        zero_grad_ratio = zero_grad_count / (total + 1e-8)
-                        metrics['actor/zero_grad_ratio'] = zero_grad_ratio
-                        print(f"[FSDP][Rank 0] Zero grad ratio: {zero_grad_ratio:.6f} ({zero_grad_count}/{total})")
-                    # Compute nullspace ratio (parameters whose grad is all zero)
-                    nullspace_count = 0
-                    total_params = 0
-                    tau = getattr(self, 'actor_redo_tau', 0.0)
-                    for p in self.actor_module_fsdp.parameters():
-                        if p.requires_grad:
-                            total_params += 1
-                            if p.grad is not None and p.grad.abs().max().item() < tau:
-                                nullspace_count += 1
-                    nullspace_count_tensor = torch.tensor([nullspace_count], device='cuda')
-                    total_params_tensor = torch.tensor([total_params], device='cuda')
-                    dist.all_reduce(nullspace_count_tensor, op=dist.ReduceOp.SUM)
-                    dist.all_reduce(total_params_tensor, op=dist.ReduceOp.SUM)
-                    if dist.get_rank() == 0 and total_params_tensor.item() > 0:
-                        nullspace_ratio = nullspace_count_tensor.item() / (total_params_tensor.item() + 1e-8)
-                        metrics['actor/nullspace_ratio'] = nullspace_ratio
-                        print(f"[FSDP][Rank 0] Actor nullspace ratio: {nullspace_ratio:.6f} ({nullspace_count_tensor.item()}/{total_params_tensor.item()})")
-                else:
-                    print(f"[DEBUG] [Rank {dist.get_rank()}] full_grad is None (not rank 0, expected in FSDP)")
   # logic matches analyzer
 
             log_gpu_memory_usage('After update policy', logger=logger)
@@ -827,42 +791,6 @@ class CriticWorker(Worker):
             estimated_flops, promised_flops = self.flops_counter.estimate_flops(global_num_tokens, delta_time)
             metrics['mfu/critic'] = estimated_flops * self.config.ppo_epochs / promised_flops / self.world_size
 
-            # FSDP gradient analysis after backward
-            if getattr(self, 'critic_redo_enabled', True) and self.critic_update_step % self.critic_redo_metric_freq == 0:
-                from verl.utils.redo_utils.fsdp_grad_gather import gather_full_grad
-                import torch.distributed as dist
-                print("[DEBUG] Checking critic parameter gradients before gather_full_grad...")
-                for name, p in self.critic_module.named_parameters():
-                    print(f"[DEBUG] {name}: grad is None? {p.grad is None}, shape: {p.grad.shape if p.grad is not None else 'N/A'}")
-                full_grad = gather_full_grad(self.critic_module)
-                if full_grad is not None:
-                    print(f"[DEBUG] critic full_grad shape: {full_grad.shape}, numel: {full_grad.numel()}")
-                    # Compute zero grad ratio
-                    if dist.get_rank() == 0:
-                        zero_grad_count = (full_grad == 0).sum().item()
-                        total = full_grad.numel()
-                        zero_grad_ratio = zero_grad_count / (total + 1e-8)
-                        metrics['critic/zero_grad_ratio'] = zero_grad_ratio
-                        print(f"[FSDP][Rank 0] Critic zero grad ratio: {zero_grad_ratio:.6f} ({zero_grad_count}/{total})")
-                    # Compute nullspace ratio (parameters whose grad is all zero)
-                    nullspace_count = 0
-                    total_params = 0
-                    tau = getattr(self, 'critic_redo_tau', 0.0)
-                    for p in self.critic_module.parameters():
-                        if p.requires_grad:
-                            total_params += 1
-                            if p.grad is not None and p.grad.abs().max().item() < tau:
-                                nullspace_count += 1
-                    nullspace_count_tensor = torch.tensor([nullspace_count], device='cuda')
-                    total_params_tensor = torch.tensor([total_params], device='cuda')
-                    dist.all_reduce(nullspace_count_tensor, op=dist.ReduceOp.SUM)
-                    dist.all_reduce(total_params_tensor, op=dist.ReduceOp.SUM)
-                    if dist.get_rank() == 0 and total_params_tensor.item() > 0:
-                        nullspace_ratio = nullspace_count_tensor.item() / (total_params_tensor.item() + 1e-8)
-                        metrics['critic/nullspace_ratio'] = nullspace_ratio
-                        print(f"[FSDP][Rank 0] Critic nullspace ratio: {nullspace_ratio:.6f} ({nullspace_count_tensor.item()}/{total_params_tensor.item()})")
-                else:
-                    print(f"[DEBUG] [Rank {dist.get_rank()}] full_grad is None (not rank 0, expected in FSDP)")
 
             self.critic_lr_scheduler.step()
             lr = self.critic_lr_scheduler.get_last_lr()[0]

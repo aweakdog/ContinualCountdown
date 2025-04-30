@@ -113,8 +113,7 @@ chmod -R 777 ./logs
 chmod -R 777 ./data/continual
 
 python3 -m verl.trainer.main_ppo \
-    +fsdp_grad_metric_enabled=$FSDP_GRAD_METRIC_ENABLED \
-    trainer.fsdp_grad_metric_enabled=$FSDP_GRAD_METRIC_ENABLED \
+    fsdp_grad_metric_enabled=$FSDP_GRAD_METRIC_ENABLED \
     data.train_files="$TRAIN_FILES_STR" \
     data.val_files="$VAL_FILES_STR" \
     data.train_batch_size=256 \

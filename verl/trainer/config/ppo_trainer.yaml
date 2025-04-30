@@ -1,3 +1,4 @@
+fsdp_grad_metric_enabled: false  # Enable FSDP gradient metrics (set True to activate)
 data:
   tokenizer: null
   train_files: ~/data/rlhf/gsm8k/train.parquet

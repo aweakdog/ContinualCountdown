@@ -41,6 +41,8 @@ class DataParallelPPOCritic(BasePPOCritic):
 
     def __init__(self, config, critic_module: nn.Module, critic_optimizer: optim.Optimizer):
         super().__init__(config=config)
+        self.fsdp_grad_metric_enabled = getattr(config, "fsdp_grad_metric_enabled", False)
+        super().__init__(config=config)
         self.critic_module = critic_module
         self.critic_optimizer = critic_optimizer
         self.use_remove_padding = self.config.model.get('use_remove_padding', False)

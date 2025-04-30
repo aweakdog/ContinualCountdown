@@ -47,6 +47,7 @@ class DataParallelPPOActor(BasePPOActor):
     ):
         """When optimizer is None, it is Reference Policy"""
         super().__init__(config)
+        self.fsdp_grad_metric_enabled = getattr(config, "fsdp_grad_metric_enabled", False)
         self.actor_module = actor_module
         self.actor_optimizer = actor_optimizer
         self.use_remove_padding = self.config.get('use_remove_padding', False)

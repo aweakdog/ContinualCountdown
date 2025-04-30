@@ -238,44 +238,58 @@ class DataParallelPPOCritic(BasePPOCritic):
                 for name, p in self.critic_module.named_parameters():
                     print(f"[DEBUG][Critic] {name}: grad is None? {p.grad is None}, shape: {p.grad.shape if p.grad is not None else 'N/A'}")
                 # SVD-based nullspace ratio (Gradanalyzer style) on local gradients (no gather)
-                tol = 1e-5
-                grads = []
-                for p in self.critic_module.parameters():
-                    if p.requires_grad and p.grad is not None:
-                        grads.append(p.grad.detach().view(-1))
-                if grads:
-                    local_grad_matrix = torch.cat(grads).unsqueeze(0)  # [1, num_local_params]
-                    # Zero grad ratio (local)
-                    zero_grad_count = (local_grad_matrix == 0).sum().item()
-                    total = local_grad_matrix.numel()
-                    zero_grad_ratio = zero_grad_count / (total + 1e-8)
-                    zero_grad_ratio_tensor = torch.tensor([zero_grad_ratio], device=local_grad_matrix.device)
-                    dist.all_reduce(zero_grad_ratio_tensor, op=dist.ReduceOp.SUM)
-                    zero_grad_ratio_tensor /= dist.get_world_size()
-                    if dist.get_rank() == 0:
-                        append_to_dict(metrics, {'critic/zero_grad_ratio': zero_grad_ratio_tensor.item()})
-                        print(f"[FSDP][Rank 0][Critic] Zero grad ratio (avg across ranks): {zero_grad_ratio_tensor.item():.6f}")
-                    # SVD expects [batch_size, num_params], so for now batch_size=1
-                    grad_matrix = local_grad_matrix / (local_grad_matrix.norm(dim=1, keepdim=True) + 1e-8)
-                    max_params = 4096
-                    num_local_params = grad_matrix.shape[1]
-                    if num_local_params > max_params:
-                        idx = torch.randperm(num_local_params, device='cpu')[:max_params].to(grad_matrix.device)
-                        grad_matrix = grad_matrix[:, idx]
-                    U, S, Vh = torch.linalg.svd(grad_matrix)
-                    relative_tol = tol * S[0]
-                    small_singular_indices = torch.where(S < relative_tol)[0]
-                    nullspace_dim = len(small_singular_indices)
-                    nullspace_ratio = nullspace_dim / grad_matrix.shape[0]
-                else:
-                    nullspace_ratio = torch.tensor(0.0, device=next(self.critic_module.parameters()).device)
-                # Average across all ranks
+                # Nullspace ratio using dormant neuron mask (ReDo style, no SVD)
+                import torch.nn as nn
+                mode = getattr(self.config, 'redo_mode', 'threshold')
+                tau = getattr(self.config, 'redo_tau', 0.04)
+                total_neurons = 0
+                dormant_neurons = 0
+                for layer in self.critic_module.modules():
+                    if isinstance(layer, (nn.Linear, nn.Conv2d, nn.LayerNorm)):
+                        if layer.weight.grad is None:
+                            print(f"[DEBUG][Critic] Layer {type(layer).__name__} has no grad. Name: {getattr(layer, 'name', None)}, device: {layer.weight.device}, shape: {layer.weight.shape}")
+                            continue
+                        # Compute grad magnitude as in ModifiedGradientReDo
+                        if isinstance(layer, nn.Conv2d):
+                            grad_magnitude = layer.weight.grad.abs().mean(dim=(1, 2, 3))
+                        elif isinstance(layer, nn.Linear):
+                            grad_magnitude = layer.weight.grad.abs().mean(dim=1)
+                        elif isinstance(layer, nn.LayerNorm):
+                            grad_magnitude = layer.weight.grad.abs()
+                        else:
+                            continue
+                        if mode == 'threshold':
+                            normalized_grad = grad_magnitude / (grad_magnitude.mean() + 1e-9)
+                            mask = normalized_grad <= tau
+                        elif mode == 'percentage':
+                            percentage = getattr(self.config, 'redo_percentage', 0.01)
+                            k = max(1, int(len(grad_magnitude) * percentage))
+                            threshold = torch.kthvalue(grad_magnitude, k).values if k < len(grad_magnitude) else torch.min(grad_magnitude)
+                            mask = grad_magnitude <= threshold
+                        elif mode == 'hybrid':
+                            normalized_grad = grad_magnitude / (grad_magnitude.mean() + 1e-9)
+                            threshold_mask = normalized_grad <= tau
+                            max_percentage = getattr(self.config, 'redo_max_percentage', 0.01)
+                            k_max = max(1, int(len(grad_magnitude) * max_percentage))
+                            if threshold_mask.sum() > k_max:
+                                combined_grad = grad_magnitude.clone()
+                                combined_grad[~threshold_mask] = float('inf')
+                                _, indices = torch.topk(combined_grad, k_max, largest=False)
+                                mask = torch.zeros_like(grad_magnitude, dtype=torch.bool)
+                                mask[indices] = True
+                            else:
+                                mask = threshold_mask
+                        else:
+                            raise ValueError(f"Unknown redo_mode: {mode}")
+                        total_neurons += mask.numel()
+                        dormant_neurons += mask.sum().item()
+                nullspace_ratio = dormant_neurons / (total_neurons + 1e-8) if total_neurons > 0 else 0.0
                 nullspace_ratio_tensor = torch.tensor([nullspace_ratio], device=next(self.critic_module.parameters()).device)
                 dist.all_reduce(nullspace_ratio_tensor, op=dist.ReduceOp.SUM)
                 nullspace_ratio_tensor /= dist.get_world_size()
                 if dist.get_rank() == 0:
                     append_to_dict(metrics, {'critic/nullspace_ratio': nullspace_ratio_tensor.item()})
-                    print(f"[FSDP][Rank 0][Critic] SVD nullspace ratio (avg across ranks): {nullspace_ratio_tensor.item():.6f}")
+                    print(f"[FSDP][Rank 0][Critic] Dormant neuron ratio (avg across ranks): {nullspace_ratio_tensor.item():.6f}")
                 append_to_dict(metrics, {'critic/fsdp_grad_metric_ran': True})
             grad_norm = self._optimizer_step()
             data = {'critic/grad_norm': grad_norm.detach().item()}

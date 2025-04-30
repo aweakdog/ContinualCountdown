@@ -324,7 +324,13 @@ class DataParallelPPOActor(BasePPOActor):
                 print("[DEBUG][Actor] Checking parameter gradients before gather_full_grad...")
                 for name, p in self.actor_module.named_parameters():
                     print(f"[DEBUG][Actor] {name}: grad is None? {p.grad is None}, shape: {p.grad.shape if p.grad is not None else 'N/A'}")
-                full_grad = gather_full_grad(self.actor_module)
+                num_params = sum(p.numel() for p in self.actor_module.parameters() if p.requires_grad)
+                max_params = 4096
+                if num_params > max_params:
+                    param_indices = torch.randperm(num_params, device='cpu')[:max_params].to(next(self.actor_module.parameters()).device)
+                else:
+                    param_indices = None
+                full_grad = gather_full_grad(self.actor_module, param_indices=param_indices)
                 if full_grad is not None:
                     print(f"[DEBUG][Actor] full_grad shape: {full_grad.shape}, numel: {full_grad.numel()}")
                     if dist.get_rank() == 0:
@@ -333,47 +339,45 @@ class DataParallelPPOActor(BasePPOActor):
                         zero_grad_ratio = zero_grad_count / (total + 1e-8)
                         append_to_dict(metrics, {'actor/zero_grad_ratio': zero_grad_ratio})
                         print(f"[FSDP][Rank 0][Actor] Zero grad ratio: {zero_grad_ratio:.6f} ({zero_grad_count}/{total})")
-                    # SVD-based nullspace ratio (Gradanalyzer style)
-                    # Assume full_grad is [batch_size, num_params]. If not, skip SVD-based nullspace.
-                    # SVD-based nullspace ratio (Gradanalyzer style) on local gradients (no gather)
-                    tol = 1e-5
-                    grads = []
-                    for p in self.actor_module.parameters():
-                        if p.requires_grad and p.grad is not None:
-                            grads.append(p.grad.detach().view(-1))
-                    if grads:
-                        local_grad_matrix = torch.cat(grads).unsqueeze(0)  # [1, num_local_params]
-                        # Zero grad ratio (local)
-                        zero_grad_count = (local_grad_matrix == 0).sum().item()
-                        total = local_grad_matrix.numel()
-                        zero_grad_ratio = zero_grad_count / (total + 1e-8)
-                        zero_grad_ratio_tensor = torch.tensor([zero_grad_ratio], device=local_grad_matrix.device)
-                        dist.all_reduce(zero_grad_ratio_tensor, op=dist.ReduceOp.SUM)
-                        zero_grad_ratio_tensor /= dist.get_world_size()
-                        if dist.get_rank() == 0:
-                            append_to_dict(metrics, {'actor/zero_grad_ratio': zero_grad_ratio_tensor.item()})
-                            print(f"[FSDP][Rank 0][Actor] Zero grad ratio (avg across ranks): {zero_grad_ratio_tensor.item():.6f}")
-                        # SVD expects [batch_size, num_params], so for now batch_size=1
-                        grad_matrix = local_grad_matrix / (local_grad_matrix.norm(dim=1, keepdim=True) + 1e-8)
-                        max_params = 4096
-                        num_local_params = grad_matrix.shape[1]
-                        if num_local_params > max_params:
-                            idx = torch.randperm(num_local_params, device='cpu')[:max_params].to(grad_matrix.device)
-                            grad_matrix = grad_matrix[:, idx]
-                        U, S, Vh = torch.linalg.svd(grad_matrix)
-                        relative_tol = tol * S[0]
-                        small_singular_indices = torch.where(S < relative_tol)[0]
-                        nullspace_dim = len(small_singular_indices)
-                        nullspace_ratio = nullspace_dim / grad_matrix.shape[0]
-                    else:
-                        nullspace_ratio = torch.tensor(0.0, device=next(self.actor_module.parameters()).device)
-                    # Average across all ranks
-                    nullspace_ratio_tensor = torch.tensor([nullspace_ratio], device=next(self.actor_module.parameters()).device)
-                    dist.all_reduce(nullspace_ratio_tensor, op=dist.ReduceOp.SUM)
-                    nullspace_ratio_tensor /= dist.get_world_size()
+                # SVD-based nullspace ratio (Gradanalyzer style) on local gradients (no gather)
+                tol = 1e-5
+                grads = []
+                for p in self.actor_module.parameters():
+                    if p.requires_grad and p.grad is not None:
+                        grads.append(p.grad.detach().view(-1))
+                if grads:
+                    local_grad_matrix = torch.cat(grads).unsqueeze(0)  # [1, num_local_params]
+                    # Zero grad ratio (local)
+                    zero_grad_count = (local_grad_matrix == 0).sum().item()
+                    total = local_grad_matrix.numel()
+                    zero_grad_ratio = zero_grad_count / (total + 1e-8)
+                    zero_grad_ratio_tensor = torch.tensor([zero_grad_ratio], device=local_grad_matrix.device)
+                    dist.all_reduce(zero_grad_ratio_tensor, op=dist.ReduceOp.SUM)
+                    zero_grad_ratio_tensor /= dist.get_world_size()
                     if dist.get_rank() == 0:
-                        append_to_dict(metrics, {'actor/nullspace_ratio': nullspace_ratio_tensor.item()})
-                        print(f"[FSDP][Rank 0][Actor] SVD nullspace ratio (avg across ranks): {nullspace_ratio_tensor.item():.6f}")
+                        append_to_dict(metrics, {'actor/zero_grad_ratio': zero_grad_ratio_tensor.item()})
+                        print(f"[FSDP][Rank 0][Actor] Zero grad ratio (avg across ranks): {zero_grad_ratio_tensor.item():.6f}")
+                    # SVD expects [batch_size, num_params], so for now batch_size=1
+                    grad_matrix = local_grad_matrix / (local_grad_matrix.norm(dim=1, keepdim=True) + 1e-8)
+                    max_params = 4096
+                    num_local_params = grad_matrix.shape[1]
+                    if num_local_params > max_params:
+                        idx = torch.randperm(num_local_params, device='cpu')[:max_params].to(grad_matrix.device)
+                        grad_matrix = grad_matrix[:, idx]
+                    U, S, Vh = torch.linalg.svd(grad_matrix)
+                    relative_tol = tol * S[0]
+                    small_singular_indices = torch.where(S < relative_tol)[0]
+                    nullspace_dim = len(small_singular_indices)
+                    nullspace_ratio = nullspace_dim / grad_matrix.shape[0]
+                else:
+                    nullspace_ratio = torch.tensor(0.0, device=next(self.actor_module.parameters()).device)
+                # Average across all ranks
+                nullspace_ratio_tensor = torch.tensor([nullspace_ratio], device=next(self.actor_module.parameters()).device)
+                dist.all_reduce(nullspace_ratio_tensor, op=dist.ReduceOp.SUM)
+                nullspace_ratio_tensor /= dist.get_world_size()
+                if dist.get_rank() == 0:
+                    append_to_dict(metrics, {'actor/nullspace_ratio': nullspace_ratio_tensor.item()})
+                    print(f"[FSDP][Rank 0][Actor] SVD nullspace ratio (avg across ranks): {nullspace_ratio_tensor.item():.6f}")
                 else:
                     print(f"[DEBUG][Actor][Rank {dist.get_rank()}] full_grad is None (not rank 0, expected in FSDP)")
             grad_norm = self._optimizer_step()

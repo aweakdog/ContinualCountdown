@@ -333,22 +333,20 @@ class DataParallelPPOActor(BasePPOActor):
                         zero_grad_ratio = zero_grad_count / (total + 1e-8)
                         append_to_dict(metrics, {'actor/zero_grad_ratio': zero_grad_ratio})
                         print(f"[FSDP][Rank 0][Actor] Zero grad ratio: {zero_grad_ratio:.6f} ({zero_grad_count}/{total})")
-                    nullspace_count = 0
-                    total_params = 0
-                    tau = getattr(self, 'actor_redo_tau', 0.0)
-                    for p in self.actor_module.parameters():
-                        if p.requires_grad:
-                            total_params += 1
-                            if p.grad is not None and p.grad.abs().max().item() < tau:
-                                nullspace_count += 1
-                    nullspace_count_tensor = torch.tensor([nullspace_count], device='cuda')
-                    total_params_tensor = torch.tensor([total_params], device='cuda')
-                    dist.all_reduce(nullspace_count_tensor, op=dist.ReduceOp.SUM)
-                    dist.all_reduce(total_params_tensor, op=dist.ReduceOp.SUM)
-                    if dist.get_rank() == 0 and total_params_tensor.item() > 0:
-                        nullspace_ratio = nullspace_count_tensor.item() / (total_params_tensor.item() + 1e-8)
+                    # SVD-based nullspace ratio (Gradanalyzer style)
+                    # Assume full_grad is [batch_size, num_params]. If not, skip SVD-based nullspace.
+                    tol = 1e-5
+                    if dist.get_rank() == 0 and full_grad.dim() == 2:
+                        grad_matrix = full_grad / (full_grad.norm(dim=1, keepdim=True) + 1e-8)
+                        U, S, Vh = torch.linalg.svd(grad_matrix)
+                        relative_tol = tol * S[0]
+                        small_singular_indices = torch.where(S < relative_tol)[0]
+                        nullspace_dim = len(small_singular_indices)
+                        nullspace_ratio = nullspace_dim / grad_matrix.shape[0]
                         append_to_dict(metrics, {'actor/nullspace_ratio': nullspace_ratio})
-                        print(f"[FSDP][Rank 0][Actor] nullspace ratio: {nullspace_ratio:.6f} ({nullspace_count_tensor.item()}/{total_params_tensor.item()})")
+                        print(f"[FSDP][Rank 0][Actor] SVD nullspace ratio: {nullspace_ratio:.6f} ({nullspace_dim}/{grad_matrix.shape[0]})")
+                    elif dist.get_rank() == 0:
+                        print("[FSDP][Rank 0][Actor] Cannot compute SVD nullspace ratio: full_grad is not a batch (shape: {}), fallback to old metric.".format(full_grad.shape))
                 else:
                     print(f"[DEBUG][Actor][Rank {dist.get_rank()}] full_grad is None (not rank 0, expected in FSDP)")
             grad_norm = self._optimizer_step()

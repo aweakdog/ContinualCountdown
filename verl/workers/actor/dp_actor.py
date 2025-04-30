@@ -336,7 +336,15 @@ class DataParallelPPOActor(BasePPOActor):
                     # SVD-based nullspace ratio (Gradanalyzer style)
                     # Assume full_grad is [batch_size, num_params]. If not, skip SVD-based nullspace.
                     tol = 1e-5
-                    if dist.get_rank() == 0 and full_grad.dim() == 2:
+                    # Subsample parameters before gathering to avoid OOM
+                    num_params = sum(p.numel() for p in self.actor_module.parameters() if p.requires_grad)
+                    max_params = 4096
+                    if num_params > max_params:
+                        param_indices = torch.randperm(num_params, device=next(self.actor_module.parameters()).device)[:max_params]
+                    else:
+                        param_indices = None
+                    full_grad = gather_full_grad(self.actor_module, param_indices=param_indices)
+                    if dist.get_rank() == 0 and full_grad is not None and full_grad.dim() == 2:
                         grad_matrix = full_grad / (full_grad.norm(dim=1, keepdim=True) + 1e-8)
                         U, S, Vh = torch.linalg.svd(grad_matrix)
                         relative_tol = tol * S[0]
@@ -344,7 +352,7 @@ class DataParallelPPOActor(BasePPOActor):
                         nullspace_dim = len(small_singular_indices)
                         nullspace_ratio = nullspace_dim / grad_matrix.shape[0]
                         append_to_dict(metrics, {'actor/nullspace_ratio': nullspace_ratio})
-                        print(f"[FSDP][Rank 0][Actor] SVD nullspace ratio: {nullspace_ratio:.6f} ({nullspace_dim}/{grad_matrix.shape[0]})")
+                        print(f"[FSDP][Rank 0][Actor] SVD nullspace ratio: {nullspace_ratio:.6f} ({nullspace_dim}/{grad_matrix.shape[0]}) [params used: {grad_matrix.shape[1]}]")
                     elif dist.get_rank() == 0:
                         print("[FSDP][Rank 0][Actor] Cannot compute SVD nullspace ratio: full_grad is not a batch (shape: {}), fallback to old metric.".format(full_grad.shape))
                 else:

@@ -11,9 +11,14 @@ def get_flat_grads(model):
     return torch.cat(grads) if grads else torch.tensor([], device=next(model.parameters()).device)
 
 
-def gather_full_grad(model):
-    """Gather all FSDP-sharded gradients to rank 0 and return the full gradient vector (on rank 0)."""
+def gather_full_grad(model, param_indices=None):
+    """
+    Gather all FSDP-sharded gradients to rank 0 and return the (optionally subsampled) gradient vector (on rank 0).
+    param_indices: 1D LongTensor or list of indices to select from the flattened gradient vector.
+    """
     flat_grad = get_flat_grads(model)
+    if param_indices is not None:
+        flat_grad = flat_grad[param_indices]
     world_size = dist.get_world_size()
     rank = dist.get_rank()
     device = flat_grad.device

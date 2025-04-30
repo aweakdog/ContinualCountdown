@@ -248,17 +248,24 @@ class DataParallelPPOCritic(BasePPOCritic):
                         print(f"[FSDP][Rank 0][Critic] Zero grad ratio: {zero_grad_ratio:.6f} ({zero_grad_count}/{total})")
                     # SVD-based nullspace ratio (Gradanalyzer style)
                     # Assume full_grad is [batch_size, num_params]. If not, skip SVD-based nullspace.
-                    tol = 1e-5
-                    if full_grad.dim() == 2:
-                        grad_matrix = full_grad / (full_grad.norm(dim=1, keepdim=True) + 1e-8)
+                    # Subsample parameters before gathering to avoid OOM
+                    num_params = sum(p.numel() for p in self.critic_module.parameters() if p.requires_grad)
+                    max_params = 4096
+                    if num_params > max_params:
+                        param_indices = torch.randperm(num_params, device=next(self.critic_module.parameters()).device)[:max_params]
+                    else:
+                        param_indices = None
+                    full_grad = gather_full_grad(self.critic_module, param_indices=param_indices)
+                    if dist.get_rank() == 0 and full_grad is not None and full_grad.dim() == 2:
+                        grad_matrix = full_grad / (grad_matrix.norm(dim=1, keepdim=True) + 1e-8)
                         U, S, Vh = torch.linalg.svd(grad_matrix)
                         relative_tol = tol * S[0]
                         small_singular_indices = torch.where(S < relative_tol)[0]
                         nullspace_dim = len(small_singular_indices)
                         nullspace_ratio = nullspace_dim / grad_matrix.shape[0]
                         append_to_dict(metrics, {'critic/nullspace_ratio': nullspace_ratio})
-                        print(f"[FSDP][Rank 0][Critic] SVD nullspace ratio: {nullspace_ratio:.6f} ({nullspace_dim}/{grad_matrix.shape[0]})")
-                    else:
+                        print(f"[FSDP][Rank 0][Critic] SVD nullspace ratio: {nullspace_ratio:.6f} ({nullspace_dim}/{grad_matrix.shape[0]}) [params used: {grad_matrix.shape[1]}]")
+                    elif dist.get_rank() == 0:
                         print("[FSDP][Rank 0][Critic] Cannot compute SVD nullspace ratio: full_grad is not a batch (shape: {}), fallback to old metric.".format(full_grad.shape))
                 else:
                     print(f"[DEBUG][Critic][Rank {dist.get_rank()}] full_grad is None (not rank 0, expected in FSDP)")

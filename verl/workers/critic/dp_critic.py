@@ -225,6 +225,7 @@ class DataParallelPPOCritic(BasePPOCritic):
                 append_to_dict(metrics, data)
 
             # FSDP gradient analysis after backward, before optimizer step
+            print(f"[DEBUG][Critic] fsdp_grad_metric_enabled: {getattr(self, 'fsdp_grad_metric_enabled', False)}", flush=True)
             if getattr(self, 'fsdp_grad_metric_enabled', False):
                 from verl.utils.redo_utils.fsdp_grad_gather import gather_full_grad
                 import torch.distributed as dist
@@ -238,7 +239,7 @@ class DataParallelPPOCritic(BasePPOCritic):
                         zero_grad_count = (full_grad == 0).sum().item()
                         total = full_grad.numel()
                         zero_grad_ratio = zero_grad_count / (total + 1e-8)
-                        metrics['critic/zero_grad_ratio'] = zero_grad_ratio
+                        append_to_dict(metrics, {'critic/zero_grad_ratio': zero_grad_ratio})
                         print(f"[FSDP][Rank 0][Critic] Zero grad ratio: {zero_grad_ratio:.6f} ({zero_grad_count}/{total})")
                     nullspace_count = 0
                     total_params = 0
@@ -254,10 +255,11 @@ class DataParallelPPOCritic(BasePPOCritic):
                     dist.all_reduce(total_params_tensor, op=dist.ReduceOp.SUM)
                     if dist.get_rank() == 0 and total_params_tensor.item() > 0:
                         nullspace_ratio = nullspace_count_tensor.item() / (total_params_tensor.item() + 1e-8)
-                        metrics['critic/nullspace_ratio'] = nullspace_ratio
+                        append_to_dict(metrics, {'critic/nullspace_ratio': nullspace_ratio})
                         print(f"[FSDP][Rank 0][Critic] nullspace ratio: {nullspace_ratio:.6f} ({nullspace_count_tensor.item()}/{total_params_tensor.item()})")
                 else:
                     print(f"[DEBUG][Critic][Rank {dist.get_rank()}] full_grad is None (not rank 0, expected in FSDP)")
+                append_to_dict(metrics, {'critic/fsdp_grad_metric_ran': True})
             grad_norm = self._optimizer_step()
             data = {'critic/grad_norm': grad_norm.detach().item()}
             append_to_dict(metrics, data)

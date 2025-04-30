@@ -316,6 +316,7 @@ class DataParallelPPOActor(BasePPOActor):
             if getattr(self, 'fsdp_grad_metric_enabled', False):
                 from verl.utils.redo_utils.fsdp_grad_gather import gather_full_grad
                 import torch.distributed as dist
+                append_to_dict(metrics, {'actor/fsdp_grad_metric_ran': True})
                 print("[DEBUG][Actor] Checking parameter gradients before gather_full_grad...")
                 for name, p in self.actor_module.named_parameters():
                     print(f"[DEBUG][Actor] {name}: grad is None? {p.grad is None}, shape: {p.grad.shape if p.grad is not None else 'N/A'}")
@@ -326,7 +327,7 @@ class DataParallelPPOActor(BasePPOActor):
                         zero_grad_count = (full_grad == 0).sum().item()
                         total = full_grad.numel()
                         zero_grad_ratio = zero_grad_count / (total + 1e-8)
-                        metrics['actor/zero_grad_ratio'] = zero_grad_ratio
+                        append_to_dict(metrics, {'actor/zero_grad_ratio': zero_grad_ratio})
                         print(f"[FSDP][Rank 0][Actor] Zero grad ratio: {zero_grad_ratio:.6f} ({zero_grad_count}/{total})")
                     nullspace_count = 0
                     total_params = 0
@@ -342,7 +343,7 @@ class DataParallelPPOActor(BasePPOActor):
                     dist.all_reduce(total_params_tensor, op=dist.ReduceOp.SUM)
                     if dist.get_rank() == 0 and total_params_tensor.item() > 0:
                         nullspace_ratio = nullspace_count_tensor.item() / (total_params_tensor.item() + 1e-8)
-                        metrics['actor/nullspace_ratio'] = nullspace_ratio
+                        append_to_dict(metrics, {'actor/nullspace_ratio': nullspace_ratio})
                         print(f"[FSDP][Rank 0][Actor] nullspace ratio: {nullspace_ratio:.6f} ({nullspace_count_tensor.item()}/{total_params_tensor.item()})")
                 else:
                     print(f"[DEBUG][Actor][Rank {dist.get_rank()}] full_grad is None (not rank 0, expected in FSDP)")

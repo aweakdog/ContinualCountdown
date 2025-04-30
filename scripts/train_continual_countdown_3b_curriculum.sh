@@ -52,6 +52,8 @@ rm -rf ./wandb/*
 chmod -R 755 ./logs
 chmod -R 755 ./logs/run
 
+# Set FSDP gradient metric flag (set to true to enable FSDP gradient metrics)
+export FSDP_GRAD_METRIC_ENABLED=true
 # Set environment variables
 export WANDB_MODE=${WANDB_MODE:-"disabled"}
 export PYTHONUNBUFFERED=1
@@ -111,6 +113,7 @@ chmod -R 777 ./logs
 chmod -R 777 ./data/continual
 
 python3 -m verl.trainer.main_ppo \
+    +fsdp_grad_metric_enabled=$FSDP_GRAD_METRIC_ENABLED \
     data.train_files="$TRAIN_FILES_STR" \
     data.val_files="$VAL_FILES_STR" \
     data.train_batch_size=256 \

@@ -12,13 +12,15 @@ set -e
 # source activate zero
 
 export NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-all}
-export CHECKPOINT_BASE_DIR=${CHECKPOINT_BASE_DIR:-/scratch/pangroup/yliog/checkpoints/continual_countdown3b}
-export BASE_MODEL=${BASE_MODEL:-"./model/qwen3b"}
-export N_GPUS=${N_GPUS:-4}
+export CHECKPOINT_BASE_DIR=${CHECKPOINT_BASE_DIR:-/cpfs04/user/liyuanhang.p/tmp/checkpoints/continual_countdown3b}
+export BASE_MODEL=${BASE_MODEL:-"/cpfs04/user/liyuanhang.p/model/qwen3b"}  # Path to mounted Qwen model
+
+
+export N_GPUS=${N_GPUS:-8}
 export ROLLOUT_TP_SIZE=${ROLLOUT_TP_SIZE:-2}
 export WANDB_MODE=${WANDB_MODE:-offline}
 export VLLM_ATTENTION_BACKEND=${VLLM_ATTENTION_BACKEND:-XFORMERS}
-export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0,1,2,3}
+export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0,1,2,3,4,5,6,7}
 export NCCL_DEBUG=${NCCL_DEBUG:-INFO}
 export WANDB_MODE=${WANDB_MODE:-"disabled"}
 export PYTHONUNBUFFERED=1

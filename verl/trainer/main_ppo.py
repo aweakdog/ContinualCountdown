@@ -92,7 +92,7 @@ class RewardManager():
 
 import ray
 import os
-os.environ["RAY_TMPDIR"] = f"/home/yliog/ray_tmp/ray_tmp_{os.getpid()}"
+os.environ["RAY_TMPDIR"] = f"/root/ray_tmp"
 import hydra
 
 

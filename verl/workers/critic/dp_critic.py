@@ -229,77 +229,7 @@ class DataParallelPPOCritic(BasePPOCritic):
 
                 append_to_dict(metrics, data)
 
-            # FSDP gradient analysis after backward, before optimizer step
-            print(f"[DEBUG][Critic] fsdp_grad_metric_enabled: {getattr(self, 'fsdp_grad_metric_enabled', False)}", flush=True)
-            if getattr(self, 'fsdp_grad_metric_enabled', False):
-                from verl.utils.redo_utils.fsdp_grad_gather import gather_full_grad
-                import torch.distributed as dist
-                print("[DEBUG][Critic] Checking parameter gradients before gather_full_grad...")
-                for name, p in self.critic_module.named_parameters():
-                    print(f"[DEBUG][Critic] {name}: grad is None? {p.grad is None}, shape: {p.grad.shape if p.grad is not None else 'N/A'}")
-                # SVD-based nullspace ratio (Gradanalyzer style) on local gradients (no gather)
-                # Nullspace ratio using dormant neuron mask (ReDo style, no SVD)
-                import torch.nn as nn
-                mode = getattr(self.config, 'redo_mode', 'threshold')
-                tau = getattr(self.config, 'redo_tau', 0.04)
-                total_neurons = 0
-                dormant_neurons = 0
-                reset_freq = getattr(self.config, 'redo_reset_freq', 1000)
-                do_reset = (self.critic_optimizer is not None and hasattr(self, '_step_count') and (self._step_count % reset_freq == 0))
-                if not hasattr(self, '_step_count'):
-                    self._step_count = 0
-                self._step_count += 1
-                from verl.utils.redo_utils.gradient_redo import ModifiedGradientReDo
-                for layer in self.critic_module.modules():
-                    if isinstance(layer, (nn.Linear, nn.Conv2d, nn.LayerNorm)):
-                        if layer.weight.grad is None:
-                            print(f"[DEBUG][Critic] Layer {type(layer).__name__} has no grad. Name: {getattr(layer, 'name', None)}, device: {layer.weight.device}, shape: {layer.weight.shape}")
-                            continue
-                        # Compute grad magnitude as in ModifiedGradientReDo
-                        if isinstance(layer, nn.Conv2d):
-                            grad_magnitude = layer.weight.grad.abs().mean(dim=(1, 2, 3))
-                        elif isinstance(layer, nn.Linear):
-                            grad_magnitude = layer.weight.grad.abs().mean(dim=1)
-                        elif isinstance(layer, nn.LayerNorm):
-                            grad_magnitude = layer.weight.grad.abs()
-                        else:
-                            continue
-                        if mode == 'threshold':
-                            normalized_grad = grad_magnitude / (grad_magnitude.mean() + 1e-9)
-                            mask = normalized_grad <= tau
-                        elif mode == 'percentage':
-                            percentage = getattr(self.config, 'redo_percentage', 0.01)
-                            k = max(1, int(len(grad_magnitude) * percentage))
-                            threshold = torch.kthvalue(grad_magnitude, k).values if k < len(grad_magnitude) else torch.min(grad_magnitude)
-                            mask = grad_magnitude <= threshold
-                        elif mode == 'hybrid':
-                            normalized_grad = grad_magnitude / (grad_magnitude.mean() + 1e-9)
-                            threshold_mask = normalized_grad <= tau
-                            max_percentage = getattr(self.config, 'redo_max_percentage', 0.01)
-                            k_max = max(1, int(len(grad_magnitude) * max_percentage))
-                            if threshold_mask.sum() > k_max:
-                                combined_grad = grad_magnitude.clone()
-                                combined_grad[~threshold_mask] = float('inf')
-                                _, indices = torch.topk(combined_grad, k_max, largest=False)
-                                mask = torch.zeros_like(grad_magnitude, dtype=torch.bool)
-                                mask[indices] = True
-                            else:
-                                mask = threshold_mask
-                        else:
-                            raise ValueError(f"Unknown redo_mode: {mode}")
-                        total_neurons += mask.numel()
-                        dormant_neurons += mask.sum().item()
-                        if do_reset and mask.sum() > 0:
-                            ModifiedGradientReDo._reset_single_layer(layer, mask)
-                            print(f"[ReDo][Critic] Reset {mask.sum().item()} dormant neurons in {type(layer).__name__} at step {self._step_count}")
-                nullspace_ratio = dormant_neurons / (total_neurons + 1e-8) if total_neurons > 0 else 0.0
-                nullspace_ratio_tensor = torch.tensor([nullspace_ratio], device=next(self.critic_module.parameters()).device)
-                dist.all_reduce(nullspace_ratio_tensor, op=dist.ReduceOp.SUM)
-                nullspace_ratio_tensor /= dist.get_world_size()
-                if dist.get_rank() == 0:
-                    append_to_dict(metrics, {'critic/nullspace_ratio': nullspace_ratio_tensor.item()})
-                    print(f"[FSDP][Rank 0][Critic] Dormant neuron ratio (avg across ranks): {nullspace_ratio_tensor.item():.6f}")
-                append_to_dict(metrics, {'critic/fsdp_grad_metric_ran': True})
+
             grad_norm = self._optimizer_step()
             data = {'critic/grad_norm': grad_norm.detach().item()}
             append_to_dict(metrics, data)

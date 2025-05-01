@@ -324,13 +324,7 @@ class DataParallelPPOActor(BasePPOActor):
                 print("[DEBUG][Actor] Checking parameter gradients before gather_full_grad...")
                 for name, p in self.actor_module.named_parameters():
                     print(f"[DEBUG][Actor] {name}: grad is None? {p.grad is None}, shape: {p.grad.shape if p.grad is not None else 'N/A'}")
-                num_params = sum(p.numel() for p in self.actor_module.parameters() if p.requires_grad)
-                max_params = 4096
-                if num_params > max_params:
-                    param_indices = torch.randperm(num_params, device='cpu')[:max_params].to(next(self.actor_module.parameters()).device)
-                else:
-                    param_indices = None
-                full_grad = gather_full_grad(self.actor_module, param_indices=param_indices)
+                full_grad = gather_full_grad(self.actor_module)
                 if full_grad is not None:
                     print(f"[DEBUG][Actor] full_grad shape: {full_grad.shape}, numel: {full_grad.numel()}")
                     if dist.get_rank() == 0:
@@ -350,23 +344,65 @@ class DataParallelPPOActor(BasePPOActor):
                 if not hasattr(self, '_step_count'):
                     self._step_count = 0
                 self._step_count += 1
-                from verl.utils.redo_utils.gradient_redo import ModifiedGradientReDo
-                for layer in self.actor_module.modules():
-                    if isinstance(layer, (nn.Linear, nn.Conv2d, nn.LayerNorm)):
-                        if layer.weight.grad is None:
-                            print(f"[DEBUG][Actor] Layer {type(layer).__name__} has no grad. Name: {getattr(layer, 'name', None)}, device: {layer.weight.device}, shape: {layer.weight.shape}")
-                            continue
-                        # Compute grad magnitude as in ModifiedGradientReDo
-                        if isinstance(layer, nn.Conv2d):
-                            grad_magnitude = layer.weight.grad.abs().mean(dim=(1, 2, 3))
-                        elif isinstance(layer, nn.Linear):
-                            grad_magnitude = layer.weight.grad.abs().mean(dim=1)
-                        elif isinstance(layer, nn.LayerNorm):
-                            grad_magnitude = layer.weight.grad.abs()
-                        else:
-                            continue
-                        if mode == 'threshold':
-                            normalized_grad = grad_magnitude / (grad_magnitude.mean() + 1e-9)
+                # FSDP-aware dormant neuron metric and reset (with separate frequencies)
+                from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
+                if isinstance(self.actor_module, FSDP):
+                    from verl.utils.redo_utils.fsdp_flat_utils import fsdp_dormant_neuron_mask_and_reset, compute_fsdp_dormant_mask_only
+                    mask = None
+                    dormant_ratio = 0.0
+                    metric_freq = getattr(self.config, 'redo_metric_freq', 100)
+                    reset_freq = getattr(self.config, 'redo_reset_freq', 1000)
+                    do_metric = (self._step_count % metric_freq == 0)
+                    do_reset = (self._step_count % reset_freq == 0)
+                    if do_metric:
+                        mask = compute_fsdp_dormant_mask_only(
+                            self.actor_module,
+                            mode=mode,
+                            tau=tau,
+                            percentage=getattr(self.config, 'redo_percentage', 0.01),
+                            max_percentage=getattr(self.config, 'redo_max_percentage', 0.01)
+                        )
+                        dormant_ratio = mask.float().mean().item()
+                        print(f"[FSDP][Actor] Dormant neuron ratio (flat param): {dormant_ratio:.6f} (METRIC ONLY)")
+                    if do_reset:
+                        mask = fsdp_dormant_neuron_mask_and_reset(
+                            self.actor_module,
+                            mode=mode,
+                            tau=tau,
+                            percentage=getattr(self.config, 'redo_percentage', 0.01),
+                            max_percentage=getattr(self.config, 'redo_max_percentage', 0.01),
+                            use_lecun_init=True
+                        )
+                        dormant_ratio = mask.float().mean().item()
+                        print(f"[FSDP][Actor] Dormant neuron ratio (flat param): {dormant_ratio:.6f}, resets: {mask.sum().item()} (RESET PERFORMED)")
+                    if mask is not None:
+                        nullspace_ratio_tensor = torch.tensor([dormant_ratio], device=mask.device)
+                        dist.all_reduce(nullspace_ratio_tensor, op=dist.ReduceOp.SUM)
+                        nullspace_ratio_tensor /= dist.get_world_size()
+                        if dist.get_rank() == 0:
+                            append_to_dict(metrics, {'actor/nullspace_ratio': nullspace_ratio_tensor.item()})
+                            print(f"[FSDP][Rank 0][Actor] Dormant neuron ratio (avg across ranks): {nullspace_ratio_tensor.item():.6f}")
+
+                        append_to_dict(metrics, {'actor/nullspace_ratio': nullspace_ratio_tensor.item()})
+                        print(f"[FSDP][Rank 0][Actor] Dormant neuron ratio (avg across ranks): {nullspace_ratio_tensor.item():.6f}")
+                else:
+                    from verl.utils.redo_utils.gradient_redo import ModifiedGradientReDo
+                    for layer in self.actor_module.modules():
+                        if isinstance(layer, (nn.Linear, nn.Conv2d, nn.LayerNorm)):
+                            if layer.weight.grad is None:
+                                print(f"[DEBUG][Actor] Layer {type(layer).__name__} has no grad. Name: {getattr(layer, 'name', None)}, device: {layer.weight.device}, shape: {layer.weight.shape}")
+                                continue
+                            # Compute grad magnitude as in ModifiedGradientReDo
+                            if isinstance(layer, nn.Conv2d):
+                                grad_magnitude = layer.weight.grad.abs().mean(dim=(1, 2, 3))
+                            elif isinstance(layer, nn.Linear):
+                                grad_magnitude = layer.weight.grad.abs().mean(dim=1)
+                            elif isinstance(layer, nn.LayerNorm):
+                                grad_magnitude = layer.weight.grad.abs()
+                            else:
+                                continue
+                            if mode == 'threshold':
+                                normalized_grad = grad_magnitude / (grad_magnitude.mean() + 1e-9)
                             mask = normalized_grad <= tau
                         elif mode == 'percentage':
                             percentage = getattr(self.config, 'redo_percentage', 0.01)

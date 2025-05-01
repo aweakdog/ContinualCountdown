@@ -327,109 +327,34 @@ class DataParallelPPOActor(BasePPOActor):
                 full_grad = gather_full_grad(self.actor_module)
                 if full_grad is not None:
                     print(f"[DEBUG][Actor] full_grad shape: {full_grad.shape}, numel: {full_grad.numel()}")
-                    if dist.get_rank() == 0:
-                        zero_grad_count = (full_grad == 0).sum().item()
-                        total = full_grad.numel()
-                        zero_grad_ratio = zero_grad_count / (total + 1e-8)
-                        append_to_dict(metrics, {'actor/zero_grad_ratio': zero_grad_ratio})
-                        print(f"[FSDP][Rank 0][Actor] Zero grad ratio: {zero_grad_ratio:.6f} ({zero_grad_count}/{total})")
-                # Nullspace ratio using dormant neuron mask (ReDo style, no SVD)
-                import torch.nn as nn
-                mode = getattr(self.config, 'redo_mode', 'threshold')
-                tau = getattr(self.config, 'redo_tau', 0.04)
-                total_neurons = 0
-                dormant_neurons = 0
-                reset_freq = getattr(self.config, 'redo_reset_freq', 1000)
-                do_reset = (self.actor_optimizer is not None and hasattr(self, '_step_count') and (self._step_count % reset_freq == 0))
-                if not hasattr(self, '_step_count'):
-                    self._step_count = 0
-                self._step_count += 1
-                # FSDP-aware dormant neuron metric and reset (with separate frequencies)
+                # FSDP-aware ReDo metrics and reset
                 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
-                if isinstance(self.actor_module, FSDP):
-                    from verl.utils.redo_utils.fsdp_flat_utils import fsdp_dormant_neuron_mask_and_reset, compute_fsdp_dormant_mask_only
-                    mask = None
-                    dormant_ratio = 0.0
-                    metric_freq = getattr(self.config, 'redo_metric_freq', 100)
-                    reset_freq = getattr(self.config, 'redo_reset_freq', 1000)
-                    do_metric = (self._step_count % metric_freq == 0)
-                    do_reset = (self._step_count % reset_freq == 0)
-                    if do_metric:
-                        mask = compute_fsdp_dormant_mask_only(
-                            self.actor_module,
-                            mode=mode,
-                            tau=tau,
-                            percentage=getattr(self.config, 'redo_percentage', 0.01),
-                            max_percentage=getattr(self.config, 'redo_max_percentage', 0.01)
-                        )
-                        dormant_ratio = mask.float().mean().item()
-                        print(f"[FSDP][Actor] Dormant neuron ratio (flat param): {dormant_ratio:.6f} (METRIC ONLY)")
-                    if do_reset:
-                        mask = fsdp_dormant_neuron_mask_and_reset(
-                            self.actor_module,
-                            mode=mode,
-                            tau=tau,
-                            percentage=getattr(self.config, 'redo_percentage', 0.01),
-                            max_percentage=getattr(self.config, 'redo_max_percentage', 0.01),
-                            use_lecun_init=True
-                        )
-                        dormant_ratio = mask.float().mean().item()
-                        print(f"[FSDP][Actor] Dormant neuron ratio (flat param): {dormant_ratio:.6f}, resets: {mask.sum().item()} (RESET PERFORMED)")
-                    if mask is not None:
-                        nullspace_ratio_tensor = torch.tensor([dormant_ratio], device=mask.device)
-                        dist.all_reduce(nullspace_ratio_tensor, op=dist.ReduceOp.SUM)
-                        nullspace_ratio_tensor /= dist.get_world_size()
-                        if dist.get_rank() == 0:
-                            append_to_dict(metrics, {'actor/nullspace_ratio': nullspace_ratio_tensor.item()})
-                            print(f"[FSDP][Rank 0][Actor] Dormant neuron ratio (avg across ranks): {nullspace_ratio_tensor.item():.6f}")
+                from verl.utils.redo_utils.fsdp_flat_utils import compute_fsdp_dormant_mask_only, fsdp_dormant_neuron_mask_and_reset
+                redo_metric_freq = getattr(self.config, 'redo_metric_freq', 1)
+                redo_reset_freq = getattr(self.config, 'redo_reset_freq', 1000)
+                redo_tau = getattr(self.config, 'redo_tau', 0.1)
+                redo_mode = getattr(self.config, 'redo_mode', 'threshold')
+                rank = 0
+                if dist.is_available() and dist.is_initialized():
+                    rank = dist.get_rank()
+                is_fsdp = isinstance(self.actor_module, FSDP)
+                if is_fsdp:
+                    if self._redo_step % redo_metric_freq == 0:
+                        flat_param = next((p for p in self.actor_module.parameters() if hasattr(p, 'grad') and p.grad is not None), None)
+                        if flat_param is not None:
+                            zero_grad_count = (flat_param.grad == 0).sum().item()
+                            total_grad = flat_param.grad.numel()
+                            zero_grad_ratio = zero_grad_count / (total_grad + 1e-8) if total_grad > 0 else 0.0
+                            mask = compute_fsdp_dormant_mask_only(self.actor_module, mode=redo_mode, tau=redo_tau)
+                            nullspace_ratio = mask.sum().item() / (mask.numel() + 1e-8) if mask is not None else 0.0
+                            if rank == 0:
+                                print(f"[FSDP-ReDo][Actor] redo_step={self._redo_step} zero_grad_ratio={zero_grad_ratio:.6f} nullspace_ratio={nullspace_ratio:.6f}")
+                                append_to_dict(metrics, {'actor/zero_grad_ratio': zero_grad_ratio, 'actor/nullspace_ratio': nullspace_ratio})
+                    if self._redo_step % redo_reset_freq == 0:
+                        mask = fsdp_dormant_neuron_mask_and_reset(self.actor_module, mode=redo_mode, tau=redo_tau)
+                        if rank == 0 and mask is not None:
+                            print(f"[FSDP-ReDo][Actor] Performed neuron reset at step {self._redo_step}, reset {mask.sum().item()} dormant neurons.")
 
-                        append_to_dict(metrics, {'actor/nullspace_ratio': nullspace_ratio_tensor.item()})
-                        print(f"[FSDP][Rank 0][Actor] Dormant neuron ratio (avg across ranks): {nullspace_ratio_tensor.item():.6f}")
-                else:
-                    from verl.utils.redo_utils.gradient_redo import ModifiedGradientReDo
-                    for layer in self.actor_module.modules():
-                        if isinstance(layer, (nn.Linear, nn.Conv2d, nn.LayerNorm)):
-                            if layer.weight.grad is None:
-                                print(f"[DEBUG][Actor] Layer {type(layer).__name__} has no grad. Name: {getattr(layer, 'name', None)}, device: {layer.weight.device}, shape: {layer.weight.shape}")
-                                continue
-                            # Compute grad magnitude as in ModifiedGradientReDo
-                            if isinstance(layer, nn.Conv2d):
-                                grad_magnitude = layer.weight.grad.abs().mean(dim=(1, 2, 3))
-                            elif isinstance(layer, nn.Linear):
-                                grad_magnitude = layer.weight.grad.abs().mean(dim=1)
-                            elif isinstance(layer, nn.LayerNorm):
-                                grad_magnitude = layer.weight.grad.abs()
-                            else:
-                                continue
-                            if mode == 'threshold':
-                                normalized_grad = grad_magnitude / (grad_magnitude.mean() + 1e-9)
-                            mask = normalized_grad <= tau
-                        elif mode == 'percentage':
-                            percentage = getattr(self.config, 'redo_percentage', 0.01)
-                            k = max(1, int(len(grad_magnitude) * percentage))
-                            threshold = torch.kthvalue(grad_magnitude, k).values if k < len(grad_magnitude) else torch.min(grad_magnitude)
-                            mask = grad_magnitude <= threshold
-                        elif mode == 'hybrid':
-                            normalized_grad = grad_magnitude / (grad_magnitude.mean() + 1e-9)
-                            threshold_mask = normalized_grad <= tau
-                            max_percentage = getattr(self.config, 'redo_max_percentage', 0.01)
-                            k_max = max(1, int(len(grad_magnitude) * max_percentage))
-                            if threshold_mask.sum() > k_max:
-                                combined_grad = grad_magnitude.clone()
-                                combined_grad[~threshold_mask] = float('inf')
-                                _, indices = torch.topk(combined_grad, k_max, largest=False)
-                                mask = torch.zeros_like(grad_magnitude, dtype=torch.bool)
-                                mask[indices] = True
-                            else:
-                                mask = threshold_mask
-                        else:
-                            raise ValueError(f"Unknown redo_mode: {mode}")
-                        total_neurons += mask.numel()
-                        dormant_neurons += mask.sum().item()
-                        if do_reset and mask.sum() > 0:
-                            ModifiedGradientReDo._reset_single_layer(layer, mask)
-                            print(f"[ReDo][Actor] Reset {mask.sum().item()} dormant neurons in {type(layer).__name__} at step {self._step_count}")
-                nullspace_ratio = dormant_neurons / (total_neurons + 1e-8) if total_neurons > 0 else 0.0
                 nullspace_ratio_tensor = torch.tensor([nullspace_ratio], device=next(self.actor_module.parameters()).device)
                 dist.all_reduce(nullspace_ratio_tensor, op=dist.ReduceOp.SUM)
                 nullspace_ratio_tensor /= dist.get_world_size()

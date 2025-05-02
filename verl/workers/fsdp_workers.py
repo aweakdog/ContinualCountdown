@@ -34,6 +34,20 @@ from verl.utils.fs import copy_local_path_from_hdfs
 from verl.utils.fsdp_utils import get_fsdp_wrap_policy, offload_fsdp_grad, init_fn, get_init_weight_context_manager
 from verl.utils.fsdp_utils import offload_fsdp_optimizer, offload_fsdp_param_and_grad, load_fsdp_optimizer, \
     load_fsdp_param_and_grad
+
+# FSDP DEBUG INFO
+import torch
+import inspect
+from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
+print("[DEBUG] PyTorch version:", torch.__version__)
+print("[DEBUG] FSDP class:", FSDP)
+print("[DEBUG] FSDP module:", FSDP.__module__)
+print("[DEBUG] FSDP doc:", FSDP.__doc__[:200])
+print("[DEBUG] FSDP signature:", inspect.signature(FSDP.__init__))
+try:
+    print("[DEBUG] FSDP source:", FSDP.__module__, FSDP.__init__.__code__.co_filename)
+except Exception as e:
+    print(f"[DEBUG] Could not get FSDP source: {e}")
 from verl.utils.import_utils import import_external_libs
 from verl.utils.model import compute_position_id_with_mask
 from verl.utils.flops_counter import FlopsCounter
@@ -205,6 +219,11 @@ class ActorRolloutRefWorker(Worker):
 
         print(f'wrap_policy: {auto_wrap_policy}')
 
+        # DEBUG: Print model module tree before FSDP wrapping
+        print("[DEBUG] Model module tree BEFORE FSDP wrapping:")
+        for name, module in actor_module.named_modules():
+            print(f"  {name}: {type(module)}")
+
         # TODO(sgm): support hybrid
         if auto_wrap_policy is None:
             sharding_strategy = ShardingStrategy.SHARD_GRAD_OP
@@ -215,7 +234,7 @@ class ActorRolloutRefWorker(Worker):
         actor_module_fsdp = FSDP(
             actor_module,
             param_init_fn=init_fn,
-            use_orig_params=False,
+            use_orig_params=False,  # Enable original param views for robust FSDP analysis
             auto_wrap_policy=auto_wrap_policy,
             device_id=torch.cuda.current_device(),
             sharding_strategy=sharding_strategy,  # zero3
@@ -225,6 +244,12 @@ class ActorRolloutRefWorker(Worker):
             forward_prefetch=False)
 
         log_gpu_memory_usage('After Actor FSDP init', logger=logger)
+
+        # DEBUG: Print FSDP-wrapped module structure
+        print("[DEBUG] Model module tree AFTER FSDP wrapping:")
+        print(f"Top-level type: {type(actor_module_fsdp)}")
+        for name, module in actor_module_fsdp.named_modules():
+            print(f"  {name}: {type(module)}")
 
         # TODO: add more optimizer args into config
         if self._is_actor:
@@ -335,8 +360,8 @@ class ActorRolloutRefWorker(Worker):
             self.actor_redo_tau = getattr(self.config, 'redo_tau', 0.1)
             self.actor_redo_reset_freq = getattr(self.config, 'redo_reset_freq', 1000)
             self.actor_redo_metric_freq = getattr(self.config, 'redo_metric_freq', 1)
-            if self.actor_redo_enabled:
-                self.actor_gradredo = VerlGradientReDo(self.actor_module_fsdp, tau=self.actor_redo_tau, frequency=self.actor_redo_reset_freq, optimizer=self.actor_optimizer)
+            #if self.actor_redo_enabled:
+            #    self.actor_gradredo = VerlGradientReDo(self.actor_module_fsdp, tau=self.actor_redo_tau, frequency=self.actor_redo_reset_freq, optimizer=self.actor_optimizer)
 
         if self._is_rollout:
             self.rollout, self.rollout_sharding_manager = self._build_rollout()
@@ -369,10 +394,10 @@ class ActorRolloutRefWorker(Worker):
         metrics = {}
         # Print metrics & perform neuron reset only if enabled
         # Print metrics & perform neuron reset only if enabled
-        if getattr(self, 'actor_redo_enabled', True):
-            if self.actor_update_step % self.actor_redo_reset_freq == 0:
-                print(f"[Actor] Step {self.actor_update_step}: Performing Gradient-based neuron reset (tau={self.actor_redo_tau})")
-                self.actor_gradredo.step()
+        #if getattr(self, 'actor_redo_enabled', True):
+        #    if self.actor_update_step % self.actor_redo_reset_freq == 0:
+        #        print(f"[Actor] Step {self.actor_update_step}: Performing Gradient-based neuron reset (tau={self.actor_redo_tau})")
+        #        self.actor_gradredo.step()
         data = data.to('cuda')
 
         # ... (rest of the function)
@@ -918,6 +943,10 @@ class RewardModelWorker(Worker):
                                                                             attn_implementation='flash_attention_2',
                                                                             trust_remote_code=trust_remote_code)
             reward_module.to(torch.bfloat16)
+        # Debug: print all original parameter names and shapes before FSDP wrapping
+        print("[DEBUG] Original model parameters before FSDP wrapping:")
+        for name, param in reward_module.named_parameters():
+            print(f"[DEBUG]   {name}: shape={tuple(param.shape)}")
         auto_wrap_policy = get_fsdp_wrap_policy(module=reward_module, config=self.config.model.fsdp_config)
 
         reward_module = FSDP(
@@ -931,6 +960,8 @@ class RewardModelWorker(Worker):
             cpu_offload=CPUOffload(offload_params=self.config.model.fsdp_config.param_offload),
             forward_prefetch=False)
 
+        # Debug: print FSDP sharding strategy after wrapping
+        print(f"[DEBUG] FSDP sharding_strategy: {getattr(reward_module, 'sharding_strategy', 'N/A')}")
         return reward_module
 
     @register(dispatch_mode=Dispatch.ONE_TO_ALL)

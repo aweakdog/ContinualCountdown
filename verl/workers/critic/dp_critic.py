@@ -45,11 +45,20 @@ class DataParallelPPOCritic(BasePPOCritic):
         self.fsdp_grad_metric_enabled = True  # DEBUG: Hard-coded to True for debugging FSDP gradient metrics
         print("[DEBUG][Critic] Config keys at init:", list(config.keys()) if hasattr(config, 'keys') else type(config))
         print("[DEBUG][Critic] fsdp_grad_metric_enabled in config:", getattr(config, "fsdp_grad_metric_enabled", None))
-        super().__init__(config=config)
         self.critic_module = critic_module
         self.critic_optimizer = critic_optimizer
         self.use_remove_padding = self.config.model.get('use_remove_padding', False)
         print(f'Critic use_remove_padding={self.use_remove_padding}')
+
+        # Initialize ReDo-related attributes
+        self._redo_step = 0
+        self.redo_enabled = getattr(self.config, 'redo_enabled', False)
+        self.redo_metric_freq = getattr(self.config, 'redo_metric_freq', 1)
+        self.redo_reset_freq = getattr(self.config, 'redo_reset_freq', 1000)
+        self.redo_mode = getattr(self.config, 'redo_mode', 'threshold')
+        self.redo_tau = getattr(self.config, 'redo_tau', 0.04)
+        print(f'[DEBUG][Critic] ReDo config: enabled={self.redo_enabled}, metric_freq={self.redo_metric_freq}, '
+              f'reset_freq={self.redo_reset_freq}, mode={self.redo_mode}, tau={self.redo_tau}')
 
         assert self.config.ppo_mini_batch_size % self.config.ppo_micro_batch_size == 0
         self.gradient_accumulation = self.config.ppo_mini_batch_size // self.config.ppo_micro_batch_size
@@ -229,7 +238,8 @@ class DataParallelPPOCritic(BasePPOCritic):
 
                 append_to_dict(metrics, data)
 
-
+            # We've completely removed ReDo metrics recording from the critic module
+            # All ReDo functionality (metrics and reset) is now only in the actor module
             grad_norm = self._optimizer_step()
             data = {'critic/grad_norm': grad_norm.detach().item()}
             append_to_dict(metrics, data)

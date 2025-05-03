@@ -227,6 +227,7 @@ def compute_score(solution_str, ground_truth, method='strict', format_score=0.1,
     if do_print:
         print('extracted thoughts:',thoughts)
     format_score = estimate_thought_reward(thoughts, numbers, do_print)
+    format_score = 0
 
     #if equation is None:
     #    if do_print:

@@ -33,7 +33,7 @@ from verl.single_controller.base.decorator import register, Dispatch
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from verl.utils.redo_utils.fsdp_flat_utils import analyze_all_fsdp_dormant_neurons
+from verl.utils.redo_utils.fsdp_flat_utils import analyze_all_fsdp_dormant_neurons, analyze_all_fsdp_zero_grad_space
 import verl.utils.torch_functional as verl_F
 
 from flash_attn.bert_padding import pad_input, unpad_input, rearrange, index_first_axis
@@ -269,6 +269,18 @@ class DataParallelPPOActor(BasePPOActor):
         dataloader = batch.split(self.config.ppo_mini_batch_size)
 
         metrics = {}
+        nullspace_ratios = []
+        zero_gradspace_ratios = []
+
+        # Ensure rank is defined before use
+        import torch.distributed as dist
+        rank = 0
+        if dist.is_available() and dist.is_initialized():
+            rank = dist.get_rank()
+
+        if rank == 0: # hacky equalto global step
+            self._redo_step += 1
+
         for batch_idx, data in enumerate(dataloader):
             # split batch into micro_batches
             mini_batch = data
@@ -336,7 +348,6 @@ class DataParallelPPOActor(BasePPOActor):
                 append_to_dict(metrics, {'actor/fsdp_grad_metric_ran': True})
                 
                 # Increment ReDo step counter
-                self._redo_step += 1
                 
                 # FSDP-aware ReDo metrics and reset
                 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
@@ -353,14 +364,14 @@ class DataParallelPPOActor(BasePPOActor):
                     # Calculate metrics at the specified frequency
                     if self._redo_step % self.redo_metric_freq == 0:
                         dormant_stats = analyze_all_fsdp_dormant_neurons(self.actor_module, mode=self.redo_mode, tau=self.redo_tau, verbose=(rank==0))
-                        zero_grad_stats = compute_fsdp_zero_grad_space_ratio(self.actor_module, verbose=(rank==0))
+                        zero_grad_stats = analyze_all_fsdp_zero_grad_space(self.actor_module, verbose=(rank==0))
                         # Compute local nullspace ratio
                         if dormant_stats:
                             total_dormant = sum(v['dormant'] for v in dormant_stats.values() if v)
                             total_count = sum(v['total'] for v in dormant_stats.values() if v)
                             nullspace_ratio = total_dormant / (total_count + 1e-8) if total_count > 0 else 0.0
-                        # Compute local zero grad space ratio
-                        zero_gradspace_ratio = zero_grad_stats['ratio'] if zero_grad_stats['total'] > 0 else 0.0
+                        # Compute local zero grad space ratio using global stats
+                        zero_gradspace_ratio = zero_grad_stats['__global__']['ratio'] if zero_grad_stats and zero_grad_stats['__global__']['total'] > 0 else 0.0
                     
                     # Perform neuron reset at the specified frequency
                     if self._redo_step % self.redo_reset_freq == 0 and self._redo_step > 0:
@@ -374,16 +385,23 @@ class DataParallelPPOActor(BasePPOActor):
                     nullspace_ratio_tensor /= dist.get_world_size()
 
                     # Aggregate zero grad space ratio across all ranks (sum zeros and total, then calculate ratio)
-                    zero_grad_tensor = torch.tensor([zero_grad_stats['zero'], zero_grad_stats['total']], dtype=torch.float32, device=next(self.actor_module.parameters()).device) if zero_grad_stats else torch.zeros(2, dtype=torch.float32, device=next(self.actor_module.parameters()).device)
+                    # Aggregate zero grad space ratio across all ranks (sum zeros and total, then calculate ratio)
+                    if zero_grad_stats and '__global__' in zero_grad_stats:
+                        local_zero = zero_grad_stats['__global__']['zero']
+                        local_total = zero_grad_stats['__global__']['total']
+                    else:
+                        local_zero = 0.0
+                        local_total = 0.0
+                    zero_grad_tensor = torch.tensor([local_zero, local_total], dtype=torch.float32, device=next(self.actor_module.parameters()).device)
                     dist.all_reduce(zero_grad_tensor, op=dist.ReduceOp.SUM)
                     global_zero_grad, global_total_grad = zero_grad_tensor.tolist()
                     zero_gradspace_ratio_avg = global_zero_grad / (global_total_grad + 1e-8) if global_total_grad > 0 else 0.0
 
                     if dist.get_rank() == 0:
-                        append_to_dict(metrics, {'actor/nullspace_ratio': nullspace_ratio_tensor.item()})
-                        append_to_dict(metrics, {'actor/zero_gradspace_ratio': zero_gradspace_ratio_avg})
-                        print(f"[FSDP][Rank 0][Actor] Dormant neuron ratio (avg across ranks): {nullspace_ratio_tensor.item():.6f}")
-                        print(f"[FSDP][Rank 0][Actor] Zero grad space ratio (avg across ranks): {zero_gradspace_ratio_avg:.6f}")
+                        nullspace_ratios.append(nullspace_ratio_tensor.item())
+                        zero_gradspace_ratios.append(zero_gradspace_ratio_avg)
+                        #print(f"[FSDP][Rank 0][Actor] Dormant neuron ratio (avg across ranks): {nullspace_ratio_tensor.item():.6f}")
+                        #print(f"[FSDP][Rank 0][Actor] Zero grad space ratio (avg across ranks): {zero_gradspace_ratio_avg:.6f}")
                 else:
                     if rank == 0:
                         print(f"[DEBUG][Actor][Rank {dist.get_rank()}] ReDo not enabled or not an FSDP module")
@@ -391,4 +409,9 @@ class DataParallelPPOActor(BasePPOActor):
             data = {'actor/grad_norm': grad_norm.detach().item()}
             append_to_dict(metrics, data)
         self.actor_optimizer.zero_grad()
+        # Average and push nullspace/zero_gradspace ratios if collected
+        if nullspace_ratios:
+            metrics['actor/nullspace_ratio'] = sum(nullspace_ratios) / len(nullspace_ratios)
+        if zero_gradspace_ratios:
+            metrics['actor/zero_gradspace_ratio'] = sum(zero_gradspace_ratios) / len(zero_gradspace_ratios)
         return metrics

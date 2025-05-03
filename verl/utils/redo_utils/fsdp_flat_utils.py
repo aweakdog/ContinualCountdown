@@ -30,7 +30,7 @@ def get_flat_param_to_layer_map(fsdp_module):
                 'end': offset + num_elements,
                 'shape': tuple(param.shape),
             })
-            print(f"[DEBUG] flat_param slice: name={name}, start={offset}, end={offset + num_elements}, shape={tuple(param.shape)}")
+            #print(f"[DEBUG] flat_param slice: name={name}, start={offset}, end={offset + num_elements}, shape={tuple(param.shape)}")
             offset += num_elements
         # print(f"[DEBUG] Built flat_param to layer map using params/_unflattened_param_names with {len(index_map)} entries")
         return index_map, flat_param
@@ -44,12 +44,12 @@ def try_print_flat_param_to_layer_map(fsdp_module):
     """
     if hasattr(fsdp_module, '_flat_param_to_layer_map'):
         flat_param_to_layer_map = getattr(fsdp_module, '_flat_param_to_layer_map')
-        print(f"[DEBUG] _flat_param_to_layer_map found with {len(flat_param_to_layer_map)} entries:")
+        #print(f"[DEBUG] _flat_param_to_layer_map found with {len(flat_param_to_layer_map)} entries:")
         for idx, (param_name, submodule) in enumerate(flat_param_to_layer_map.items()):
             print(f"Flat param index {idx} -> Layer: {getattr(submodule, '__class__', type(submodule)).__name__}, Param: {param_name}")
         return flat_param_to_layer_map
     else:
-        print("[DEBUG] _flat_param_to_layer_map attribute not found on this FSDP module.")
+        #print("[DEBUG] _flat_param_to_layer_map attribute not found on this FSDP module.")
         return None
 
 def iter_leaf_fsdp_modules(module):
@@ -88,14 +88,41 @@ def analyze_all_fsdp_dormant_neurons(module, mode='threshold', tau=0.04, verbose
                     'total': count,
                     'ratio': dormant / (count + 1e-8)
                 }
-                if verbose:
-                    print(f"[DormantNeuron][{name}] dormant={dormant}, total={count}, ratio={dormant/(count+1e-8):.6f}")
+                #if verbose:
+                #    print(f"[DormantNeuron][{name}] dormant={dormant}, total={count}, ratio={dormant/(count+1e-8):.6f}")
             else:
                 results[name] = None
         except Exception as e:
             print(f"[WARN] Could not analyze dormant neurons for {name}: {e}")
-    if verbose and total_count > 0:
-        print(f"[DormantNeuron][ALL] total_dormant={total_dormant}, total_params={total_count}, ratio={total_dormant/(total_count+1e-8):.6f}")
+    #if verbose and total_count > 0:
+    #    print(f"[DormantNeuron][ALL] total_dormant={total_dormant}, total_params={total_count}, ratio={total_dormant/(total_count+1e-8):.6f}")
+    return results
+
+def analyze_all_fsdp_zero_grad_space(module, eps=1e-8, verbose=True):
+    """
+    Analyze all leaf FSDP-wrapped submodules for zero grad space ratio.
+    Returns a dict mapping module names to their zero grad stats and the global aggregate.
+    """
+    from verl.utils.redo_utils.fsdp_flat_utils import compute_fsdp_zero_grad_space_ratio
+    results = {}
+    total_zero = 0
+    total_rows = 0
+    for name, submodule in iter_leaf_fsdp_modules(module):
+        try:
+            stats = compute_fsdp_zero_grad_space_ratio(submodule, eps=eps, verbose=verbose)
+            if stats is not None:
+                zero = stats.get('zero', 0)
+                rows = stats.get('total', 0)
+                total_zero += zero
+                total_rows += rows
+                results[name] = stats
+            else:
+                results[name] = None
+        except Exception as e:
+            if verbose:
+                print(f"[WARN] Could not analyze zero grad space for {name}: {e}")
+    global_ratio = total_zero / (total_rows + 1e-8) if total_rows > 0 else 0.0
+    results['__global__'] = {'zero': total_zero, 'total': total_rows, 'ratio': global_ratio}
     return results
 
 def redo_reset_all_fsdp_layers(module, mode='threshold', tau=0.04, verbose=True, use_lecun_init=True):
@@ -170,11 +197,12 @@ def get_fsdp_flat_param_index_map(fsdp_module):
         #print(f"[DEBUG] flat_param attributes: {dir(flat_param)}")
         shapes = getattr(flat_param, '_shapes', None)
         if shapes is not None:
-            print(f"[DEBUG] flat_param._shapes type: {type(shapes)}, length: {len(shapes)}")
+            #print(f"[DEBUG] flat_param._shapes type: {type(shapes)}, length: {len(shapes)}")
             if len(shapes) > 0:
-                print(f"[DEBUG] flat_param._shapes[0] type: {type(shapes[0])}, value: {shapes[0]}")
+                #print(f"[DEBUG] flat_param._shapes[0] type: {type(shapes[0])}, value: {shapes[0]}")
                 if hasattr(shapes[0], '__dict__'):
-                    print(f"[DEBUG] flat_param._shapes[0] attributes: {dir(shapes[0])}")
+                    pass
+                    #print(f"[DEBUG] flat_param._shapes[0] attributes: {dir(shapes[0])}")
         names = getattr(flat_param, '_unflattened_param_names', None)
         # If shapes provides (global_start, global_end, shape) tuples, use them directly
         #if shapes is not None and len(shapes) > 0 and isinstance(shapes[0], tuple) and len(shapes[0]) == 3:
@@ -201,7 +229,7 @@ def get_fsdp_flat_param_index_map(fsdp_module):
                 name = names[i] if names is not None and i < len(names) else f"param_{i}"
                 start = offset
                 end = offset + numel
-                print(f"[DEBUG] Computed flat_param indices for layer {name}: start={start}, end={end}, shape={shape}")
+                #print(f"[DEBUG] Computed flat_param indices for layer {name}: start={start}, end={end}, shape={shape}")
                 index_map.append({
                     'index': i,
                     'start': start,
@@ -228,18 +256,64 @@ def get_fsdp_flat_param_index_map(fsdp_module):
     return index_map, param
 
 
-def compute_fsdp_zero_grad_space_ratio(fsdp_module, eps=1e-8, verbose=False):
+def get_shard_overlap_slices(entry, my_global_start, my_global_end, flat_param_numel, verbose=False):
+    """
+    Given an index_map entry and the global start/end for this shard, compute the overlap region and local/global slices.
+    Returns None if there is no overlap or if the overlap does not contain any full rows (for 2D params).
+    """
+    param_start = entry['start']
+    param_end = entry['end']
+    overlap_start = max(param_start, my_global_start)
+    overlap_end = min(param_end, my_global_end)
+    if overlap_start >= overlap_end:
+        return None
+    local_slice_start = max(overlap_start - my_global_start, 0)
+    local_slice_end = min(local_slice_start + (overlap_end - overlap_start), flat_param_numel)
+    actual_numel = local_slice_end - local_slice_start
+    if actual_numel < 0: # hacky here we skip the rank0 non-full-row param
+        import torch.distributed as dist
+        dist_ok = dist.is_available() and dist.is_initialized()
+        if dist_ok:
+            rank = dist.get_rank()
+            if verbose:
+                print('[RANK]current_rank:',rank)
+        #if verbose:
+        #    print("[WARN][slices]",'param_start',param_start,'param_end',param_end,'my_global_start',my_global_start,'my_global_end',my_global_end,'local_slice_start',local_slice_start,'local_slice_end',local_slice_end)
+        return None
+    param_slice_start = overlap_start - param_start
+    param_slice_end = overlap_end - param_start
+    if len(entry['shape']) != 2:
+        return None
+    num_cols = entry['shape'][1]
+    valid_numel = (actual_numel // num_cols) * num_cols
+    if valid_numel == 0:
+        if verbose:
+            print(f"[WARN] No full rows in local grad slice (actual_numel={actual_numel}, num_cols={num_cols}), skipping entry {entry.get('fqn', None) or entry.get('name', None)}.")
+        return None
+    num_rows = valid_numel // num_cols
+    sub_shape = (num_rows, num_cols)
+    return {
+        'local_slice_start': local_slice_start,
+        'valid_numel': valid_numel,
+        'num_rows': num_rows,
+        'num_cols': num_cols,
+        'sub_shape': sub_shape,
+        'param_slice_start': param_slice_start,
+        'param_slice_end': param_slice_end,
+        'entry_name': entry.get('fqn', None) or entry.get('name', None)
+    }
+
+def compute_fsdp_zero_grad_space_ratio(fsdp_module, eps=0.04, verbose=False):
     """
     Computes the fraction of output neurons (rows) in each 2D param whose gradient is (almost) exactly zero.
     Handles global-to-local index mapping for FSDP shards.
     Returns the global ratio: (total zero-grad rows) / (total rows across all 2D params)
     """
+    #eps = 1.00 # hacky code
     index_map, flat_param = get_fsdp_flat_param_index_map(fsdp_module)
     grad = flat_param.grad
     if grad is None:
-        if verbose:
-            # print("[WARN] flat_param.grad is None, skipping zero grad space calculation.")
-            pass
+        print("[WARN] flat_param.grad is None, skipping zero grad space calculation.")
         return {'zero': 0, 'total': 0, 'ratio': 0.0}
 
     my_global_start = getattr(flat_param, '_shard_start_idx', None)
@@ -256,7 +330,8 @@ def compute_fsdp_zero_grad_space_ratio(fsdp_module, eps=1e-8, verbose=False):
                     global_flat_param_numel = max(entry['end'] for entry in index_map)
                     shard_size = (global_flat_param_numel + world_size - 1) // world_size
                     my_global_start = rank * shard_size
-                    my_global_end = min((rank + 1) * shard_size, global_flat_param_numel)
+                    my_global_end = min((rank + 1) * shard_size, global_flat_param_numel) # for last rank
+                    my_global_end = min(my_global_end, my_global_start + flat_param.numel())
                     if verbose:
                         # print(f"[DEBUG] rank={rank}, my_global_start={my_global_start}, my_global_end={my_global_end}, global_flat_param_numel={global_flat_param_numel}, shard_size={shard_size}")
                         pass
@@ -270,62 +345,53 @@ def compute_fsdp_zero_grad_space_ratio(fsdp_module, eps=1e-8, verbose=False):
                 my_global_start = 0
                 my_global_end = flat_param.numel()
         except Exception as e:
-            if verbose:
-                # print(f"[WARN] Could not infer global shard start idx: {e}")
-                pass
+            print(f"[WARN] Could not infer global shard start idx: {e}")
             my_global_start = 0
             my_global_end = flat_param.numel()
     else:
         my_global_end = my_global_start + flat_param.numel()
-    if verbose:
-        # print(f"[DEBUG] my_global_start={my_global_start}, my_global_end={my_global_end}, local flat_param.numel={flat_param.numel()}")
-        pass
+    #print(f"[DEBUG][ZeroGrad] my_global_start={my_global_start}, my_global_end={my_global_end}, local flat_param.numel={flat_param.numel()}")
 
     total_zero = 0
     total_rows = 0
-    for entry in index_map:
-        shape = entry['shape']
-        if len(shape) != 2:
+    for idx, entry in enumerate(index_map):
+        #print(f"[DEBUG][ZeroGrad][{idx}] entry:{entry}")
+        overlap_info = get_shard_overlap_slices(entry, my_global_start, my_global_end, flat_param.numel(), verbose=verbose)
+        if overlap_info is None:
             continue
-        param_start = entry['start']
-        param_end = entry['end']
-
-        overlap_start = max(param_start, my_global_start)
-        overlap_end = min(param_end, my_global_end)
-        if overlap_start >= overlap_end:
+        local_slice_start = overlap_info['local_slice_start']
+        valid_numel = overlap_info['valid_numel']
+        sub_shape = overlap_info['sub_shape']
+        num_rows = overlap_info['num_rows']
+        num_cols = overlap_info['num_cols']
+        # Robust shape check
+        if not isinstance(sub_shape, (tuple, list)) or len(sub_shape) != 2 or sub_shape[0] <= 0 or sub_shape[1] <= 0:
             if verbose:
-                # print(f"[WARN] Entry {entry.get('fqn', entry['index'])} not present in this shard.")
-                pass
+                print(f"[ERROR][ZeroGrad] Invalid sub_shape {sub_shape} for entry {idx}, skipping.")
             continue
-        if (overlap_start == param_start) and (overlap_end == param_end):
-            local_slice_start = overlap_start - my_global_start
-            local_slice_end = overlap_end - my_global_start
-            grad_raw = grad[local_slice_start:local_slice_end]
-            if grad_raw.numel() != torch.Size(shape).numel():
-                if verbose:
-                    # print(f"[WARN] Mismatch in grad slice size for {entry.get('fqn', entry['index'])}: got {grad_raw.numel()}, expected {torch.Size(shape).numel()}")
-                    pass
-                continue
-            grad_matrix = grad_raw.view(shape)
-            zero_vectors = (grad_matrix.abs().sum(dim=1) < eps)
-            total_zero += zero_vectors.sum().item()
-            total_rows += grad_matrix.size(0)
+        grad_raw = grad[local_slice_start:local_slice_start + valid_numel]
+        if grad_raw.numel() != valid_numel:
             if verbose:
-                # print(f"[DEBUG] Zero grad vectors for {entry.get('fqn', entry['index'])}: {zero_vectors.sum().item()}/{grad_matrix.size(0)}")
-                pass
-        else:
-            if verbose:
-                # print(f"[WARN] Entry {entry.get('fqn', entry['index'])} only partially present in this shard. Skipping.")
-                pass
+                print(f"[WARN][ZeroGrad] grad_raw size mismatch ({grad_raw.numel()} != {valid_numel}), skipping entry {idx}.")
             continue
+        try:
+            grad_matrix = grad_raw.view(sub_shape)
+        except Exception as e:
+            if verbose:
+                print(f"[ERROR][ZeroGrad] Could not reshape grad_raw to {sub_shape} for entry {idx}: {e}")
+            continue
+        zero_vectors = (grad_matrix.abs().sum(dim=1) < eps)
+        total_zero += zero_vectors.sum().item()
+        total_rows += grad_matrix.size(0)
+        #print(f"[DEBUG][ZeroGrad]total_zero:{total_zero}")
+        #print(f"[DEBUG][ZeroGrad]total_rows:{total_rows}")
 
     ratio = total_zero / (total_rows + 1e-8) if total_rows > 0 else 0.0
-    if verbose:
-        pass
-        # print(f"[DEBUG] Zero grad space: {total_zero}/{total_rows} ({ratio:.6f})")
+    # if verbose:
+    #     print(f"[DEBUG] Zero grad space: {total_zero}/{total_rows} ({ratio:.6f})")
     return {'zero': total_zero, 'total': total_rows, 'ratio': ratio}
 
-def compute_fsdp_dormant_mask_only(fsdp_module, mode='threshold', tau=0.04, percentage=0.01, max_percentage=0.01):
+def compute_fsdp_dormant_mask_only(fsdp_module, mode='threshold', tau=0.04, percentage=0.01, max_percentage=0.01, verbose=True):
     """
     Computes and returns the dormant neuron mask for the FSDP flat parameter, but does NOT reset weights.
     Works with both FSDP FlatParameters and regular Parameters.
@@ -333,11 +399,9 @@ def compute_fsdp_dormant_mask_only(fsdp_module, mode='threshold', tau=0.04, perc
     try:
         index_map, flat_param = get_fsdp_flat_param_index_map(fsdp_module)
         
-        # all_masks = []  # Unused debug variable
-        # all_ratios = []  # Unused debug variable
+        all_masks = []
+        all_ratios = []
         # print(f"[DEBUG] compute_fsdp_dormant_mask_only: Processing module {type(fsdp_module).__name__}")
-        if verbose:
-            pass
         # Process each parameter individually
         # Get the global start offset for this local flat_param shard
         # Try to get the global start offset for this local flat_param shard
@@ -356,6 +420,7 @@ def compute_fsdp_dormant_mask_only(fsdp_module, mode='threshold', tau=0.04, perc
                         shard_size = (global_flat_param_numel + world_size - 1) // world_size
                         my_global_start = rank * shard_size
                         my_global_end = min((rank + 1) * shard_size, global_flat_param_numel)
+                        my_global_end = min(my_global_end, my_global_start + flat_param.numel())
                         # print(f"[DEBUG] rank={rank}, my_global_start={my_global_start}, my_global_end={my_global_end}, global_flat_param_numel={global_flat_param_numel}, shard_size={shard_size}")
                         pass
                     else:
@@ -368,107 +433,99 @@ def compute_fsdp_dormant_mask_only(fsdp_module, mode='threshold', tau=0.04, perc
                     my_global_end = flat_param.numel()
             except Exception as e:
                 # print(f"[WARN] Could not infer global shard start idx: {e}")
-                pass
                 my_global_start = 0
                 my_global_end = flat_param.numel()
         else:
             my_global_end = my_global_start + flat_param.numel()
-        # print(f"[DEBUG] my_global_start={my_global_start}, my_global_end={my_global_end}, local flat_param.numel={flat_param.numel()}")
-        pass
+        #print(f"[DEBUG][nullspace] my_global_start={my_global_start}, my_global_end={my_global_end}, local flat_param.numel={flat_param.numel()}")
+        #pass
         for idx, entry in enumerate(index_map):
-            entry_name = entry.get('fqn', None) or entry.get('name', None) or idx
-            param_start = entry['start']
-            param_end = entry['end']
-            # Check for overlap between param and local shard
-            overlap_start = max(param_start, my_global_start)
-            overlap_end = min(param_end, my_global_end)
-            if overlap_start >= overlap_end:
-                print(f"[WARN] Entry {entry_name} is not present in this shard. Global param [{param_start}:{param_end}), local shard [{my_global_start}:{my_global_end})")
-                print(f"[WARN] Full entry info: {entry}")
+            #print(f"[DEBUG][nullspace]entry:{entry}")
+            overlap_info = get_shard_overlap_slices(entry, my_global_start, my_global_end, flat_param.numel(), verbose=verbose)
+            if overlap_info is None:
                 continue
-            # Compute local indices
-            local_slice_start = overlap_start - my_global_start
-            local_slice_end = overlap_end - my_global_start
-            param_slice_start = overlap_start - param_start
-            param_slice_end = overlap_end - param_start
-            # Only process if the full param is present (most common FSDP case)
-            if (overlap_start == param_start) and (overlap_end == param_end):
-                numel = param_end - param_start
-                expected_numel = torch.Size(entry['shape']).numel()
-                # Guard: skip if local slice is zero-sized
-                if local_slice_end <= local_slice_start or (local_slice_end - local_slice_start) == 0:
-                    print(f"[WARN] Skipping zero-size local slice for {entry_name}: local [{local_slice_start}:{local_slice_end}]")
-                    continue
-                raw_slice = flat_param.data[local_slice_start:local_slice_end]
-                print(f"[DEBUG] About to reshape param_slice for {entry_name}: raw numel={raw_slice.numel()}, target shape={entry['shape']}")
-                if raw_slice.numel() != expected_numel:
-                    print(f"[ERROR] Slice size mismatch for {entry_name}: got {raw_slice.numel()}, expected {expected_numel}. Skipping.")
-                    print(f"[ERROR] Full entry info: {entry}")
-                    continue
-                param_slice = raw_slice.view(entry['shape'])
-            else:
-                # Partial param present (rare): print info and skip
-                print(f"[WARN] Entry {entry_name} is only partially present in this shard. Skipping. ")
-                print(f"[WARN] Overlap: global [{overlap_start}:{overlap_end}), local flat_param[{local_slice_start}:{local_slice_end}], param[{param_slice_start}:{param_slice_end}] of shape {entry['shape']}")
+            entry_name = overlap_info['entry_name'] or idx
+            local_slice_start = overlap_info['local_slice_start']
+            valid_numel = overlap_info['valid_numel']
+            num_rows = overlap_info['num_rows']
+            num_cols = overlap_info['num_cols']
+            sub_shape = overlap_info['sub_shape']
+            # Guard against invalid/negative/zero shapes
+            if not isinstance(sub_shape, (tuple, list)) or len(sub_shape) != 2 or sub_shape[0] <= 0 or sub_shape[1] <= 0:
+                if verbose:
+                    print(f"[ERROR] Invalid sub_shape {sub_shape} for entry {entry_name}, skipping.")
                 continue
-            param_mask = torch.zeros_like(param_slice, dtype=torch.bool)
-            if len(entry['shape']) == 2:  # Linear layer
-                if flat_param.grad is None:
+            try:
+                param_mask = torch.zeros(sub_shape, dtype=torch.bool, device=flat_param.device)
+            except Exception as e:
+                if verbose:
+                    print(f"[ERROR] Could not create param_mask of shape {sub_shape} for entry {entry_name}: {e}")
+                continue
+            if flat_param.grad is None:
+                if verbose:
                     print(f"[ERROR] flat_param.grad is None for entry {entry_name}, skipping.")
-                    continue
-                grad_raw = flat_param.grad[local_slice_start:local_slice_end]
-                print(f"[DEBUG] About to reshape grad_slice for {entry_name}: raw numel={grad_raw.numel()}, target shape={entry['shape']}")
-                if grad_raw.numel() == 0:
-                    print(f"[WARN] Skipping zero-size grad slice for {entry_name}: local [{local_slice_start}:{local_slice_end}]")
-                    continue
-                grad_slice = grad_raw.view(entry['shape'])
-                grad_magnitude = grad_slice.abs().mean(dim=1)  # Average across inputs
-                
-                if mode == 'threshold':
-                    # Normalize by mean gradient magnitude
-                    normalized_grad = grad_magnitude / (grad_magnitude.mean() + 1e-9)
-                    mask = normalized_grad <= tau
-                elif mode == 'percentage':
-                    # Select bottom percentage of neurons by gradient magnitude
-                    k = max(1, int(percentage * grad_magnitude.numel()))
-                    threshold = torch.kthvalue(grad_magnitude, k).values
-                    mask = grad_magnitude <= threshold
-                elif mode == 'hybrid':
-                    # Threshold-based mask
-                    normalized_grad = grad_magnitude / (grad_magnitude.mean() + 1e-9)
-                    threshold_mask = normalized_grad <= tau
-                    
-                    # Percentage-based mask (up to max_percentage)
-                    k = max(1, min(int(max_percentage * grad_magnitude.numel()), threshold_mask.sum().item()))
-                    if k < threshold_mask.sum().item():
-                        values, indices = torch.topk(grad_magnitude[threshold_mask], k, largest=False)
-                        mask = torch.zeros_like(grad_magnitude, dtype=torch.bool)
-                        mask[indices] = True
-                    else:
-                        mask = threshold_mask
+                continue
+            grad_raw = flat_param.grad[local_slice_start: local_slice_start + valid_numel]
+            if grad_raw.numel() == 0:
+                continue
+            if grad_raw.numel() != valid_numel or valid_numel != num_rows * num_cols:
+                if verbose:
+                    print(f"[WARN] grad_raw.numel()={grad_raw.numel()} does not match valid_numel={valid_numel} or sub_shape={sub_shape} (num_rows*num_cols={num_rows*num_cols}), skipping entry {entry_name}.")
+                continue
+            try:
+                grad_slice = grad_raw.view(sub_shape)
+            except Exception as e:
+                if verbose:
+                    print(f"[ERROR] Could not reshape grad_raw to {sub_shape} for entry {entry_name}: {e}")
+                continue
+            grad_magnitude = grad_slice.abs().mean(dim=1)  # Average across inputs
+            if mode == 'threshold':
+                # Normalize by mean gradient magnitude
+                normalized_grad = grad_magnitude / (grad_magnitude.mean() + 1e-9)
+                mask = normalized_grad <= tau
+            elif mode == 'percentage':
+                # Select bottom percentage of neurons by gradient magnitude
+                k = max(1, int(percentage * grad_magnitude.numel()))
+                threshold = torch.kthvalue(grad_magnitude, k).values
+                mask = grad_magnitude <= threshold
+            elif mode == 'hybrid':
+                # Threshold-based mask
+                normalized_grad = grad_magnitude / (grad_magnitude.mean() + 1e-9)
+                threshold_mask = normalized_grad <= tau
+                # Percentage-based mask (up to max_percentage)
+                k = max(1, min(int(max_percentage * grad_magnitude.numel()), threshold_mask.sum().item()))
+                if k < threshold_mask.sum().item():
+                    values, indices = torch.topk(grad_magnitude[threshold_mask], k, largest=False)
+                    mask = torch.zeros_like(grad_magnitude, dtype=torch.bool)
+                    mask[indices] = True
                 else:
-                    raise ValueError(f"Unknown mode: {mode}")
-                param_mask[mask] = True
-                ratio = mask.float().mean().item()
-                all_masks.append(param_mask.flatten())
-                all_ratios.append(ratio)
-                print(f"[DEBUG] Created mask for entry {entry_name}: {mask.sum().item()}/{mask.numel()} neurons marked dormant ({ratio:.6f})")
+                    mask = threshold_mask
             else:
-                # If not a 2D weight, skip but append a default ratio
-                all_masks.append(param_mask)
-                all_ratios.append(0.0)
-                print(f"[DEBUG] Skipped entry {entry_name}: shape={entry['shape']} (not 2D)")
-        
+                if verbose:
+                    print(f"[WARN] Unknown mode: {mode}, using empty mask for entry {entry_name}")
+                mask = torch.zeros_like(grad_magnitude, dtype=torch.bool)
+            # Only assign to param_mask if mask shape matches
+            if mask.shape == param_mask.shape[:1]:
+                param_mask[mask] = True
+            else:
+                if verbose:
+                    print(f"[ERROR] Mask shape {mask.shape} does not match param_mask shape {param_mask.shape} for entry {entry_name}, skipping assignment.")
+            ratio = mask.float().mean().item()
+            all_masks.append(param_mask.flatten())
+            all_ratios.append(ratio)
+
+        #print(f"[DEBUG] Created mask for entry {entry_name}: {mask.sum().item()}/{mask.numel()} neurons marked dormant ({ratio:.6f})")
+
         # Combine all masks into one global mask
         if all_masks:
             global_mask = torch.cat(all_masks)
             avg_ratio = sum(all_ratios) / len(all_ratios)
-            print(f"[DEBUG] Combined mask has {global_mask.sum().item()}/{global_mask.numel()} elements marked dormant ({avg_ratio*100:.2f}%)")
+            #print(f"[DEBUG] Combined mask has {global_mask.sum().item()}/{global_mask.numel()} elements marked dormant ({avg_ratio*100:.2f}%)")
             return global_mask
         else:
-            print(f"[DEBUG] No valid parameters found, returning empty mask")
+            #print(f"[DEBUG] No valid parameters found, returning empty mask")
             return torch.zeros(1, dtype=torch.bool, device=next(fsdp_module.parameters()).device)
-    
+
     except Exception as e:
         import traceback
         print(f"Error in compute_fsdp_dormant_mask_only: {e}")
@@ -518,7 +575,7 @@ def fsdp_dormant_neuron_mask_and_reset(fsdp_module, mode='threshold', tau=0.04, 
         reset_count = 0
         total_count = 0
         
-        print(f"[DEBUG] fsdp_dormant_neuron_mask_and_reset: Processing module {type(fsdp_module).__name__}")
+        #print(f"[DEBUG] fsdp_dormant_neuron_mask_and_reset: Processing module {type(fsdp_module).__name__}")
         
         # Process each parameter individually
         for name, param in fsdp_module.named_parameters():
@@ -526,7 +583,7 @@ def fsdp_dormant_neuron_mask_and_reset(fsdp_module, mode='threshold', tau=0.04, 
                 print(f"[DEBUG] Skipping parameter {name} (no gradient)")
                 continue
                 
-            print(f"[DEBUG] Processing parameter {name} with shape {param.shape}")
+            #print(f"[DEBUG] Processing parameter {name} with shape {param.shape}")
             
             # Create mask for this parameter
             param_mask = torch.zeros_like(param.data, dtype=torch.bool)
@@ -559,7 +616,7 @@ def fsdp_dormant_neuron_mask_and_reset(fsdp_module, mode='threshold', tau=0.04, 
                     else:
                         mask = threshold_mask
                 else:
-                    print(f"[DEBUG] Unknown mode: {mode}, using empty mask")
+                    #print(f"[DEBUG] Unknown mode: {mode}, using empty mask")
                     mask = torch.zeros_like(grad_magnitude, dtype=torch.bool)
                 
                 # Reset weights for masked neurons

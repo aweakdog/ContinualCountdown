@@ -76,7 +76,9 @@ def extract_metrics_from_log(log_file: str) -> List[Dict[str, float]]:
         
         # Extract entropy if available
         entropy_match = re.search(r'actor/entropy_loss:([-.0-9]+)', line)
-        
+        # Extract nullspace and zero grad space ratios if available
+        nullspace_match = re.search(r'actor/nullspace_ratio:([0-9.]+)', line)
+        zero_gradspace_match = re.search(r'actor/zero_gradspace_ratio:([0-9.]+)', line)
         try:
             metrics = {
                 'step': training_step,  # Use our training step counter
@@ -85,7 +87,9 @@ def extract_metrics_from_log(log_file: str) -> List[Dict[str, float]]:
                 'grad_norm': float(grad_norm_match.group(1)),
                 'response_length': float(response_length_match.group(1)),
                 'entropy': float(entropy_match.group(1)) if entropy_match else 0.0,
-                'val/test_score/countdown_continual': float(val_test_score_match.group(1)) if val_test_score_match else 0.0
+                'val/test_score/countdown_continual': float(val_test_score_match.group(1)) if val_test_score_match else 0.0,
+                'nullspace_ratio': float(nullspace_match.group(1)) if nullspace_match else 0.0,
+                'zero_gradspace_ratio': float(zero_gradspace_match.group(1)) if zero_gradspace_match else 0.0
             }
             step_metrics.append(metrics)
             print(f"Successfully parsed metrics for training step {training_step}")
@@ -337,8 +341,18 @@ class ContinualEvaluator:
             ax5.set_ylim(min(values) * 0.9, max(values) * 1.1)
         ax5.grid(True, alpha=0.3)
         
-        # Leave ax6 empty for now or use it for another metric if needed
-        ax6.set_visible(False)
+        # Plot nullspace and zero grad space ratios
+        nullspace_vals = [m.get("nullspace_ratio", 0) for m in metrics]
+        zero_grad_vals = [m.get("zero_gradspace_ratio", 0) for m in metrics]
+        ax6.set_visible(True)
+        ax6.plot(steps, nullspace_vals, "-b", label="Nullspace Ratio")
+        ax6.plot(steps, zero_grad_vals, "-r", label="Zero Grad Space Ratio")
+        ax6.set_title("Nullspace & Zero Grad Ratios")
+        ax6.set_xlabel("Training Step")
+        ax6.set_ylabel("Ratio")
+        ax6.set_ylim(0, max(max(nullspace_vals), max(zero_grad_vals), 0.15) * 1.1)
+        ax6.legend()
+        ax6.grid(True, alpha=0.3)
         
         # Add some padding between subplots
         plt.tight_layout(rect=[0, 0.03, 1, 0.95], h_pad=0.5, w_pad=0.5)

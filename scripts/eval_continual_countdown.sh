@@ -5,13 +5,13 @@
 conda activate zero
 
 # Default paths - These should match Docker volume mounts
-METRICS_DIR=${METRICS_DIR:-"/app/metrics"}
-PLOTS_DIR=${PLOTS_DIR:-"/app/plots"}
-LOGS_DIR=${LOGS_DIR:-"/app/logs"}
+METRICS_DIR=${METRICS_DIR:-"./metrics"}
+PLOTS_DIR=${PLOTS_DIR:-"./plots"}
+LOGS_DIR=${LOGS_DIR:-"./logs"}
 
 # Default to evaluating all models
-EVAL_0_5B=1
-EVAL_1_5B=1
+#EVAL_0_5B=1
+#EVAL_1_5B=1
 EVAL_3B=1
 
 # Parse command line arguments

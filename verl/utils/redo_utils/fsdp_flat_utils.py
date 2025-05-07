@@ -3,6 +3,7 @@ Utilities for mapping and manipulating FSDP flat parameters for dormant neuron a
 Supports extracting per-layer grad stats and applying neuron-wise resets directly on the flat parameter.
 """
 import torch
+import math
 from torch.distributed.fsdp import FlatParameter, FullyShardedDataParallel as FSDP
 
 
@@ -349,6 +350,7 @@ def compute_fsdp_zero_grad_space_ratio(fsdp_module, eps=0.04, verbose=False):
             my_global_start = 0
             my_global_end = flat_param.numel()
     else:
+        print('[WARN][my_global_start] is Not None! Got it from param! ')
         my_global_end = my_global_start + flat_param.numel()
     #print(f"[DEBUG][ZeroGrad] my_global_start={my_global_start}, my_global_end={my_global_end}, local flat_param.numel={flat_param.numel()}")
 
@@ -391,7 +393,7 @@ def compute_fsdp_zero_grad_space_ratio(fsdp_module, eps=0.04, verbose=False):
     #     print(f"[DEBUG] Zero grad space: {total_zero}/{total_rows} ({ratio:.6f})")
     return {'zero': total_zero, 'total': total_rows, 'ratio': ratio}
 
-def compute_fsdp_dormant_mask_only(fsdp_module, mode='threshold', tau=0.04, percentage=0.01, max_percentage=0.01, verbose=True):
+def compute_fsdp_dormant_mask_only(fsdp_module, mode='threshold', tau=0.04, percentage=0.01, max_percentage=0.01, use_lecun_init=True, verbose=True):
     """
     Computes and returns the dormant neuron mask for the FSDP flat parameter, but does NOT reset weights.
     Works with both FSDP FlatParameters and regular Parameters.
@@ -436,6 +438,7 @@ def compute_fsdp_dormant_mask_only(fsdp_module, mode='threshold', tau=0.04, perc
                 my_global_start = 0
                 my_global_end = flat_param.numel()
         else:
+            print('[WARN][my_global_start] is Not None! Got it from param! ')
             my_global_end = my_global_start + flat_param.numel()
         #print(f"[DEBUG][nullspace] my_global_start={my_global_start}, my_global_end={my_global_end}, local flat_param.numel={flat_param.numel()}")
         #pass
@@ -507,6 +510,15 @@ def compute_fsdp_dormant_mask_only(fsdp_module, mode='threshold', tau=0.04, perc
             # Only assign to param_mask if mask shape matches
             if mask.shape == param_mask.shape[:1]:
                 param_mask[mask] = True
+                # Perform the reset for masked neurons
+                if mask.any():
+                    with torch.no_grad():
+                        param_slice = flat_param.data[local_slice_start: local_slice_start + valid_numel]
+                        param_slice = param_slice.view(sub_shape)
+                        if use_lecun_init:
+                            lecun_reset(param_slice, mask, sub_shape)
+                        else:
+                            kaiming_reset(param_slice, mask, sub_shape)
             else:
                 if verbose:
                     print(f"[ERROR] Mask shape {mask.shape} does not match param_mask shape {param_mask.shape} for entry {entry_name}, skipping assignment.")
@@ -534,27 +546,66 @@ def compute_fsdp_dormant_mask_only(fsdp_module, mode='threshold', tau=0.04, perc
         return torch.zeros(1, dtype=torch.bool, device=next(fsdp_module.parameters()).device)
 
 
-def lecun_reset(param_slice, mask, shape):
-    """LeCun normal initialization for masked neurons."""
-    if len(shape) == 2:  # Linear layer
-        fan_in = shape[1]
-        std = 1.0 / math.sqrt(fan_in)
-        with torch.no_grad():
-            # Only reset the masked neurons
-            param_slice[mask] = torch.randn_like(param_slice[mask]) * std
+def lecun_reset(param_slice, mask, shape, is_layernorm=False, bias_slice=None):
+    """
+    LeCun normal/truncated normal reset for masked neurons. Supports linear, conv2d, and layernorm slices.
+    If is_layernorm is True, sets weights to 1 and bias to 0.
+    If bias_slice is provided, resets bias for masked neurons as well.
+    """
+    with torch.no_grad():
+        if is_layernorm:
+            param_slice[mask] = 1.0
+            if bias_slice is not None:
+                bias_slice[mask] = 0.0
+            return
+        if len(shape) == 2:  # Linear
+            fan_in = shape[1]
+        elif len(shape) == 4:  # Conv2d
+            fan_in = shape[1] * shape[2] * shape[3]
+        else:
+            raise NotImplementedError(f"Unsupported shape for LeCun reset: {shape}")
+        variance = 1.0 / fan_in
+        stddev = math.sqrt(variance) / 0.87962566103423978
+        # Truncated normal [-2, 2]
+        param_slice[mask] = torch.empty_like(param_slice[mask]).normal_()
+        param_slice[mask] = torch.clamp(param_slice[mask], -2.0, 2.0)
+        param_slice[mask] *= stddev
+        if bias_slice is not None:
+            bias_slice[mask] = 0.0
 
 
-def kaiming_reset(param_slice, mask, shape):
-    """Kaiming uniform initialization for masked neurons."""
-    if len(shape) == 2:  # Linear layer
-        fan_in = shape[1]
-        bound = 1.0 / math.sqrt(fan_in)
-        with torch.no_grad():
-            # Only reset the masked neurons
-            param_slice[mask] = torch.rand_like(param_slice[mask]).uniform_(-bound, bound)
+def kaiming_reset(param_slice, mask, shape, is_layernorm=False, bias_slice=None):
+    """
+    Kaiming uniform reset for masked neurons. Supports linear, conv2d, and layernorm slices.
+    If is_layernorm is True, sets weights to 1 and bias to 0.
+    If bias_slice is provided, resets bias for masked neurons as well.
+    """
+    with torch.no_grad():
+        if is_layernorm:
+            param_slice[mask] = 1.0
+            if bias_slice is not None:
+                bias_slice[mask] = 0.0
+            return
+        if len(shape) == 2:  # Linear
+            fan_in = shape[1]
+        elif len(shape) == 4:  # Conv2d
+            fan_in = shape[1] * shape[2] * shape[3]
+        else:
+            raise NotImplementedError(f"Unsupported shape for Kaiming reset: {shape}")
+        gain = math.sqrt(2.0)  # relu default
+        std = gain / math.sqrt(fan_in)
+        bound = math.sqrt(3.0) * std
+        param_slice[mask] = torch.empty_like(param_slice[mask]).uniform_(-bound, bound)
+        if bias_slice is not None:
+            # PyTorch's Kaiming bias: uniform(-1/sqrt(fan_in), 1/sqrt(fan_in))
+            if fan_in > 0:
+                bias_bound = 1.0 / math.sqrt(fan_in)
+            else:
+                bias_bound = 0.0
+            bias_slice[mask] = torch.empty_like(bias_slice[mask]).uniform_(-bias_bound, bias_bound)
 
 
-def fsdp_dormant_neuron_mask_and_reset(fsdp_module, mode='threshold', tau=0.04, percentage=0.01, max_percentage=0.01, use_lecun_init=True):
+def fsdp_dormant_neuron_mask_and_reset(fsdp_module, mode='threshold', tau=0.04, percentage=0.01, max_percentage=0.01, use_lecun_init=True, verbose=False):
     """
     Computes the dormant neuron mask for the FSDP flat parameter and resets the weights of dormant neurons.
     Works with both FSDP FlatParameters and regular Parameters.
@@ -564,81 +615,151 @@ def fsdp_dormant_neuron_mask_and_reset(fsdp_module, mode='threshold', tau=0.04, 
         tau: Threshold for dormant selection.
         percentage: Fraction of neurons to consider dormant.
         max_percentage: Max fraction for hybrid mode.
-        use_lecun_init: If True, use LeCun initialization; else Kaiming uniform.
-    Returns:
-        global_mask: The boolean mask of dormant neurons (same shape as flat param).
+        use_lecun_init: Whether to use LeCun initialization for resetting dormant neurons.
     """
     try:
-        # Simpler approach: just iterate through all parameters and process each one individually
-        # This avoids the complexity of trying to handle FSDP FlatParameters specially
+        index_map, flat_param = get_fsdp_flat_param_index_map(fsdp_module)
+        
         all_masks = []
-        reset_count = 0
-        total_count = 0
-        
-        #print(f"[DEBUG] fsdp_dormant_neuron_mask_and_reset: Processing module {type(fsdp_module).__name__}")
-        
+        all_ratios = []
+        # print(f"[DEBUG] compute_fsdp_dormant_mask_only: Processing module {type(fsdp_module).__name__}")
         # Process each parameter individually
-        for name, param in fsdp_module.named_parameters():
-            if not param.requires_grad or param.grad is None:
-                print(f"[DEBUG] Skipping parameter {name} (no gradient)")
-                continue
-                
-            #print(f"[DEBUG] Processing parameter {name} with shape {param.shape}")
-            
-            # Create mask for this parameter
-            param_mask = torch.zeros_like(param.data, dtype=torch.bool)
-            
-            # Only process parameters that could have neurons (weight matrices)
-            if len(param.shape) == 2:  # Linear layer weights
-                # For linear layers, neurons are represented by rows
-                grad_magnitude = param.grad.abs().mean(dim=1)  # Average across inputs
-                
-                if mode == 'threshold':
-                    # Normalize by mean gradient magnitude
-                    normalized_grad = grad_magnitude / (grad_magnitude.mean() + 1e-9)
-                    mask = normalized_grad <= tau
-                elif mode == 'percentage':
-                    # Select bottom percentage of neurons by gradient magnitude
-                    k = max(1, int(percentage * grad_magnitude.numel()))
-                    threshold = torch.kthvalue(grad_magnitude, k).values
-                    mask = grad_magnitude <= threshold
-                elif mode == 'hybrid':
-                    # Threshold-based mask
-                    normalized_grad = grad_magnitude / (grad_magnitude.mean() + 1e-9)
-                    threshold_mask = normalized_grad <= tau
-                    
-                    # Percentage-based mask (up to max_percentage)
-                    k = max(1, min(int(max_percentage * grad_magnitude.numel()), threshold_mask.sum().item()))
-                    if k < threshold_mask.sum().item():
-                        values, indices = torch.topk(grad_magnitude[threshold_mask], k, largest=False)
-                        mask = torch.zeros_like(grad_magnitude, dtype=torch.bool)
-                        mask[indices] = True
+        # Get the global start offset for this local flat_param shard
+        # Try to get the global start offset for this local flat_param shard
+        my_global_start = getattr(flat_param, '_shard_start_idx', None)
+        my_global_end = None
+        if my_global_start is None:
+            # Manual computation fallback
+            try:
+                import torch.distributed as dist
+                dist_ok = dist.is_available() and dist.is_initialized()
+                if dist_ok:
+                    rank = dist.get_rank()
+                    world_size = dist.get_world_size()
+                    if len(index_map) > 0:
+                        global_flat_param_numel = max(entry['end'] for entry in index_map)
+                        shard_size = (global_flat_param_numel + world_size - 1) // world_size
+                        my_global_start = rank * shard_size
+                        my_global_end = min((rank + 1) * shard_size, global_flat_param_numel)
+                        my_global_end = min(my_global_end, my_global_start + flat_param.numel())
+                        # print(f"[DEBUG] rank={rank}, my_global_start={my_global_start}, my_global_end={my_global_end}, global_flat_param_numel={global_flat_param_numel}, shard_size={shard_size}")
+                        pass
                     else:
-                        mask = threshold_mask
+                        my_global_start = 0
+                        my_global_end = 0
+                        # print(f"[DEBUG] rank={rank}, my_global_start={my_global_start}, my_global_end={my_global_end}, global_flat_param_numel=0")
+                        pass
                 else:
-                    #print(f"[DEBUG] Unknown mode: {mode}, using empty mask")
+                    my_global_start = 0
+                    my_global_end = flat_param.numel()
+            except Exception as e:
+                # print(f"[WARN] Could not infer global shard start idx: {e}")
+                my_global_start = 0
+                my_global_end = flat_param.numel()
+        else:
+            print('[WARN][my_global_start] is Not None! Got it from param! ')
+            my_global_end = my_global_start + flat_param.numel()
+        #print(f"[DEBUG][nullspace] my_global_start={my_global_start}, my_global_end={my_global_end}, local flat_param.numel={flat_param.numel()}")
+        #pass
+        for idx, entry in enumerate(index_map):
+            #print(f"[DEBUG][nullspace]entry:{entry}")
+            overlap_info = get_shard_overlap_slices(entry, my_global_start, my_global_end, flat_param.numel(), verbose=verbose)
+            if overlap_info is None:
+                continue
+            entry_name = overlap_info['entry_name'] or idx
+            local_slice_start = overlap_info['local_slice_start']
+            valid_numel = overlap_info['valid_numel']
+            num_rows = overlap_info['num_rows']
+            num_cols = overlap_info['num_cols']
+            sub_shape = overlap_info['sub_shape']
+            # Guard against invalid/negative/zero shapes
+            if not isinstance(sub_shape, (tuple, list)) or len(sub_shape) != 2 or sub_shape[0] <= 0 or sub_shape[1] <= 0:
+                if verbose:
+                    print(f"[ERROR] Invalid sub_shape {sub_shape} for entry {entry_name}, skipping.")
+                continue
+            try:
+                param_mask = torch.zeros(sub_shape, dtype=torch.bool, device=flat_param.device)
+            except Exception as e:
+                if verbose:
+                    print(f"[ERROR] Could not create param_mask of shape {sub_shape} for entry {entry_name}: {e}")
+                continue
+            if flat_param.grad is None:
+                if verbose:
+                    print(f"[ERROR] flat_param.grad is None for entry {entry_name}, skipping.")
+                continue
+            grad_raw = flat_param.grad[local_slice_start: local_slice_start + valid_numel]
+            if grad_raw.numel() == 0:
+                continue
+            if grad_raw.numel() != valid_numel or valid_numel != num_rows * num_cols:
+                if verbose:
+                    print(f"[WARN] grad_raw.numel()={grad_raw.numel()} does not match valid_numel={valid_numel} or sub_shape={sub_shape} (num_rows*num_cols={num_rows*num_cols}), skipping entry {entry_name}.")
+                continue
+            try:
+                grad_slice = grad_raw.view(sub_shape)
+            except Exception as e:
+                if verbose:
+                    print(f"[ERROR] Could not reshape grad_raw to {sub_shape} for entry {entry_name}: {e}")
+                continue
+            grad_magnitude = grad_slice.abs().mean(dim=1)  # Average across inputs
+            if mode == 'threshold':
+                # Normalize by mean gradient magnitude
+                normalized_grad = grad_magnitude / (grad_magnitude.mean() + 1e-9)
+                mask = normalized_grad <= tau
+            elif mode == 'percentage':
+                # Select bottom percentage of neurons by gradient magnitude
+                k = max(1, int(percentage * grad_magnitude.numel()))
+                threshold = torch.kthvalue(grad_magnitude, k).values
+                mask = grad_magnitude <= threshold
+            elif mode == 'hybrid':
+                # Threshold-based mask
+                normalized_grad = grad_magnitude / (grad_magnitude.mean() + 1e-9)
+                threshold_mask = normalized_grad <= tau
+                # Percentage-based mask (up to max_percentage)
+                k = max(1, min(int(max_percentage * grad_magnitude.numel()), threshold_mask.sum().item()))
+                if k < threshold_mask.sum().item():
+                    values, indices = torch.topk(grad_magnitude[threshold_mask], k, largest=False)
                     mask = torch.zeros_like(grad_magnitude, dtype=torch.bool)
-                
-                # Reset weights for masked neurons
+                    mask[indices] = True
+                else:
+                    mask = threshold_mask
+            else:
+                if verbose:
+                    print(f"[WARN] Unknown mode: {mode}, using empty mask for entry {entry_name}")
+                mask = torch.zeros_like(grad_magnitude, dtype=torch.bool)
+            # Only assign to param_mask if mask shape matches
+            if mask.shape == param_mask.shape[:1]:
+                param_mask[mask] = True
+                # Perform the reset for masked neurons
                 if mask.any():
                     with torch.no_grad():
+                        param_slice = flat_param.data[local_slice_start: local_slice_start + valid_numel]
+                        param_slice = param_slice.view(sub_shape)
                         if use_lecun_init:
-                            fan_in = param.shape[1]
-                            std = 1.0 / math.sqrt(fan_in)
-                            param.data[mask] = torch.randn_like(param.data[mask]) * std
+                            lecun_reset(param_slice, mask, sub_shape)
                         else:
-                            fan_in = param.shape[1]
-                            bound = 1.0 / math.sqrt(fan_in)
-                            param.data[mask] = torch.rand_like(param.data[mask]).uniform_(-bound, bound)
-                # Expand mask to match parameter shape
-                param_mask = mask.unsqueeze(1).expand_as(param)
-                reset_count += mask.sum().item()
-                total_count += mask.numel()
-        # No fallback: only perform LeCun or Kaiming reset for masked neurons
-        return None
+                            kaiming_reset(param_slice, mask, sub_shape)
+            else:
+                if verbose:
+                    print(f"[ERROR] Mask shape {mask.shape} does not match param_mask shape {param_mask.shape} for entry {entry_name}, skipping assignment.")
+            ratio = mask.float().mean().item()
+            all_masks.append(param_mask.flatten())
+            all_ratios.append(ratio)
+
+        #print(f"[DEBUG] Created mask for entry {entry_name}: {mask.sum().item()}/{mask.numel()} neurons marked dormant ({ratio:.6f})")
+
+        # Combine all masks into one global mask
+        if all_masks:
+            global_mask = torch.cat(all_masks)
+            avg_ratio = sum(all_ratios) / len(all_ratios)
+            #print(f"[DEBUG] Combined mask has {global_mask.sum().item()}/{global_mask.numel()} elements marked dormant ({avg_ratio*100:.2f}%)")
+            return global_mask
+        else:
+            #print(f"[DEBUG] No valid parameters found, returning empty mask")
+            return torch.zeros(1, dtype=torch.bool, device=next(fsdp_module.parameters()).device)
 
     except Exception as e:
+        import traceback
         print(f"Error in fsdp_dormant_neuron_mask_and_reset: {e}")
+        traceback.print_exc()
         # Return an empty mask as fallback
-        param = next(fsdp_module.parameters())
-        return torch.zeros_like(param.data, dtype=torch.bool)
+        return torch.zeros(1, dtype=torch.bool, device=next(fsdp_module.parameters()).device)

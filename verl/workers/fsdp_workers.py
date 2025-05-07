@@ -747,12 +747,12 @@ class CriticWorker(Worker):
                                             critic_module=self.critic_module,
                                             critic_optimizer=self.critic_optimizer)
         # Initialize verl-compatible analyzer and redo for critic
-        self.critic_redo_enabled = getattr(self.config, 'redo_enabled', True)
-        self.critic_redo_tau = getattr(self.config, 'redo_tau', 0.1)
-        self.critic_redo_reset_freq = getattr(self.config, 'redo_reset_freq', 1000)
-        self.critic_redo_metric_freq = getattr(self.config, 'redo_metric_freq', 1)
-        if self.critic_redo_enabled:
-            self.critic_gradredo = VerlGradientReDo(self.critic_module, tau=self.critic_redo_tau, frequency=self.critic_redo_reset_freq, optimizer=self.critic_optimizer)
+        #self.critic_redo_enabled = getattr(self.config, 'redo_enabled', True)
+        #self.critic_redo_tau = getattr(self.config, 'redo_tau', 0.1)
+        #self.critic_redo_reset_freq = getattr(self.config, 'redo_reset_freq', 1000)
+        #self.critic_redo_metric_freq = getattr(self.config, 'redo_metric_freq', 1)
+        #if self.critic_redo_enabled:
+        #    self.critic_gradredo = VerlGradientReDo(self.critic_module, tau=self.critic_redo_tau, frequency=self.critic_redo_reset_freq, optimizer=self.critic_optimizer)
 
         self.flops_counter = FlopsCounter(self.critic_model_config)
 
@@ -790,12 +790,12 @@ class CriticWorker(Worker):
         metrics = {}
         # Print metrics & perform neuron reset only if enabled
         # Print metrics & perform neuron reset only if enabled
-        if getattr(self, 'critic_redo_enabled', True):
-            if self.critic_update_step % self.critic_redo_reset_freq == 0:
-                print(f"[Critic] Step {self.critic_update_step}: Performing Gradient-based neuron reset (tau={self.critic_redo_tau})")
-                if self.critic_redo_enabled:
-                    self.critic_gradredo = VerlGradientReDo(self.critic_module, tau=self.critic_redo_tau, frequency=self.critic_redo_reset_freq, optimizer=self.critic_optimizer)
-                    self.critic_gradredo.step()
+        #if getattr(self, 'critic_redo_enabled', True):
+        #    if self.critic_update_step % self.critic_redo_reset_freq == 0:
+        #        print(f"[Critic] Step {self.critic_update_step}: Performing Gradient-based neuron reset (tau={self.critic_redo_tau})")
+        #        if self.critic_redo_enabled:
+        #            self.critic_gradredo = VerlGradientReDo(self.critic_module, tau=self.critic_redo_tau, frequency=self.critic_redo_reset_freq, optimizer=self.critic_optimizer)
+        #            self.critic_gradredo.step()
         data = data.to('cuda')
         if self._is_offload_param:
             load_fsdp_param_and_grad(module=self.critic_module,

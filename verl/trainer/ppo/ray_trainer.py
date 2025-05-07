@@ -1159,9 +1159,10 @@ class RayPPOTrainer(object):
                             if self.config.trainer.critic_warmup <= self.global_steps:
                                 # update actor
                                 with _timer('update_actor', timing_raw):
+                                    batch.meta_info['global_steps'] = self.global_steps
                                     actor_output = self.actor_rollout_wg.update_actor(batch)
-                                actor_output_metrics = reduce_metrics(actor_output.meta_info['metrics'])
-                                metrics.update(actor_output_metrics)
+                                    actor_output_metrics = reduce_metrics(actor_output.meta_info['metrics'])
+                                    metrics.update(actor_output_metrics)
 
                             # Quick validation every step
                             #if self.val_reward_fn is not None:
@@ -1284,9 +1285,10 @@ class RayPPOTrainer(object):
                     if self.config.trainer.critic_warmup <= self.global_steps:
                         # update actor
                         with _timer('update_actor', timing_raw):
+                            batch.meta_info['global_steps'] = self.global_steps
                             actor_output = self.actor_rollout_wg.update_actor(batch)
-                        actor_output_metrics = reduce_metrics(actor_output.meta_info['metrics'])
-                        metrics.update(actor_output_metrics)
+                            actor_output_metrics = reduce_metrics(actor_output.meta_info['metrics'])
+                            metrics.update(actor_output_metrics)
 
                     # validate
                     if self.val_reward_fn is not None and self.config.trainer.test_freq > 0 and \

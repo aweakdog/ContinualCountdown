@@ -153,12 +153,12 @@ python3 -m verl.trainer.main_ppo \
     critic.ppo_micro_batch_size=8 \
     ++actor_rollout_ref.actor.redo_enabled=true \
     ++actor_rollout_ref.actor.redo_metric_freq=1 \
-    ++actor_rollout_ref.actor.redo_reset_freq=1000 \
+    ++actor_rollout_ref.actor.redo_reset_freq=1 \
     ++actor_rollout_ref.actor.redo_mode=threshold \
     ++actor_rollout_ref.actor.redo_tau=0.04 \
     ++critic.redo_enabled=true \
     ++critic.redo_metric_freq=1 \
-    ++critic.redo_reset_freq=1000 \
+    ++critic.redo_reset_freq=1 \
     ++critic.redo_mode=threshold \
     ++critic.redo_tau=0.04 \
     algorithm.kl_ctrl.kl_coef=0.001 \
@@ -168,7 +168,7 @@ python3 -m verl.trainer.main_ppo \
     trainer.default_local_dir=${CHECKPOINT_BASE_DIR} \
     trainer.n_gpus_per_node=$N_GPUS \
     trainer.nnodes=1 \
-    trainer.save_freq=150 \
+    trainer.save_freq=1200 \
     trainer.test_freq=30 \
     trainer.project_name=ContinualCountdown3B \
     trainer.experiment_name=$WANDB_RUN_NAME \

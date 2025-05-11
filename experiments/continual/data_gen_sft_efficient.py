@@ -34,7 +34,7 @@ class SFTDataGenerator:
         os.makedirs(base_dir, exist_ok=True)
         os.system(f"chmod -R 777 {base_dir}")
 
-    def generate_group_data(self, train_size: int = 512000, test_size: int = 512) -> Tuple[Dataset, Dataset]:
+    def generate_group_data(self, train_size: int = 51200, test_size: int = 512) -> Tuple[Dataset, Dataset]:
         group_idx = 0
         candidate_operators = self.operator_groups[group_idx][0]
         neccessary_operators = self.operator_groups[group_idx][1]
@@ -73,51 +73,19 @@ class SFTDataGenerator:
         test_samples = generate_samples(test_size, seed_offset=100)
 
         def create_dataset(samples, split: str) -> Dataset:
+            # Only keep prompt/response in the final dataset
             data = {
-                "target": [s["target"] for s in samples],
-                "nums": [s["nums"] for s in samples],
-                "solution": [s["solution"] for s in samples],
-                "full_expr": [s["full_expr"] for s in samples],
-                "rating": [s["rating"] for s in samples],
+                "prompt": [],
+                "response": []
             }
-            dataset = Dataset.from_dict(data)
-
-            def process_fn(example, idx):
-                question = make_prefix(example, operators=["+"])
-                # Compose the response: reasoning steps and final answer
-                steps = example["solution"]
-                import re
-                from collections import namedtuple
-                # Define a simple expression tree
-                class ExprNode:
-                    def __init__(self, value, left=None, right=None, op=None):
-                        self.value = value  # Either a number (str) or result (str)
-                        self.left = left
-                        self.right = right
-                        self.op = op  # '+', '-', '*', '/'
-                    def __str__(self):
-                        if self.op is None:
-                            return str(self.value)
-                        # Add parentheses for clarity
-                        return f'({self.left}{self.op}{self.right})'
-                def parse_step(step):
-                    # e.g., '63-60=3' => lhs: '63-60', rhs: '3'
-                    if '=' not in step:
-                        return None, None, None
-                    lhs, rhs = step.split('=')
-                    lhs = lhs.strip()
-                    rhs = rhs.strip()
-                    # Find the operator and operands
-                    for op in ['+', '-', '*', '/']:
-                        # Only split on the first occurrence
-                        if op in lhs:
-                            parts = lhs.split(op, 1)
-                            left = parts[0].strip()
-                full_expr = example.get("full_expr", None)
-                target_num = example.get("target", None)
-                source_number = example.get("nums", None)
+            for s in samples:
+                # Compose prompt/response as in process_fn, but ensure string type
+                question = make_prefix(s, operators=["+"])
+                steps = s["solution"]
+                full_expr = s.get("full_expr", None)
+                target_num = s.get("target", None)
+                source_number = s.get("nums", None)
                 if isinstance(steps, list):
-                    response = "<think>\n" + "\n".join(steps) + "\n</think>"
                     st = "\n".join(steps)
                     response = f"<think>\nOur source number is: {source_number}, and our target is {target_num}.\nOne possible solution is: \n{st}, Correct!\nSo the answer should be {full_expr}\n</think>"
                 else:
@@ -125,17 +93,16 @@ class SFTDataGenerator:
                 if not full_expr:
                     response += "\n<answer>None</answer>"
                 else:
-                    response += f"\n<answer>{full_expr}</answer><|endoftext|>"
-                if idx <= 100:
-                    print(f"[DEBUG] Source numbers: {example.get('nums', 'N/A')}")
-                    print(f"[DEBUG] Example generated response: {response}")
-                data = {
-                    "prompt": question,
-                    "response": response
-                }
-                return data
-
-            dataset = dataset.map(function=process_fn, with_indices=True)
+                    response += f"\n<answer>{full_expr}</answer>"
+                data["prompt"].append(str(question))
+                data["response"].append(str(response))
+            # Debug: print the first 100 prompt/response pairs
+            print(f"\n[DEBUG] First 100 {split} samples:")
+            for i in range(min(100, len(data["prompt"]))):
+                prompt = data["prompt"][i]
+                response = data["response"][i]
+                print(f"Sample {i}:\n  Prompt: {prompt[:120]}{'...' if len(prompt)>120 else ''}\n  Response: {response[:120]}{'...' if len(response)>120 else ''}\n")
+            dataset = Dataset.from_dict(data)
             output_path = os.path.join(group_dir, f"{split}.parquet")
             dataset.to_parquet(output_path)
             rprint(f"[green]Saved {split} dataset to {output_path}[/green]")

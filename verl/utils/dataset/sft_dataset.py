@@ -84,7 +84,7 @@ class SFTDataset(Dataset):
             dataframe = pd.read_parquet(parquet_file)
             dataframes.append(dataframe)
         self.dataframe = pd.concat(dataframes)
-        self.prompts = self.dataframe[self.prompt_key]
+        self.prompts = self.dataframe[self.prompt_key[0]]
         for key in self.prompt_dict_keys:
             # type(x): pandas.core.series.Series
             # type(x[0]): numpy.ndarray
@@ -95,7 +95,7 @@ class SFTDataset(Dataset):
                 print(f'self.prompts={self.prompts}')
                 raise
         self.prompts = self.prompts.tolist()
-        self.responses = self.dataframe[self.response_key]
+        self.responses = self.dataframe[self.response_key[0]]
         for key in self.response_dict_keys:
             try:
                 self.responses = self.responses.apply(lambda x: series_to_item(x)[key], axis=1)

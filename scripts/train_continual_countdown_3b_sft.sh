@@ -74,29 +74,19 @@ echo "  CUDA_VISIBLE_DEVICES: $CUDA_VISIBLE_DEVICES" | tee -a "$LOG_FILE"
 echo "  WANDB_MODE: $WANDB_MODE" | tee -a "$LOG_FILE"
 echo "  NCCL_DEBUG: $NCCL_DEBUG" | tee -a "$LOG_FILE"
 
-# Launch SFT training
-python3 -m verl.trainer.fsdp_sft_trainer \
-    data.train_files="$TRAIN_FILE" \
-    data.val_files="$VAL_FILE" \
-    data.train_batch_size=256 \
-    data.val_batch_size=256 \
-    data.max_response_length=1024 \
-    model.path=$BASE_MODEL \
-    model.trust_remote_code=true \
-    model.torch_dtype=bfloat16 \
-    model.low_cpu_mem_usage=true \
-    model.device_map=auto \
-    model.attn_implementation=flash_attention_2 \
-    model.use_cache=false \
-    model.enable_gradient_checkpointing=True \
-    trainer.logger=['wandb','console'] \
-    trainer.default_local_dir=${CHECKPOINT_BASE_DIR} \
-    trainer.n_gpus_per_node=$N_GPUS \
-    trainer.nnodes=1 \
-    trainer.save_freq=200 \
-    trainer.test_freq=30 \
-    trainer.project_name=ContinualCountdown3B_SFT \
-    trainer.experiment_name=ContinualCountdown3B_SFT_Run \
-    trainer.total_epochs=3 \
-    trainer.val_before_train=true \
+set -x
+
+# ====== SFT Distributed Training Launcher (Single Node Example) ======
+CONFIG_PATH="/cpfs04/user/liyuanhang.p/src/ContinualCountdown/verl/trainer/config/sft_trainer.yaml"  # Absolute path to your config
+nproc_per_node=${N_GPUS:-8}  # Number of GPUs on this machine
+
+# Print debug info
+echo "Launching SFT with config: $CONFIG_PATH on $nproc_per_node GPUs" | tee -a "$LOG_FILE"
+
+torchrun --standalone --nnodes=1 --nproc_per_node=$nproc_per_node --master_port=65536 \
+    -m verl.trainer.fsdp_sft_trainer \
+    --config-path /cpfs04/user/liyuanhang.p/src/ContinualCountdown/verl/trainer/config \
+    --config-name sft_trainer.yaml \
     2>&1 | tee -a "$LOG_FILE"
+
+# To run: bash scripts/train_continual_countdown_3b_sft.sh 2>&1 | tee -a scripts/log/sft_log_file.txt

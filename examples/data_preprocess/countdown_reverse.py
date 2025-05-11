@@ -37,6 +37,13 @@ class CountDownReverse(object):
         return len(nums) == len(set(nums))
 
     def generate(self):
+        """
+        Generate a Countdown solution and return:
+            - target: the final number
+            - nums: the list of source numbers
+            - solution: list of step strings (e.g., ['2+3=5', '5+5=10'])
+            - full_expr: the fully parenthesized expression combining all source numbers
+        """
         while True:
             all_nodes = self.generate_operation_tree(self.start_size)
             cnt = 0
@@ -47,14 +54,16 @@ class CountDownReverse(object):
                 if res:
                     target, nums, solution = self.encode(all_nodes)
                     # Check if numbers should be distinct and if they are
-                    # Check if numbers should be distinct
                     if not self.distinct or self.check_distinct_numbers(nums):
                         # Check if sample contains 1
                         has_one = 1 in nums
                         # Accept sample based on one_limit_prob if it has 1, or always accept if it doesn't have 1
-                        # this is hacky
                         if not has_one or random.random() < self.one_limit_prob:
-                            return target, nums, solution
+                            # Generate the full parenthesized expression
+                            full_expr = self.reconstruct_expression(nums, solution, target)
+                            if full_expr is None:
+                                full_expr = ''
+                            return target, nums, solution, full_expr
             print("Failed to generate a valid value after", cnt, "attempts.")
     def encode(self, all_nodes):
         target = all_nodes[-1].value
@@ -66,9 +75,7 @@ class CountDownReverse(object):
         operations = []
         # print("nums:", nums)
         while (len(lowest_operator_nodes)>0):
-            # print(len(lowest_operator_nodes))
             node = random.sample(lowest_operator_nodes, 1)[0]
-            # print(node.left.value, node.right.value, [node.operator])
             value, operation = combine_nums(node.left.value, node.right.value, [node.operator])[0]
             operations.append(operation)
             assert node.value == value
@@ -79,6 +86,91 @@ class CountDownReverse(object):
                 if parent.is_lowest_operator():
                     lowest_operator_nodes.append(parent)
         return target, nums, operations
+
+    @staticmethod
+    def reconstruct_expression(nums, operations, target=None):
+        """
+        Reconstruct a full parenthesized expression from nums and operations as returned by encode.
+        Args:
+            nums: list of source numbers (leaf values)
+            operations: list of strings like '2+3=5'
+            target: (optional) final target value
+        Returns:
+            expr_str: a string representing the full expression
+        """
+        # Map each number to its string representation
+        expr_map = {str(n): str(n) for n in nums}
+        # To handle repeated values, use a multiset (track counts)
+        value_count = {}
+        for n in nums:
+            value_count[str(n)] = value_count.get(str(n), 0) + 1
+        # Build a dependency map: result -> (left, op, right)
+        dep_map = {}
+        for op_str in operations:
+            try:
+                left_right, result = op_str.split('=')
+            except ValueError:
+                continue
+            for op in ['+', '-', '*', '/']:
+                if op in left_right:
+                    left, right = left_right.split(op)
+                    dep_map[result.strip()] = (left.strip(), op, right.strip())
+                    break
+        # Stepwise backward expansion: start with expr = target
+        expr = str(target)
+        # Build a list of parsed steps: (left, op, right, result)
+        parsed_steps = []
+        for op_str in operations:
+            try:
+                left_right, result = op_str.split('=')
+            except ValueError:
+                continue
+            for op in ['+', '-', '*', '/']:
+                if op in left_right:
+                    left, right = left_right.split(op)
+                    parsed_steps.append((left.strip(), op, right.strip(), result.strip()))
+                    break
+        # Go backward through the steps
+        for left, op, right, result in reversed(parsed_steps):
+            # If expr matches the result, expand it
+            if expr == result:
+                expr = f'({left} {op} {right})'
+            else:
+                # Replace only the FIRST occurrence of the result as a whole word
+                import re
+                pattern = r'\b' + re.escape(result) + r'\b'
+                # Use a function to replace only the first occurrence
+                def single_sub(match):
+                    # After the first match, return the original string for all subsequent matches
+                    nonlocal replaced
+                    if not replaced:
+                        replaced = True
+                        return f'({left} {op} {right})'
+                    else:
+                        return match.group(0)
+                replaced = False
+                expr = re.sub(pattern, single_sub, expr, count=1)
+
+        # Remove unnecessary outer parentheses
+        if expr and expr.startswith('(') and expr.endswith(')'):
+            expr = expr[1:-1]
+        return expr
+        # The last result is the target, or the last key in expr_map
+        if target is not None:
+            target_str = str(target)
+            expr_str = expr_map.get(target_str, None)
+        else:
+            # fallback: last inserted
+            if expr_map:
+                expr_str = list(expr_map.values())[-1]
+            else:
+                print("[WARNING] reconstruct_expression: expr_map is empty, cannot construct expression.")
+                return ''
+        # Remove unnecessary outer parentheses
+        if expr_str and expr_str.startswith('(') and expr_str.endswith(')'):
+            expr_str = expr_str[1:-1]
+        return expr_str
+
                 
     def generate_operation_tree(self, start_size):
         pass_check = False

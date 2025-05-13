@@ -12,7 +12,7 @@ fi
 # Configuration - Set environment variables from docker-compose.yml if not already set
 export NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-all}
 export CHECKPOINT_BASE_DIR=${CHECKPOINT_BASE_DIR:-/cpfs04/user/liyuanhang.p/tmp/checkpoints/continual_countdown3b}
-export BASE_MODEL=${BASE_MODEL:-"/cpfs04/user/liyuanhang.p/tmp/sft_model/global_step_20"}  # Path to mounted Qwen model
+export BASE_MODEL=${BASE_MODEL:-"/cpfs04/user/liyuanhang.p/tmp/sft_model/global_step_5"}  # Path to mounted Qwen model
 export N_GPUS=${N_GPUS:-8}  # Using 4 A800 GPUs
 export ROLLOUT_TP_SIZE=${ROLLOUT_TP_SIZE:-2}  # Tensor parallel size optimized for 4 GPUs
 export WANDB_MODE=${WANDB_MODE:-offline}  # Run WandB in offline mode

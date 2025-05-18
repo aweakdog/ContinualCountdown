@@ -12,7 +12,8 @@ fi
 # Configuration - Set environment variables from docker-compose.yml if not already set
 export NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-all}
 export CHECKPOINT_BASE_DIR=${CHECKPOINT_BASE_DIR:-/cpfs04/user/liyuanhang.p/tmp/checkpoints/continual_countdown3b}
-export BASE_MODEL=${BASE_MODEL:-"/cpfs04/user/liyuanhang.p/tmp/sft_model/global_step_5"}  # Path to mounted Qwen model
+SFT_CHECKPOINT=global_step_4
+export BASE_MODEL=${BASE_MODEL:-"/cpfs04/user/liyuanhang.p/tmp/sft_model/${SFT_CHECKPOINT}"}  # Path to mounted Qwen model
 export N_GPUS=${N_GPUS:-8}  # Using 4 A800 GPUs
 export ROLLOUT_TP_SIZE=${ROLLOUT_TP_SIZE:-2}  # Tensor parallel size optimized for 4 GPUs
 export WANDB_MODE=${WANDB_MODE:-offline}  # Run WandB in offline mode
@@ -84,35 +85,28 @@ echo "Python path: $(which python3)" | tee -a "$log_file"
 echo "Training configuration:" | tee -a "$log_file"
 echo "  Model: $TRAINED_MODEL" | tee -a "$log_file"
 echo "  GPUs: $N_GPUS" | tee -a "$log_file"
-echo "  Rollout TP size: $ROLLOUT_TP_SIZE" | tee -a "$log_file"
-echo "  CUDA_VISIBLE_DEVICES: $CUDA_VISIBLE_DEVICES" | tee -a "$log_file"
-echo "  VLLM_ATTENTION_BACKEND: $VLLM_ATTENTION_BACKEND" | tee -a "$log_file"
-echo "  WANDB_MODE: $WANDB_MODE" | tee -a "$log_file"
-echo "  NCCL_DEBUG: $NCCL_DEBUG" | tee -a "$log_file"
 
-# Create data file strings for training
-TRAIN_FILES_STR="[\"./data/continual/0/train.parquet\",\"./data/continual/1/train.parquet\",\"./data/continual/2/train.parquet\",\"./data/continual/3/train.parquet\"]"
-VAL_FILES_STR="[\"./data/continual/0/test.parquet\",\"./data/continual/1/test.parquet\",\"./data/continual/2/test.parquet\",\"./data/continual/3/test.parquet\"]"
+# Create a unique subdirectory for this experiment's logs
+EXP_LOG_DIR=./logs/continual_countdown3b_sft_${SFT_CHECKPOINT}_$(date +%Y%m%d_%H%M%S)
+mkdir -p "$EXP_LOG_DIR"
+MASTER_LOG_FILE="./logs/experiment_master.log"
+# Remove previous master log if it exists
+if [ -f "$MASTER_LOG_FILE" ]; then
+  rm "$MASTER_LOG_FILE"
+fi
 
-# Define max sample size for each training file 
-TRAIN_SAMPLE_SIZE="[2560,2560,2560,2560]"
-
-echo "\nFirst 100 chars of train files list:"
-echo "${TRAIN_FILES_STR:0:100}..."
-echo "\nFirst 100 chars of val files list:"
-echo "${VAL_FILES_STR:0:100}..."
-echo "\nTrain sample size limits:"
-echo "$TRAIN_SAMPLE_SIZE"
-
-# Prevent model downloads
-export TRANSFORMERS_OFFLINE=1
-
-# Create logs directory if it doesn't exist
-mkdir -p ./logs
-chmod -R 777 ./logs
-chmod -R 777 ./data/continual
-
-python3 -m verl.trainer.main_ppo \
+# Loop over each group and record logs in the experiment log directory
+for group in 0 1 2 3; do
+  TRAIN_FILES_STR="[\"./data/continual/${group}/train.parquet\"]"
+  VAL_FILES_STR="[\"./data/continual/${group}/test.parquet\"]"
+  TRAIN_SAMPLE_SIZE="[2560]"
+  RUN_NAME="Group${group}_$(date +%Y%m%d_%H%M%S)"
+  LOG_FILE="$EXP_LOG_DIR/${RUN_NAME}.log"
+  echo "Training group $group" | tee -a "$LOG_FILE" | tee -a "$MASTER_LOG_FILE"
+  echo "Train files: $TRAIN_FILES_STR" | tee -a "$LOG_FILE" | tee -a "$MASTER_LOG_FILE"
+  echo "Val files: $VAL_FILES_STR" | tee -a "$LOG_FILE" | tee -a "$MASTER_LOG_FILE"
+  
+  python3 -m verl.trainer.main_ppo \
     fsdp_grad_metric_enabled=$FSDP_GRAD_METRIC_ENABLED \
     data.train_files="$TRAIN_FILES_STR" \
     data.val_files="$VAL_FILES_STR" \
@@ -121,7 +115,7 @@ python3 -m verl.trainer.main_ppo \
     data.max_response_length=1024 \
     ++data.curriculum_learning=true \
     ++data.epochs_per_group=30 \
-    ++data.total_rounds=10 \
+    ++data.total_rounds=1 \
     ++data.train_sample_size="$TRAIN_SAMPLE_SIZE" \
     actor_rollout_ref.model.path=$BASE_MODEL \
     actor_rollout_ref.model.use_remove_padding=True \
@@ -171,9 +165,12 @@ python3 -m verl.trainer.main_ppo \
     trainer.save_freq=1200 \
     trainer.test_freq=30 \
     trainer.project_name=ContinualCountdown3B \
-    trainer.experiment_name=$WANDB_RUN_NAME \
+    trainer.experiment_name=$RUN_NAME \
     trainer.total_epochs=1 \
     +trainer.val_before_train=true \
     ++reward_model.enable=False \
     ++reward_model.model.path=$BASE_MODEL \
-    2>&1 | tee -a "$log_file"
+    2>&1 | tee -a "$LOG_FILE" | tee -a "$MASTER_LOG_FILE"
+  ray stop
+  sleep 10
+done

@@ -34,7 +34,7 @@ class SFTDataGenerator:
         os.makedirs(base_dir, exist_ok=True)
         os.system(f"chmod -R 777 {base_dir}")
 
-    def generate_group_data(self, train_size: int = 320, test_size: int = 512) -> Tuple[Dataset, Dataset]:
+    def generate_group_data(self, train_size: int = 2048, test_size: int = 512) -> Tuple[Dataset, Dataset]:
         group_idx = 0
         candidate_operators = self.operator_groups[group_idx][0]
         neccessary_operators = self.operator_groups[group_idx][1]

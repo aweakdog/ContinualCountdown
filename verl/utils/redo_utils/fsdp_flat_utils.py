@@ -66,7 +66,7 @@ def iter_leaf_fsdp_modules(module):
                 yield name, submodule
 
 
-def analyze_all_fsdp_dormant_neurons(module, mode='threshold', tau=0.04, verbose=True):
+def analyze_all_fsdp_dormant_neurons(module, mode='threshold', tau=0.1, verbose=True):
     """
     Analyze all leaf FSDP-wrapped submodules for dormant neurons.
     Returns a dict mapping module names to their dormant neuron mask and statistics.
@@ -99,7 +99,7 @@ def analyze_all_fsdp_dormant_neurons(module, mode='threshold', tau=0.04, verbose
     #    print(f"[DormantNeuron][ALL] total_dormant={total_dormant}, total_params={total_count}, ratio={total_dormant/(total_count+1e-8):.6f}")
     return results
 
-def analyze_all_fsdp_zero_grad_space(module, eps=1e-8, verbose=True):
+def analyze_all_fsdp_zero_grad_space(module, tau=0.1, verbose=True):
     """
     Analyze all leaf FSDP-wrapped submodules for zero grad space ratio.
     Returns a dict mapping module names to their zero grad stats and the global aggregate.
@@ -110,7 +110,7 @@ def analyze_all_fsdp_zero_grad_space(module, eps=1e-8, verbose=True):
     total_rows = 0
     for name, submodule in iter_leaf_fsdp_modules(module):
         try:
-            stats = compute_fsdp_zero_grad_space_ratio(submodule, eps=eps, verbose=verbose)
+            stats = compute_fsdp_zero_grad_space_ratio(submodule, tau=tau, verbose=verbose)
             if stats is not None:
                 zero = stats.get('zero', 0)
                 rows = stats.get('total', 0)
@@ -126,7 +126,7 @@ def analyze_all_fsdp_zero_grad_space(module, eps=1e-8, verbose=True):
     results['__global__'] = {'zero': total_zero, 'total': total_rows, 'ratio': global_ratio}
     return results
 
-def redo_reset_all_fsdp_layers(module, mode='threshold', tau=0.04, verbose=True, use_lecun_init=True):
+def redo_reset_all_fsdp_layers(module, mode='threshold', tau=0.1, verbose=True, use_lecun_init=True):
     """
     Reset dormant neurons for all leaf FSDP-wrapped submodules.
     Returns a dict mapping module names to the number of resets performed.
@@ -304,13 +304,17 @@ def get_shard_overlap_slices(entry, my_global_start, my_global_end, flat_param_n
         'entry_name': entry.get('fqn', None) or entry.get('name', None)
     }
 
-def compute_fsdp_zero_grad_space_ratio(fsdp_module, eps=0.04, verbose=False):
+def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=False):
     """
-    Computes the fraction of output neurons (rows) in each 2D param whose gradient is (almost) exactly zero.
+    Computes the fraction of output neurons (rows) in each 2D param whose normalized gradient metric si = A/(B/H) is below tau.
+    - H: number of neurons (rows) in the layer
+    - B: sum of absolute gradients in this layer (all elements)
+    - A: sum of absolute gradients for this neuron (row)
+    - si = A / (B / H)
     Handles global-to-local index mapping for FSDP shards.
     Returns the global ratio: (total zero-grad rows) / (total rows across all 2D params)
     """
-    #eps = 1.00 # hacky code
+    #tau = 0.04
     index_map, flat_param = get_fsdp_flat_param_index_map(fsdp_module)
     grad = flat_param.grad
     if grad is None:
@@ -382,7 +386,16 @@ def compute_fsdp_zero_grad_space_ratio(fsdp_module, eps=0.04, verbose=False):
             if verbose:
                 print(f"[ERROR][ZeroGrad] Could not reshape grad_raw to {sub_shape} for entry {idx}: {e}")
             continue
-        zero_vectors = (grad_matrix.abs().sum(dim=1) < eps)
+        grad_matrix_abs = grad_matrix.abs()
+        H = grad_matrix_abs.size(0)  # number
+        B = grad_matrix_abs.sum().item()  # sum of all gradients
+        if H == 0 or B == 0:
+            zero_vectors = (grad_matrix_abs.sum(dim=1) < float('inf'))  # all False if H==0 or B==0
+        else:
+            row_sums = grad_matrix_abs.sum(dim=1)  # A for each neuron
+            avg_row_sum = B / H
+            si = row_sums / avg_row_sum
+            zero_vectors = (si < tau)
         total_zero += zero_vectors.sum().item()
         total_rows += grad_matrix.size(0)
         #print(f"[DEBUG][ZeroGrad]total_zero:{total_zero}")

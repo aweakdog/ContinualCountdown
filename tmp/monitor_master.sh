@@ -1,6 +1,6 @@
 #!/bin/bash
 
-LOG_FILE="../logs/experiment_master.log"
+LOG_FILE="./experiment_master.log"
 
 while true; do
     if [ -f "$LOG_FILE" ]; then

@@ -69,7 +69,8 @@ class DataParallelPPOActor(BasePPOActor):
         self.redo_metric_freq = getattr(self.config, 'redo_metric_freq', 1)
         self.redo_reset_freq = getattr(self.config, 'redo_reset_freq', 1000)
         self.redo_mode = getattr(self.config, 'redo_mode', 'threshold')
-        self.redo_tau = getattr(self.config, 'redo_tau', 0.04)
+        self.redo_tau = getattr(self.config, 'redo_tau', 0.3)
+        self.redo_tau = 0.3
         print(f'[DEBUG][Actor] ReDo config: enabled={self.redo_enabled}, metric_freq={self.redo_metric_freq}, '
               f'reset_freq={self.redo_reset_freq}, mode={self.redo_mode}, tau={self.redo_tau}')
 

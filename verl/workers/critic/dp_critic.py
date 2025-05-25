@@ -57,8 +57,6 @@ class DataParallelPPOCritic(BasePPOCritic):
         self.redo_reset_freq = getattr(self.config, 'redo_reset_freq', 1000)
         self.redo_mode = getattr(self.config, 'redo_mode', 'threshold')
         self.redo_tau = getattr(self.config, 'redo_tau', 0.04)
-        print(f'[DEBUG][Critic] ReDo config: enabled={self.redo_enabled}, metric_freq={self.redo_metric_freq}, '
-              f'reset_freq={self.redo_reset_freq}, mode={self.redo_mode}, tau={self.redo_tau}')
 
         assert self.config.ppo_mini_batch_size % self.config.ppo_micro_batch_size == 0
         self.gradient_accumulation = self.config.ppo_mini_batch_size // self.config.ppo_micro_batch_size

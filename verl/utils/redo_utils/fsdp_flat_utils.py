@@ -123,6 +123,8 @@ def analyze_all_fsdp_zero_grad_space(module, tau=0.1, verbose=True):
         except Exception as e:
             if verbose:
                 print(f"[WARN] Could not analyze zero grad space for {name}: {e}")
+                import traceback
+                traceback.print_exc()
     global_ratio = total_zero / (total_rows + 1e-8) if total_rows > 0 else 0.0
     results['__global__'] = {'zero': total_zero, 'total': total_rows, 'ratio': global_ratio}
     return results
@@ -553,7 +555,7 @@ def compute_fsdp_dormant_mask_only(fsdp_module, mode='threshold', tau=0.04, perc
                 continue
             if grad_raw.numel() != valid_numel or valid_numel != num_rows * num_cols:
                 if verbose:
-                    print(f"[WARN] grad_raw.numel()={grad_raw.numel()} does not match valid_numel={valid_numel} or sub_shape={sub_shape} (num_rows*num_cols={num_rows*num_cols}), skipping entry {entry_name}.")
+                    print(f"[WARN] grad_raw.numel()={grad_raw.numel()} does not match valid_numel={valid_numel} or sub_shape={sub_shape}, skipping entry {entry_name}.")
                 continue
             try:
                 grad_slice = grad_raw.view(sub_shape)
@@ -838,6 +840,8 @@ def fsdp_dormant_neuron_mask_and_reset(fsdp_module, mode='threshold', tau=0.04, 
                             except Exception as e:
                                 if verbose:
                                     print(f"[WARN] Failed to reset optimizer state: {e}")
+                                    import traceback
+                                    traceback.print_exc()
             else:
                 if verbose:
                     print(f"[ERROR] Mask shape {mask.shape} does not match param_mask shape {param_mask.shape} for entry {entry_name}, skipping assignment.")

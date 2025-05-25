@@ -617,10 +617,10 @@ def kaiming_reset(param_slice, mask, shape, is_layernorm=False, bias_slice=None)
                 bias_bound = 0.0
             bias_slice[mask] = torch.empty_like(bias_slice[mask]).uniform_(-bias_bound, bias_bound)
 
-
 def fsdp_dormant_neuron_mask_and_reset(fsdp_module, mode='threshold', tau=0.04, percentage=0.01, max_percentage=0.01, use_lecun_init=True, verbose=False, optimizer=None):
     """
     Computes the dormant neuron mask for the FSDP flat parameter and resets the weights of dormant neurons.
+    Also resets optimizer state for those neurons if optimizer is provided.
     Works with both FSDP FlatParameters and regular Parameters.
     Args:
         fsdp_module: The FSDP-wrapped module.
@@ -631,18 +631,13 @@ def fsdp_dormant_neuron_mask_and_reset(fsdp_module, mode='threshold', tau=0.04, 
         use_lecun_init: Whether to use LeCun initialization for resetting dormant neurons.
     """
     try:
+        from .fsdp_flat_utils import get_fsdp_flat_param_index_map, get_shard_overlap_slices, lecun_reset, kaiming_reset
         index_map, flat_param = get_fsdp_flat_param_index_map(fsdp_module)
-        
         all_masks = []
         all_ratios = []
-        # print(f"[DEBUG] compute_fsdp_dormant_mask_only: Processing module {type(fsdp_module).__name__}")
-        # Process each parameter individually
-        # Get the global start offset for this local flat_param shard
-        # Try to get the global start offset for this local flat_param shard
         my_global_start = getattr(flat_param, '_shard_start_idx', None)
         my_global_end = None
         if my_global_start is None:
-            # Manual computation fallback
             try:
                 import torch.distributed as dist
                 dist_ok = dist.is_available() and dist.is_initialized()
@@ -655,27 +650,18 @@ def fsdp_dormant_neuron_mask_and_reset(fsdp_module, mode='threshold', tau=0.04, 
                         my_global_start = rank * shard_size
                         my_global_end = min((rank + 1) * shard_size, global_flat_param_numel)
                         my_global_end = min(my_global_end, my_global_start + flat_param.numel())
-                        # print(f"[DEBUG] rank={rank}, my_global_start={my_global_start}, my_global_end={my_global_end}, global_flat_param_numel={global_flat_param_numel}, shard_size={shard_size}")
-                        pass
                     else:
                         my_global_start = 0
                         my_global_end = 0
-                        # print(f"[DEBUG] rank={rank}, my_global_start={my_global_start}, my_global_end={my_global_end}, global_flat_param_numel=0")
-                        pass
                 else:
                     my_global_start = 0
                     my_global_end = flat_param.numel()
-            except Exception as e:
-                # print(f"[WARN] Could not infer global shard start idx: {e}")
+            except Exception:
                 my_global_start = 0
                 my_global_end = flat_param.numel()
         else:
-            print('[WARN][my_global_start] is Not None! Got it from param! ')
             my_global_end = my_global_start + flat_param.numel()
-
-        #pass
         for idx, entry in enumerate(index_map):
-
             overlap_info = get_shard_overlap_slices(entry, my_global_start, my_global_end, flat_param.numel(), verbose=verbose)
             if overlap_info is None:
                 continue
@@ -685,7 +671,6 @@ def fsdp_dormant_neuron_mask_and_reset(fsdp_module, mode='threshold', tau=0.04, 
             num_rows = overlap_info['num_rows']
             num_cols = overlap_info['num_cols']
             sub_shape = overlap_info['sub_shape']
-            # Guard against invalid/negative/zero shapes
             if not isinstance(sub_shape, (tuple, list)) or len(sub_shape) != 2 or sub_shape[0] <= 0 or sub_shape[1] <= 0:
                 if verbose:
                     print(f"[ERROR] Invalid sub_shape {sub_shape} for entry {entry_name}, skipping.")
@@ -713,21 +698,17 @@ def fsdp_dormant_neuron_mask_and_reset(fsdp_module, mode='threshold', tau=0.04, 
                 if verbose:
                     print(f"[ERROR] Could not reshape grad_raw to {sub_shape} for entry {entry_name}: {e}")
                 continue
-            grad_magnitude = grad_slice.abs().mean(dim=1)  # Average across inputs
+            grad_magnitude = grad_slice.abs().mean(dim=1)
             if mode == 'threshold':
-                # Normalize by mean gradient magnitude
                 normalized_grad = grad_magnitude / (grad_magnitude.mean() + 1e-9)
                 mask = normalized_grad <= tau
             elif mode == 'percentage':
-                # Select bottom percentage of neurons by gradient magnitude
                 k = max(1, int(percentage * grad_magnitude.numel()))
                 threshold = torch.kthvalue(grad_magnitude, k).values
                 mask = grad_magnitude <= threshold
             elif mode == 'hybrid':
-                # Threshold-based mask
                 normalized_grad = grad_magnitude / (grad_magnitude.mean() + 1e-9)
                 threshold_mask = normalized_grad <= tau
-                # Percentage-based mask (up to max_percentage)
                 k = max(1, min(int(max_percentage * grad_magnitude.numel()), threshold_mask.sum().item()))
                 if k < threshold_mask.sum().item():
                     values, indices = torch.topk(grad_magnitude[threshold_mask], k, largest=False)
@@ -739,10 +720,8 @@ def fsdp_dormant_neuron_mask_and_reset(fsdp_module, mode='threshold', tau=0.04, 
                 if verbose:
                     print(f"[WARN] Unknown mode: {mode}, using empty mask for entry {entry_name}")
                 mask = torch.zeros_like(grad_magnitude, dtype=torch.bool)
-            # Only assign to param_mask if mask shape matches
             if mask.shape == param_mask.shape[:1]:
                 param_mask[mask] = True
-                # Perform the reset for masked neurons
                 if mask.any():
                     with torch.no_grad():
                         param_slice = flat_param.data[local_slice_start: local_slice_start + valid_numel]
@@ -751,28 +730,40 @@ def fsdp_dormant_neuron_mask_and_reset(fsdp_module, mode='threshold', tau=0.04, 
                             lecun_reset(param_slice, mask, sub_shape)
                         else:
                             kaiming_reset(param_slice, mask, sub_shape)
+                        # Reset optimizer state for dormant neurons if optimizer is not None
+                        if optimizer is not None:
+                            try:
+                                for param_group in optimizer.param_groups:
+                                    for p in param_group['params']:
+                                        if p is flat_param:
+                                            if 'exp_avg' in optimizer.state[p]:
+                                                exp_avg = optimizer.state[p]['exp_avg']
+                                                exp_avg_slice = exp_avg[local_slice_start: local_slice_start + valid_numel].view(sub_shape)
+                                                exp_avg_slice[mask] = 0.0
+                                            if 'exp_avg_sq' in optimizer.state[p]:
+                                                exp_avg_sq = optimizer.state[p]['exp_avg_sq']
+                                                exp_avg_sq_slice = exp_avg_sq[local_slice_start: local_slice_start + valid_numel].view(sub_shape)
+                                                exp_avg_sq_slice[mask] = 0.0
+                                            if verbose and mask.sum().item() > 0:
+                                                print(f"[INFO] Reset optimizer state for {mask.sum().item()} dormant neurons in {entry_name}")
+                                            break
+                            except Exception as e:
+                                if verbose:
+                                    print(f"[WARN] Failed to reset optimizer state: {e}")
             else:
                 if verbose:
                     print(f"[ERROR] Mask shape {mask.shape} does not match param_mask shape {param_mask.shape} for entry {entry_name}, skipping assignment.")
             ratio = mask.float().mean().item()
             all_masks.append(param_mask.flatten())
             all_ratios.append(ratio)
-
-        #print(f"[DEBUG] Created mask for entry {entry_name}: {mask.sum().item()}/{mask.numel()} neurons marked dormant ({ratio:.6f})")
-
-        # Combine all masks into one global mask
         if all_masks:
             global_mask = torch.cat(all_masks)
             avg_ratio = sum(all_ratios) / len(all_ratios)
-            #print(f"[DEBUG] Combined mask has {global_mask.sum().item()}/{global_mask.numel()} elements marked dormant ({avg_ratio*100:.2f}%)")
             return global_mask
         else:
-            #print(f"[DEBUG] No valid parameters found, returning empty mask")
             return torch.zeros(1, dtype=torch.bool, device=next(fsdp_module.parameters()).device)
-
     except Exception as e:
         import traceback
         print(f"Error in fsdp_dormant_neuron_mask_and_reset: {e}")
         traceback.print_exc()
-        # Return an empty mask as fallback
         return torch.zeros(1, dtype=torch.bool, device=next(fsdp_module.parameters()).device)

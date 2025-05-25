@@ -344,7 +344,7 @@ class DataParallelPPOActor(BasePPOActor):
 
         # --- FSDP dormant neuron and zero grad space analysis/reset (do only ONCE after optimizer step, BEFORE zero_grad) ---
         from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
-        from verl.utils.redo_utils.fsdp_flat_utils import analyze_all_fsdp_dormant_neurons, analyze_all_fsdp_zero_grad_space, fsdp_dormant_neuron_mask_and_reset
+        from verl.utils.redo_utils.fsdp_flat_utils_with_optimizer_reset import analyze_all_fsdp_dormant_neurons, analyze_all_fsdp_zero_grad_space, fsdp_dormant_neuron_mask_and_reset
         import torch.distributed as dist
         rank = 0
         if dist.is_available() and dist.is_initialized():
@@ -369,7 +369,7 @@ class DataParallelPPOActor(BasePPOActor):
                         zero_gradspace_ratio = zero_grad_stats['__global__']['ratio']
                 # Always perform dormant neuron reset for the first 30 global_steps
                 if self.global_steps < 30:
-                    mask = fsdp_dormant_neuron_mask_and_reset(self.actor_module, mode=self.redo_mode, tau=self.redo_tau)
+                    mask = fsdp_dormant_neuron_mask_and_reset(self.actor_module, mode=self.redo_mode, tau=self.redo_tau, optimizer=self.actor_optimizer)
                     if rank == 0:
                         if mask is not None:
                             print(f"[FSDP-ReDo][Actor][Boot] Step {self.global_steps}: reset {mask.sum().item()} dormant neurons.")

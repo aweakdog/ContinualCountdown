@@ -342,7 +342,7 @@ class DataParallelPPOActor(BasePPOActor):
             data = {'actor/grad_norm': grad_norm.detach().item()}
             append_to_dict(metrics, data)
 
-        # --- FSDP nullspace (dormant neuron) and zero grad space analysis/reset (do only ONCE after optimizer step, BEFORE zero_grad) ---
+        # --- FSDP dormant neuron and zero grad space analysis/reset (do only ONCE after optimizer step, BEFORE zero_grad) ---
         from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
         from verl.utils.redo_utils.fsdp_flat_utils import analyze_all_fsdp_dormant_neurons, analyze_all_fsdp_zero_grad_space, fsdp_dormant_neuron_mask_and_reset
         import torch.distributed as dist
@@ -353,34 +353,37 @@ class DataParallelPPOActor(BasePPOActor):
         with torch.no_grad():
             if is_fsdp and getattr(self, 'redo_enabled', False):
                 # Calculate metrics at the specified frequency
-                nullspace_ratio = 0.0
                 zero_gradspace_ratio = 0.0
                 dormant_stats = None
                 zero_grad_stats = None
                 if self.global_steps % self.redo_metric_freq == 0:
-                    #dormant_stats = analyze_all_fsdp_dormant_neurons(self.actor_module, mode=self.redo_mode, tau=self.redo_tau, verbose=(rank==0))
                     zero_grad_stats = analyze_all_fsdp_zero_grad_space(self.actor_module, verbose=(rank==0))
+                    dormant_stats = None 
                     dormant_stats = None # hacky
                     #zero_grad_stats = None #hacky
                     if dormant_stats:
                         total_dormant = sum(v['dormant'] for v in dormant_stats.values() if v)
                         total_count = sum(v['total'] for v in dormant_stats.values() if v)
-                        nullspace_ratio = total_dormant / (total_count + 1e-8) if total_count > 0 else 0.0
+
                     if zero_grad_stats and '__global__' in zero_grad_stats and zero_grad_stats['__global__']['total'] > 0:
                         zero_gradspace_ratio = zero_grad_stats['__global__']['ratio']
-                # Perform neuron reset at the specified frequency
-                if self.global_steps % self.redo_reset_freq == 0 and self.global_steps > 0:
-                    #mask = fsdp_dormant_neuron_mask_and_reset(self.actor_module, mode=self.redo_mode, tau=self.redo_tau)
+                # Always perform dormant neuron reset for the first 30 global_steps
+                if self.global_steps < 30:
+                    mask = fsdp_dormant_neuron_mask_and_reset(self.actor_module, mode=self.redo_mode, tau=self.redo_tau)
+                    if rank == 0:
+                        if mask is not None:
+                            print(f"[FSDP-ReDo][Actor][Boot] Step {self.global_steps}: reset {mask.sum().item()} dormant neurons.")
+                        else:
+                            print(f"[FSDP-ReDo][Actor][Boot] Step {self.global_steps}: reset None.")
+                # Perform neuron reset at the specified frequency after boot period
+                elif self.global_steps % self.redo_reset_freq == 0 and self.global_steps > 0:
                     mask = None # hacky
                     # debug here hacky
                     if rank == 0 and mask is not None:
                         print(f"[FSDP-ReDo][Actor] Performed neuron reset at step {self.global_steps}, reset {mask.sum().item()} dormant neurons.")
                     if mask is None:
                         print(f"[FSDP-ReDo][Actor] Performed neuron reset None at step ")
-                # Aggregate nullspace ratio across all ranks
-                nullspace_ratio_tensor = torch.tensor([nullspace_ratio], device=next(self.actor_module.parameters()).device)
-                dist.all_reduce(nullspace_ratio_tensor, op=dist.ReduceOp.SUM)
-                nullspace_ratio_tensor /= dist.get_world_size()
+
                 # Aggregate zero grad space ratio across all ranks
                 if zero_grad_stats and '__global__' in zero_grad_stats:
                     local_zero = zero_grad_stats['__global__']['zero']
@@ -393,7 +396,7 @@ class DataParallelPPOActor(BasePPOActor):
                 global_zero_grad, global_total_grad = zero_grad_tensor.tolist()
                 zero_gradspace_ratio_avg = global_zero_grad / (global_total_grad + 1e-8) if global_total_grad > 0 else 0.0
                 if rank == 0:
-                    metrics['actor/nullspace_ratio'] = nullspace_ratio_tensor.item()
+
                     metrics['actor/zero_gradspace_ratio'] = zero_gradspace_ratio_avg
         # --- END FSDP analysis/reset ---
 

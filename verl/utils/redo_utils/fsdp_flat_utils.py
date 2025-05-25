@@ -453,10 +453,10 @@ def compute_fsdp_dormant_mask_only(fsdp_module, mode='threshold', tau=0.04, perc
         else:
             print('[WARN][my_global_start] is Not None! Got it from param! ')
             my_global_end = my_global_start + flat_param.numel()
-        #print(f"[DEBUG][nullspace] my_global_start={my_global_start}, my_global_end={my_global_end}, local flat_param.numel={flat_param.numel()}")
+
         #pass
         for idx, entry in enumerate(index_map):
-            #print(f"[DEBUG][nullspace]entry:{entry}")
+
             overlap_info = get_shard_overlap_slices(entry, my_global_start, my_global_end, flat_param.numel(), verbose=verbose)
             if overlap_info is None:
                 continue
@@ -618,7 +618,7 @@ def kaiming_reset(param_slice, mask, shape, is_layernorm=False, bias_slice=None)
             bias_slice[mask] = torch.empty_like(bias_slice[mask]).uniform_(-bias_bound, bias_bound)
 
 
-def fsdp_dormant_neuron_mask_and_reset(fsdp_module, mode='threshold', tau=0.04, percentage=0.01, max_percentage=0.01, use_lecun_init=True, verbose=False):
+def fsdp_dormant_neuron_mask_and_reset(fsdp_module, mode='threshold', tau=0.04, percentage=0.01, max_percentage=0.01, use_lecun_init=True, verbose=False, optimizer=None):
     """
     Computes the dormant neuron mask for the FSDP flat parameter and resets the weights of dormant neurons.
     Works with both FSDP FlatParameters and regular Parameters.
@@ -672,10 +672,10 @@ def fsdp_dormant_neuron_mask_and_reset(fsdp_module, mode='threshold', tau=0.04, 
         else:
             print('[WARN][my_global_start] is Not None! Got it from param! ')
             my_global_end = my_global_start + flat_param.numel()
-        #print(f"[DEBUG][nullspace] my_global_start={my_global_start}, my_global_end={my_global_end}, local flat_param.numel={flat_param.numel()}")
+
         #pass
         for idx, entry in enumerate(index_map):
-            #print(f"[DEBUG][nullspace]entry:{entry}")
+
             overlap_info = get_shard_overlap_slices(entry, my_global_start, my_global_end, flat_param.numel(), verbose=verbose)
             if overlap_info is None:
                 continue

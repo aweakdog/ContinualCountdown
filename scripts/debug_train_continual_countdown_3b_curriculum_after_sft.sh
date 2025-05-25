@@ -97,7 +97,7 @@ if [ -f "$MASTER_LOG_FILE" ]; then
 fi
 
 # Loop over each group and record logs in the experiment log directory
-for group in 0; do
+for group in 1; do
   TRAIN_FILES_STR="[\"./data/continual/${group}/train.parquet\"]"
   VAL_FILES_STR="[\"./data/continual/${group}/test.parquet\"]"
   TRAIN_SAMPLE_SIZE="[2560]"
@@ -150,12 +150,12 @@ for group in 0; do
     ++actor_rollout_ref.actor.redo_metric_freq=1 \
     ++actor_rollout_ref.actor.redo_reset_freq=1 \
     ++actor_rollout_ref.actor.redo_mode=threshold \
-    ++actor_rollout_ref.actor.redo_tau=0.04 \
+    ++actor_rollout_ref.actor.redo_tau=0.1 \
     ++critic.redo_enabled=true \
     ++critic.redo_metric_freq=1 \
     ++critic.redo_reset_freq=1 \
     ++critic.redo_mode=threshold \
-    ++critic.redo_tau=0.04 \
+    ++critic.redo_tau=0.1 \
     algorithm.kl_ctrl.kl_coef=0.001 \
     trainer.logger=['wandb','console'] \
     +logger.print_to_console=true \

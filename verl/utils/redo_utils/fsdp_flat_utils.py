@@ -739,11 +739,23 @@ def fsdp_dormant_neuron_mask_and_reset(fsdp_module, mode='threshold', tau=0.04, 
                                             if 'exp_avg' in optimizer.state[p]:
                                                 exp_avg = optimizer.state[p]['exp_avg']
                                                 exp_avg_slice = exp_avg[local_slice_start: local_slice_start + valid_numel].view(sub_shape)
+                                                if verbose and mask.sum().item() > 0:
+                                                    before_mean = exp_avg_slice[mask].mean().item() if exp_avg_slice[mask].numel() > 0 else 0.0
+                                                    print(f"[DEBUG] exp_avg before reset (mean over masked): {before_mean}")
                                                 exp_avg_slice[mask] = 0.0
+                                                if verbose and mask.sum().item() > 0:
+                                                    after_mean = exp_avg_slice[mask].mean().item() if exp_avg_slice[mask].numel() > 0 else 0.0
+                                                    print(f"[DEBUG] exp_avg after reset (mean over masked): {after_mean}")
                                             if 'exp_avg_sq' in optimizer.state[p]:
                                                 exp_avg_sq = optimizer.state[p]['exp_avg_sq']
                                                 exp_avg_sq_slice = exp_avg_sq[local_slice_start: local_slice_start + valid_numel].view(sub_shape)
+                                                if verbose and mask.sum().item() > 0:
+                                                    before_mean_sq = exp_avg_sq_slice[mask].mean().item() if exp_avg_sq_slice[mask].numel() > 0 else 0.0
+                                                    print(f"[DEBUG] exp_avg_sq before reset (mean over masked): {before_mean_sq}")
                                                 exp_avg_sq_slice[mask] = 0.0
+                                                if verbose and mask.sum().item() > 0:
+                                                    after_mean_sq = exp_avg_sq_slice[mask].mean().item() if exp_avg_sq_slice[mask].numel() > 0 else 0.0
+                                                    print(f"[DEBUG] exp_avg_sq after reset (mean over masked): {after_mean_sq}")
                                             if verbose and mask.sum().item() > 0:
                                                 print(f"[INFO] Reset optimizer state for {mask.sum().item()} dormant neurons in {entry_name}")
                                             break

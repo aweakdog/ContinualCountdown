@@ -358,7 +358,7 @@ class DataParallelPPOActor(BasePPOActor):
                 dormant_stats = None
                 zero_grad_stats = None
                 if self.global_steps % self.redo_metric_freq == 0:
-                    zero_grad_stats = analyze_all_fsdp_zero_grad_space(self.actor_module, verbose=(rank==0))
+                    zero_grad_stats = analyze_all_fsdp_zero_grad_space(self.actor_module, tau=self.redo_tau, verbose=(rank==0))
                     dormant_stats = None 
                     dormant_stats = None # hacky
                     #zero_grad_stats = None #hacky

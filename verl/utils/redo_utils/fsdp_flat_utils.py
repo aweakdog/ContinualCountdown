@@ -617,7 +617,7 @@ def kaiming_reset(param_slice, mask, shape, is_layernorm=False, bias_slice=None)
                 bias_bound = 0.0
             bias_slice[mask] = torch.empty_like(bias_slice[mask]).uniform_(-bias_bound, bias_bound)
 
-def fsdp_dormant_neuron_mask_and_reset(fsdp_module, mode='threshold', tau=0.04, percentage=0.01, max_percentage=0.01, use_lecun_init=True, verbose=False, optimizer=None):
+def fsdp_dormant_neuron_mask_and_reset(fsdp_module, mode='threshold', tau=0.04, percentage=0.01, max_percentage=0.01, use_lecun_init=True, verbose=True, optimizer=None):
     """
     Computes the dormant neuron mask for the FSDP flat parameter and resets the weights of dormant neurons.
     Also resets optimizer state for those neurons if optimizer is provided.

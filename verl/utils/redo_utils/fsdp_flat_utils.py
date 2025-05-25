@@ -111,11 +111,12 @@ def analyze_all_fsdp_zero_grad_space(module, tau=0.1, verbose=True):
     for name, submodule in iter_leaf_fsdp_modules(module):
         try:
             stats = compute_fsdp_zero_grad_space_ratio(submodule, tau=tau, verbose=verbose)
+            # Only use keys that are always present: 'zero', 'total', 'ratio'.
             if stats is not None:
                 zero = stats.get('zero', 0)
-                rows = stats.get('total', 0)
+                total = stats.get('total', 0)
                 total_zero += zero
-                total_rows += rows
+                total_rows += total
                 results[name] = stats
             else:
                 results[name] = None

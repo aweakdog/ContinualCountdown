@@ -571,7 +571,9 @@ def lecun_reset(param_slice, mask, shape, is_layernorm=False, bias_slice=None):
             if bias_slice is not None:
                 bias_slice[mask] = 0.0
             return
-        if len(shape) == 2:  # Linear
+        if len(shape) == 1:  # 1D
+            fan_in = shape[0]
+        elif len(shape) == 2:  # Linear
             fan_in = shape[1]
         elif len(shape) == 4:  # Conv2d
             fan_in = shape[1] * shape[2] * shape[3]
@@ -599,7 +601,9 @@ def kaiming_reset(param_slice, mask, shape, is_layernorm=False, bias_slice=None)
             if bias_slice is not None:
                 bias_slice[mask] = 0.0
             return
-        if len(shape) == 2:  # Linear
+        if len(shape) == 1:  # 1D
+            fan_in = shape[0]
+        elif len(shape) == 2:  # Linear
             fan_in = shape[1]
         elif len(shape) == 4:  # Conv2d
             fan_in = shape[1] * shape[2] * shape[3]
@@ -668,10 +672,8 @@ def fsdp_dormant_neuron_mask_and_reset(fsdp_module, mode='threshold', tau=0.04, 
             entry_name = overlap_info['entry_name'] or idx
             local_slice_start = overlap_info['local_slice_start']
             valid_numel = overlap_info['valid_numel']
-            num_rows = overlap_info['num_rows']
-            num_cols = overlap_info['num_cols']
             sub_shape = overlap_info['sub_shape']
-            if not isinstance(sub_shape, (tuple, list)) or len(sub_shape) != 2 or sub_shape[0] <= 0 or sub_shape[1] <= 0:
+            if not isinstance(sub_shape, (tuple, list)) or len(sub_shape) < 1 or any(dim <= 0 for dim in sub_shape):
                 if verbose:
                     print(f"[ERROR] Invalid sub_shape {sub_shape} for entry {entry_name}, skipping.")
                 continue
@@ -688,9 +690,9 @@ def fsdp_dormant_neuron_mask_and_reset(fsdp_module, mode='threshold', tau=0.04, 
             grad_raw = flat_param.grad[local_slice_start: local_slice_start + valid_numel]
             if grad_raw.numel() == 0:
                 continue
-            if grad_raw.numel() != valid_numel or valid_numel != num_rows * num_cols:
+            if grad_raw.numel() != valid_numel:
                 if verbose:
-                    print(f"[WARN] grad_raw.numel()={grad_raw.numel()} does not match valid_numel={valid_numel} or sub_shape={sub_shape} (num_rows*num_cols={num_rows*num_cols}), skipping entry {entry_name}.")
+                    print(f"[WARN] grad_raw.numel()={grad_raw.numel()} does not match valid_numel={valid_numel} or sub_shape={sub_shape}, skipping entry {entry_name}.")
                 continue
             try:
                 grad_slice = grad_raw.view(sub_shape)
@@ -698,29 +700,36 @@ def fsdp_dormant_neuron_mask_and_reset(fsdp_module, mode='threshold', tau=0.04, 
                 if verbose:
                     print(f"[ERROR] Could not reshape grad_raw to {sub_shape} for entry {entry_name}: {e}")
                 continue
-            grad_magnitude = grad_slice.abs().mean(dim=1)
-            if mode == 'threshold':
-                normalized_grad = grad_magnitude / (grad_magnitude.mean() + 1e-9)
-                mask = normalized_grad <= tau
-            elif mode == 'percentage':
-                k = max(1, int(percentage * grad_magnitude.numel()))
-                threshold = torch.kthvalue(grad_magnitude, k).values
-                mask = grad_magnitude <= threshold
-            elif mode == 'hybrid':
-                normalized_grad = grad_magnitude / (grad_magnitude.mean() + 1e-9)
-                threshold_mask = normalized_grad <= tau
-                k = max(1, min(int(max_percentage * grad_magnitude.numel()), threshold_mask.sum().item()))
-                if k < threshold_mask.sum().item():
-                    values, indices = torch.topk(grad_magnitude[threshold_mask], k, largest=False)
-                    mask = torch.zeros_like(grad_magnitude, dtype=torch.bool)
-                    mask[indices] = True
-                else:
-                    mask = threshold_mask
+            grad_magnitude = grad_slice.abs()
+            if len(sub_shape) == 1:
+                mask = grad_magnitude <= tau
             else:
-                if verbose:
-                    print(f"[WARN] Unknown mode: {mode}, using empty mask for entry {entry_name}")
-                mask = torch.zeros_like(grad_magnitude, dtype=torch.bool)
-            if mask.shape == param_mask.shape[:1]:
+                if mode == 'threshold':
+                    # Normalize by mean gradient magnitude
+                    normalized_grad = grad_magnitude / (grad_magnitude.mean() + 1e-9)
+                    mask = normalized_grad <= tau
+                elif mode == 'percentage':
+                    # Select bottom percentage of neurons by gradient magnitude
+                    k = max(1, int(percentage * grad_magnitude.numel()))
+                    threshold = torch.kthvalue(grad_magnitude, k).values
+                    mask = grad_magnitude <= threshold
+                elif mode == 'hybrid':
+                    # Threshold-based mask
+                    normalized_grad = grad_magnitude / (grad_magnitude.mean() + 1e-9)
+                    threshold_mask = normalized_grad <= tau
+                    # Percentage-based mask (up to max_percentage)
+                    k = max(1, min(int(max_percentage * grad_magnitude.numel()), threshold_mask.sum().item()))
+                    if k < threshold_mask.sum().item():
+                        values, indices = torch.topk(grad_magnitude[threshold_mask], k, largest=False)
+                        mask = torch.zeros_like(grad_magnitude, dtype=torch.bool)
+                        mask[indices] = True
+                    else:
+                        mask = threshold_mask
+                else:
+                    if verbose:
+                        print(f"[WARN] Unknown mode: {mode}, using empty mask for entry {entry_name}")
+                    mask = torch.zeros_like(grad_magnitude, dtype=torch.bool)
+            if mask.shape == param_mask.shape:
                 param_mask[mask] = True
                 if mask.any():
                     with torch.no_grad():

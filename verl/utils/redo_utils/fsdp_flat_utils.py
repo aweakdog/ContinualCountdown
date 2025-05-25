@@ -398,8 +398,6 @@ def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=False):
         local_slice_start = overlap_info['local_slice_start']
         valid_numel = overlap_info['valid_numel']
         sub_shape = overlap_info['sub_shape']
-        num_rows = overlap_info['num_rows']
-        num_cols = overlap_info['num_cols']
         # Robust shape check: only apply for 2D shapes
         if len(sub_shape) == 2 and (not isinstance(sub_shape, (tuple, list)) or sub_shape[0] <= 0 or sub_shape[1] <= 0):
             if verbose:

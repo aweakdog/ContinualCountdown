@@ -260,7 +260,8 @@ def get_fsdp_flat_param_index_map(fsdp_module):
 def get_shard_overlap_slices(entry, my_global_start, my_global_end, flat_param_numel, verbose=False):
     """
     Given an index_map entry and the global start/end for this shard, compute the overlap region and local/global slices.
-    Returns None if there is no overlap or if the overlap does not contain any full rows (for 2D params).
+    Robustly supports 1D, 2D, 3D, and 4D parameter shapes. Returns None if there is no overlap or no full neuron fits.
+    Returns dict with local_slice_start, valid_numel, sub_shape, entry_name. Only includes num_rows/num_cols for 2D.
     """
     param_start = entry['start']
     param_end = entry['end']
@@ -269,40 +270,66 @@ def get_shard_overlap_slices(entry, my_global_start, my_global_end, flat_param_n
     if overlap_start >= overlap_end:
         return None
     local_slice_start = max(overlap_start - my_global_start, 0)
-    local_slice_end = min(local_slice_start + (overlap_end - overlap_start), flat_param_numel)
-    actual_numel = local_slice_end - local_slice_start
-    if actual_numel < 0: # hacky here we skip the rank0 non-full-row param
-        import torch.distributed as dist
-        dist_ok = dist.is_available() and dist.is_initialized()
-        if dist_ok:
-            rank = dist.get_rank()
+    actual_numel = overlap_end - overlap_start
+    shape = entry['shape']
+    if len(shape) == 1:
+        valid_numel = actual_numel
+        if valid_numel == 0:
+            return None
+        sub_shape = (valid_numel,)
+        return {
+            'local_slice_start': local_slice_start,
+            'valid_numel': valid_numel,
+            'sub_shape': sub_shape,
+            'entry_name': entry.get('fqn', None) or entry.get('name', None)
+        }
+    elif len(shape) == 2:
+        num_cols = shape[1]
+        valid_numel = (actual_numel // num_cols) * num_cols
+        if valid_numel == 0:
             if verbose:
-                print('[RANK]current_rank:',rank)
-        #if verbose:
-        #    print("[WARN][slices]",'param_start',param_start,'param_end',param_end,'my_global_start',my_global_start,'my_global_end',my_global_end,'local_slice_start',local_slice_start,'local_slice_end',local_slice_end)
-        return None
-    param_slice_start = overlap_start - param_start
-    param_slice_end = overlap_end - param_start
-    if len(entry['shape']) != 2:
-        return None
-    num_cols = entry['shape'][1]
-    valid_numel = (actual_numel // num_cols) * num_cols
-    if valid_numel == 0:
+                print(f"[WARN] No full rows in local grad slice (actual_numel={actual_numel}, num_cols={num_cols}), skipping entry {entry.get('fqn', None) or entry.get('name', None)}.")
+            return None
+        num_rows = valid_numel // num_cols
+        sub_shape = (num_rows, num_cols)
+        return {
+            'local_slice_start': local_slice_start,
+            'valid_numel': valid_numel,
+            'sub_shape': sub_shape,
+            'num_rows': num_rows,
+            'num_cols': num_cols,
+            'entry_name': entry.get('fqn', None) or entry.get('name', None)
+        }
+    elif len(shape) == 3:
+        num_inner = shape[1] * shape[2]
+        valid_numel = (actual_numel // num_inner) * num_inner
+        if valid_numel == 0:
+            return None
+        num_outer = valid_numel // num_inner
+        sub_shape = (num_outer, shape[1], shape[2])
+        return {
+            'local_slice_start': local_slice_start,
+            'valid_numel': valid_numel,
+            'sub_shape': sub_shape,
+            'entry_name': entry.get('fqn', None) or entry.get('name', None)
+        }
+    elif len(shape) == 4:
+        num_inner = shape[1] * shape[2] * shape[3]
+        valid_numel = (actual_numel // num_inner) * num_inner
+        if valid_numel == 0:
+            return None
+        num_outer = valid_numel // num_inner
+        sub_shape = (num_outer, shape[1], shape[2], shape[3])
+        return {
+            'local_slice_start': local_slice_start,
+            'valid_numel': valid_numel,
+            'sub_shape': sub_shape,
+            'entry_name': entry.get('fqn', None) or entry.get('name', None)
+        }
+    else:
         if verbose:
-            print(f"[WARN] No full rows in local grad slice (actual_numel={actual_numel}, num_cols={num_cols}), skipping entry {entry.get('fqn', None) or entry.get('name', None)}.")
+            print(f"[ERROR] Unsupported shape {shape} for entry {entry.get('fqn', None) or entry.get('name', None)}.")
         return None
-    num_rows = valid_numel // num_cols
-    sub_shape = (num_rows, num_cols)
-    return {
-        'local_slice_start': local_slice_start,
-        'valid_numel': valid_numel,
-        'num_rows': num_rows,
-        'num_cols': num_cols,
-        'sub_shape': sub_shape,
-        'param_slice_start': param_slice_start,
-        'param_slice_end': param_slice_end,
-        'entry_name': entry.get('fqn', None) or entry.get('name', None)
-    }
 
 def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=False):
     """
@@ -370,11 +397,12 @@ def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=False):
         sub_shape = overlap_info['sub_shape']
         num_rows = overlap_info['num_rows']
         num_cols = overlap_info['num_cols']
-        # Robust shape check
-        if not isinstance(sub_shape, (tuple, list)) or len(sub_shape) != 2 or sub_shape[0] <= 0 or sub_shape[1] <= 0:
+        # Robust shape check: only apply for 2D shapes
+        if len(sub_shape) == 2 and (not isinstance(sub_shape, (tuple, list)) or sub_shape[0] <= 0 or sub_shape[1] <= 0):
             if verbose:
                 print(f"[ERROR][ZeroGrad] Invalid sub_shape {sub_shape} for entry {idx}, skipping.")
             continue
+        # For other shapes (1D, 3D, 4D), do not skip here; let further logic handle them.
         grad_raw = grad[local_slice_start:local_slice_start + valid_numel]
         if grad_raw.numel() != valid_numel:
             if verbose:
@@ -387,17 +415,55 @@ def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=False):
                 print(f"[ERROR][ZeroGrad] Could not reshape grad_raw to {sub_shape} for entry {idx}: {e}")
             continue
         grad_matrix_abs = grad_matrix.abs()
-        H = grad_matrix_abs.size(0)  # number
-        B = grad_matrix_abs.sum().item()  # sum of all gradients
-        if H == 0 or B == 0:
-            zero_vectors = (grad_matrix_abs.sum(dim=1) < float('inf'))  # all False if H==0 or B==0
-        else:
-            row_sums = grad_matrix_abs.sum(dim=1)  # A for each neuron
-            avg_row_sum = B / H
-            si = row_sums / avg_row_sum
-            zero_vectors = (si < tau)
-        total_zero += zero_vectors.sum().item()
-        total_rows += grad_matrix.size(0)
+        # Robustly handle all shapes
+        if len(sub_shape) == 1:
+            H = grad_matrix_abs.numel()
+            B = grad_matrix_abs.sum().item()
+            if H == 0 or B == 0:
+                zero_vectors = (grad_matrix_abs < float('inf'))
+            else:
+                avg_elem = B / H
+                si = grad_matrix_abs / (avg_elem + 1e-9)
+                zero_vectors = (si < tau)
+            total_zero += zero_vectors.sum().item()
+            total_rows += H
+        elif len(sub_shape) == 2:
+            H = grad_matrix_abs.size(0)
+            B = grad_matrix_abs.sum().item()
+            if H == 0 or B == 0:
+                zero_vectors = (grad_matrix_abs.sum(dim=1) < float('inf'))
+            else:
+                row_sums = grad_matrix_abs.sum(dim=1)
+                avg_row_sum = B / H
+                si = row_sums / (avg_row_sum + 1e-9)
+                zero_vectors = (si < tau)
+            total_zero += zero_vectors.sum().item()
+            total_rows += H
+        elif len(sub_shape) == 3:
+            H = grad_matrix_abs.size(0)
+            B = grad_matrix_abs.sum().item()
+            if H == 0 or B == 0:
+                zero_vectors = (grad_matrix_abs.sum(dim=(1,2)) < float('inf'))
+            else:
+                slice_sums = grad_matrix_abs.sum(dim=(1,2))
+                avg_slice_sum = B / H
+                si = slice_sums / (avg_slice_sum + 1e-9)
+                zero_vectors = (si < tau)
+            total_zero += zero_vectors.sum().item()
+            total_rows += H
+        elif len(sub_shape) == 4:
+            H = grad_matrix_abs.size(0)
+            B = grad_matrix_abs.sum().item()
+            if H == 0 or B == 0:
+                zero_vectors = (grad_matrix_abs.sum(dim=(1,2,3)) < float('inf'))
+            else:
+                slice_sums = grad_matrix_abs.sum(dim=(1,2,3))
+                avg_slice_sum = B / H
+                si = slice_sums / (avg_slice_sum + 1e-9)
+                zero_vectors = (si < tau)
+            total_zero += zero_vectors.sum().item()
+            total_rows += H
+
         #print(f"[DEBUG][ZeroGrad]total_zero:{total_zero}")
         #print(f"[DEBUG][ZeroGrad]total_rows:{total_rows}")
 

@@ -161,67 +161,38 @@ def get_fsdp_flat_param_index_map(fsdp_module):
     Returns a list of dicts with start, end, shape, param, and fqn (fully qualified name, if available) for each original parameter in the flat param.
     Handles both use_orig_params=True (modern FSDP), param_infos/_param_infos (legacy FSDP), and non-FSDP modules.
     """
+    # --- Preferred: use use_orig_params=True and _fsdp_prev (PyTorch 2.0+) ---
     index_map = []
     flat_param = None
-    ## --- Preferred: use use_orig_params=True and _fsdp_prev (PyTorch 2.0+) ---
-    #if not hasattr(fsdp_module, "named_parameters"):
-    #    print(f"[WARN][get_fsdp_flat_param_index_map] Module {type(fsdp_module).__name__} has no named_parameters method; skipping preferred mapping block.")
-    #else:
-    #    for name, param in fsdp_module.named_parameters():
-    #        #print(f"[DEBUG][param attributes] name={name}, attributes={dir(param)}")
-    #        has_prev = hasattr(param, "_fsdp_prev")
-    #        has_offset = has_prev and hasattr(param._fsdp_prev, "offset_in_flat_param")
-    #        print(f"[DEBUG][param attr] name={name}, type={type(param)}, shape={tuple(param.shape)}, has__fsdp_prev={has_prev}, has_offset_in_flat_param={has_offset}")
-    #        if has_offset:
-    #            offset = param._fsdp_prev.offset_in_flat_param
-    #            numel = param.numel()
-    #            if flat_param is None and hasattr(param._fsdp_prev, "flat_param"):
-    #                flat_param = param._fsdp_prev.flat_param
-    #            fqn = getattr(param, 'fqn', name)  # Prefer fqn if available
-    #            print(f"[DEBUG][get_fsdp_flat_param_index_map] name={name}, fqn={fqn}, offset={offset}, numel={numel}, shape={tuple(param.shape)}, flat_param_set={flat_param is not None}")
-    #            index_map.append({
-    #                "name": name,
-    #                "fqn": fqn,
-    #                "start": offset,
-    #                "end": offset + numel,
-    #                "shape": tuple(param.shape),
-    #                "param": param,
-    #            })
-    #if flat_param is not None and len(index_map) > 0:
-    #    index_map = sorted(index_map, key=lambda x: x["start"])
-    #    print(f"[DEBUG] Using use_orig_params=True mapping for {len(index_map)} params")
-    #    return index_map, flat_param
-
+    try:
+        for name, param in fsdp_module.named_parameters():
+            has_prev = hasattr(param, "_fsdp_prev")
+            has_offset = has_prev and hasattr(param._fsdp_prev, "offset_in_flat_param")
+            if has_offset:
+                offset = param._fsdp_prev.offset_in_flat_param
+                numel = param.numel()
+                if flat_param is None and hasattr(param._fsdp_prev, "flat_param"):
+                    flat_param = param._fsdp_prev.flat_param
+                fqn = getattr(param, 'fqn', name)
+                index_map.append({
+                    "index": len(index_map),
+                    "start": offset,
+                    "end": offset + numel,
+                    "shape": tuple(param.shape),
+                    "param": param,
+                    "fqn": fqn,
+                })
+        if flat_param is not None and len(index_map) > 0:
+            index_map = sorted(index_map, key=lambda x: x["start"])
+            return index_map, flat_param
+    except Exception:
+        pass
     # --- Fallback: legacy logic (for older FSDP or use_orig_params=False) ---
     from torch.distributed.fsdp import FlatParameter
     flat_param = next((p for p in fsdp_module.parameters() if isinstance(p, FlatParameter)), None)
     if flat_param is not None:
-        #print(f"[DEBUG] flat_param attributes: {dir(flat_param)}")
         shapes = getattr(flat_param, '_shapes', None)
-        if shapes is not None:
-            #print(f"[DEBUG] flat_param._shapes type: {type(shapes)}, length: {len(shapes)}")
-            if len(shapes) > 0:
-                #print(f"[DEBUG] flat_param._shapes[0] type: {type(shapes[0])}, value: {shapes[0]}")
-                if hasattr(shapes[0], '__dict__'):
-                    pass
-                    #print(f"[DEBUG] flat_param._shapes[0] attributes: {dir(shapes[0])}")
         names = getattr(flat_param, '_unflattened_param_names', None)
-        # If shapes provides (global_start, global_end, shape) tuples, use them directly
-        #if shapes is not None and len(shapes) > 0 and isinstance(shapes[0], tuple) and len(shapes[0]) == 3:
-        #    for i, (global_start, global_end, shape) in enumerate(shapes):
-        #        name = names[i] if names is not None and i < len(names) else f"param_{i}"
-        #        index_map.append({
-        #            'index': i,
-        #            'start': global_start,
-        #            'end': global_end,
-        #            'shape': shape,
-        #            'param': None,
-        #            'fqn': name,
-        #        })
-        #        print(f"[DEBUG] flat_param global slice: name={name}, start={global_start}, end={global_end}, shape={shape}")
-        #    print(f"[DEBUG] Built index map from flat_param._shapes (global indices) with {len(index_map)} entries")
-        #    return index_map, flat_param
-        # Otherwise, fall back to offset-based logic
         offset = 0
         if shapes is not None:
             for i, shape in enumerate(shapes):
@@ -231,21 +202,16 @@ def get_fsdp_flat_param_index_map(fsdp_module):
                 name = names[i] if names is not None and i < len(names) else f"param_{i}"
                 start = offset
                 end = offset + numel
-                #print(f"[DEBUG] Computed flat_param indices for layer {name}: start={start}, end={end}, shape={shape}")
                 index_map.append({
                     'index': i,
                     'start': start,
                     'end': end,
                     'shape': shape,
-                    'param': None,  # original param ref not available here
+                    'param': None,
                     'fqn': name,
                 })
                 offset = end
-                # print(f"[DEBUG] flat_param slice: name={name}, start={offset}, end={offset + numel}, shape={shape}")
-                offset += numel
-            # print(f"[DEBUG] Built index map from flat_param._shapes/_unflattened_param_names with {len(index_map)} entries")
             return index_map, flat_param
-
     # --- Final fallback: regular parameter (non-FSDP) ---
     param = next((p for p in fsdp_module.parameters() if p.requires_grad), None)
     if param is None:
@@ -254,9 +220,43 @@ def get_fsdp_flat_param_index_map(fsdp_module):
             raise RuntimeError("No parameters found in module")
     shape = param.shape
     index_map = [{'index': 0, 'start': 0, 'end': param.numel(), 'shape': shape, 'param': param, 'fqn': getattr(param, 'fqn', None)}]
-    # print(f"[DEBUG] Successfully created simplified index map for regular Parameter")
     return index_map, param
 
+
+def map_dormant_neurons_to_layers(fsdp_module, mask):
+    """
+    Given an FSDP module and a dormant neuron mask (1D tensor over flat param),
+    returns a list of dicts with {'layer': fqn, 'neuron_idx': idx} for each dormant neuron.
+    """
+    index_map, _ = get_fsdp_flat_param_index_map(fsdp_module)
+    dormant_info = []
+    if mask is None:
+        return dormant_info
+    mask = mask.detach().cpu().bool()
+    for entry in index_map:
+        start, end, shape, fqn = entry['start'], entry['end'], entry['shape'], entry['fqn']
+        length = end - start
+        if length == 0:
+            continue
+        mask_slice = mask[start:end]
+        if len(shape) == 1:
+            # 1D param, e.g., LayerNorm
+            if mask_slice.numel() != shape[0]:
+                continue
+            dormant_indices = mask_slice.nonzero(as_tuple=True)[0].tolist()
+            for idx in dormant_indices:
+                dormant_info.append({'layer': fqn, 'neuron_idx': idx})
+        elif len(shape) == 2:
+            # 2D param, e.g., Linear
+            try:
+                mask_slice_2d = mask_slice.view(shape)
+            except Exception:
+                continue
+            dormant_indices = mask_slice_2d.sum(dim=1).nonzero(as_tuple=True)[0].tolist()
+            for idx in dormant_indices:
+                dormant_info.append({'layer': fqn, 'neuron_idx': idx})
+        # Add more cases for Conv or other shapes if needed
+    return dormant_info
 
 def get_shard_overlap_slices(entry, my_global_start, my_global_end, flat_param_numel, verbose=False):
     """

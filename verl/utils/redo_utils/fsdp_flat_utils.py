@@ -173,7 +173,18 @@ def get_fsdp_flat_param_index_map(fsdp_module):
                 numel = param.numel()
                 if flat_param is None and hasattr(param._fsdp_prev, "flat_param"):
                     flat_param = param._fsdp_prev.flat_param
-                fqn = getattr(param, 'fqn', name)
+                
+                # Robust FQN retrieval
+                fqn_attr = getattr(param, 'fqn', None) # Check if 'fqn' attribute exists
+                if fqn_attr is not None:
+                    fqn = fqn_attr
+                else:
+                    fqn = name # Fallback to name from named_parameters()
+                
+                # Ensure fqn is not None if name is valid and fqn_attr was None
+                if fqn is None and name:
+                    fqn = name
+                    
                 index_map.append({
                     "index": len(index_map),
                     "start": offset,
@@ -188,6 +199,7 @@ def get_fsdp_flat_param_index_map(fsdp_module):
     except Exception:
         pass
     # --- Fallback: legacy logic (for older FSDP or use_orig_params=False) ---
+    print('debug:202')
     from torch.distributed.fsdp import FlatParameter
     flat_param = next((p for p in fsdp_module.parameters() if isinstance(p, FlatParameter)), None)
     if flat_param is not None:
@@ -225,6 +237,7 @@ def get_fsdp_flat_param_index_map(fsdp_module):
                 offset = end
             return index_map, flat_param
     # --- Final fallback: regular parameter (non-FSDP) ---
+    print('debug:242')
     param = next((p for p in fsdp_module.parameters() if p.requires_grad), None)
     if param is None:
         param = next(fsdp_module.parameters(), None)

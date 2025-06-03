@@ -228,34 +228,134 @@ def map_dormant_neurons_to_layers(fsdp_module, mask):
     Given an FSDP module and a dormant neuron mask (1D tensor over flat param),
     returns a list of dicts with {'layer': fqn, 'neuron_idx': idx} for each dormant neuron.
     """
-    index_map, _ = get_fsdp_flat_param_index_map(fsdp_module)
+    import torch.distributed as dist
+    rank = 0
+    world_size = 1
+    if dist.is_available() and dist.is_initialized():
+        rank = dist.get_rank()
+        world_size = dist.get_world_size()
+    
+    # Only print debug info on rank 0
+    if rank == 0:
+        print(f"[DEBUG] map_dormant_neurons_to_layers called with mask of shape {mask.shape if mask is not None else None}, sum: {mask.sum().item() if mask is not None else 0}")
+    
+    index_map, flat_param = get_fsdp_flat_param_index_map(fsdp_module)
     dormant_info = []
     if mask is None:
         return dormant_info
+    
     mask = mask.detach().cpu().bool()
+    
+    # Get shard information - critical for FSDP
+    my_global_start = getattr(flat_param, '_shard_start_idx', None)
+    my_global_end = None
+    
+    # If _shard_start_idx is not available, compute it manually
+    if my_global_start is None and world_size > 1:
+        # Manual computation fallback (same as in compute_fsdp_zero_grad_space_ratio)
+        if len(index_map) > 0:
+            global_flat_param_numel = max(entry['end'] for entry in index_map)
+            shard_size = (global_flat_param_numel + world_size - 1) // world_size
+            my_global_start = rank * shard_size
+            my_global_end = min((rank + 1) * shard_size, global_flat_param_numel)
+            my_global_end = min(my_global_end, my_global_start + flat_param.numel())
+            if rank == 0:
+                print(f"[DEBUG] Computed shard info: rank={rank}, my_global_start={my_global_start}, my_global_end={my_global_end}, global_size={global_flat_param_numel}")
+        else:
+            my_global_start = 0
+            my_global_end = flat_param.numel() if flat_param is not None else 0
+    else:
+        # If not sharded or _shard_start_idx is available
+        if my_global_start is None:
+            my_global_start = 0
+        my_global_end = my_global_start + flat_param.numel() if flat_param is not None else 0
+    
+    # Debug info about index map
+    if rank == 0:
+        print(f"[DEBUG] Got index_map with {len(index_map)} entries")
+        print(f"[DEBUG] Flat param shape: {flat_param.shape if flat_param is not None else None}")
+        print(f"[DEBUG] Mask shape: {mask.shape}")
+        print(f"[DEBUG] Shard info: start={my_global_start}, end={my_global_end}")
+        
+        # Print first few entries of index_map
+        for i, entry in enumerate(index_map[:3]):
+            print(f"[DEBUG] index_map[{i}]: start={entry['start']}, end={entry['end']}, shape={entry['shape']}, fqn={entry['fqn']}")
+    
+    # Limit to top 100 dormant neurons for logging
+    max_dormant_to_log = 100
+    dormant_count = 0
+    
     for entry in index_map:
         start, end, shape, fqn = entry['start'], entry['end'], entry['shape'], entry['fqn']
-        length = end - start
-        if length == 0:
+        
+        # Skip if no overlap with our shard
+        if end <= my_global_start or start >= my_global_end:
             continue
-        mask_slice = mask[start:end]
+            
+        # Get the overlap region between this param and our shard
+        overlap = get_shard_overlap_slices(entry, my_global_start, my_global_end, flat_param.numel())
+        if overlap is None:
+            continue
+            
+        # Use local indices within our shard
+        local_start = overlap['local_slice_start']
+        local_numel = overlap['valid_numel']
+        local_end = local_start + local_numel
+        
+        # Check if mask is large enough
+        if local_start >= mask.numel() or local_end > mask.numel():
+            if rank == 0:
+                print(f"[DEBUG] Skipping entry with local_start={local_start}, local_end={local_end} - mask too small (size={mask.numel()})")
+            continue
+            
+        mask_slice = mask[local_start:local_end]
+        dormant_in_slice = mask_slice.sum().item()
+        
+        if dormant_in_slice > 0 and rank == 0:
+            print(f"[DEBUG] Found {dormant_in_slice} dormant neurons in layer {fqn} (shape {shape})")
+        
+        # Handle different parameter shapes
         if len(shape) == 1:
             # 1D param, e.g., LayerNorm
-            if mask_slice.numel() != shape[0]:
-                continue
+            # For 1D params, we need to map local indices back to global
             dormant_indices = mask_slice.nonzero(as_tuple=True)[0].tolist()
-            for idx in dormant_indices:
-                dormant_info.append({'layer': fqn, 'neuron_idx': idx})
+            for local_idx in dormant_indices:
+                # Convert local index to global
+                global_idx = local_idx + (overlap.get('global_offset', 0))
+                if dormant_count < max_dormant_to_log:
+                    dormant_info.append({'layer': fqn, 'neuron_idx': global_idx})
+                    dormant_count += 1
+                    
         elif len(shape) == 2:
             # 2D param, e.g., Linear
             try:
-                mask_slice_2d = mask_slice.view(shape)
-            except Exception:
+                # For 2D params, we need to reshape according to the overlap sub_shape
+                sub_shape = overlap.get('sub_shape')
+                if sub_shape is None:
+                    continue
+                    
+                mask_slice_2d = mask_slice.view(sub_shape)
+                row_sums = mask_slice_2d.sum(dim=1)
+                dormant_indices = row_sums.nonzero(as_tuple=True)[0].tolist()
+                
+                if rank == 0 and len(dormant_indices) > 0:
+                    print(f"[DEBUG] Found {len(dormant_indices)} dormant rows in layer {fqn}")
+                    
+                for local_idx in dormant_indices:
+                    # Convert local row index to global
+                    global_idx = local_idx + (overlap.get('row_offset', 0))
+                    if dormant_count < max_dormant_to_log:
+                        dormant_info.append({'layer': fqn, 'neuron_idx': global_idx})
+                        dormant_count += 1
+            except Exception as e:
+                if rank == 0:
+                    print(f"[DEBUG] Error handling 2D param {fqn}: {e}")
                 continue
-            dormant_indices = mask_slice_2d.sum(dim=1).nonzero(as_tuple=True)[0].tolist()
-            for idx in dormant_indices:
-                dormant_info.append({'layer': fqn, 'neuron_idx': idx})
         # Add more cases for Conv or other shapes if needed
+    
+    if rank == 0:
+        print(f"[DEBUG] Returning {len(dormant_info)} dormant neurons (limited to {max_dormant_to_log})")
+        
     return dormant_info
 
 def get_shard_overlap_slices(entry, my_global_start, my_global_end, flat_param_numel, verbose=False):

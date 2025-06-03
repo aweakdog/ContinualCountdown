@@ -234,7 +234,7 @@ class ActorRolloutRefWorker(Worker):
         actor_module_fsdp = FSDP(
             actor_module,
             param_init_fn=init_fn,
-            use_orig_params=False,  # Enable original param views for robust FSDP analysis
+            use_orig_params=True,  # Enable original param views for robust FSDP analysis
             auto_wrap_policy=auto_wrap_policy,
             device_id=torch.cuda.current_device(),
             sharding_strategy=sharding_strategy,  # zero3
@@ -702,7 +702,7 @@ class CriticWorker(Worker):
 
         critic_module = FSDP(critic_module,
                              param_init_fn=init_fn,
-                             use_orig_params=False,
+                             use_orig_params=True,
                              auto_wrap_policy=auto_wrap_policy,
                              device_id=torch.cuda.current_device(),
                              sharding_strategy=ShardingStrategy.FULL_SHARD,
@@ -952,7 +952,7 @@ class RewardModelWorker(Worker):
         reward_module = FSDP(
             reward_module,
             param_init_fn=init_fn,
-            use_orig_params=False,
+            use_orig_params=True,
             auto_wrap_policy=auto_wrap_policy,
             device_id=torch.cuda.current_device(),
             sharding_strategy=ShardingStrategy.FULL_SHARD,  # zero3

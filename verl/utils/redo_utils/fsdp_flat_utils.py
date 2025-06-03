@@ -223,12 +223,15 @@ def get_fsdp_flat_param_index_map(fsdp_module):
     return index_map, param
 
 
-def map_dormant_neurons_to_layers(fsdp_module, mask):
+def map_dormant_neurons_to_layers(fsdp_module, mask, return_stats=True):
     """
     Given an FSDP module and a dormant neuron mask (1D tensor over flat param),
     returns a list of dicts with {'layer': fqn, 'neuron_idx': idx} for each dormant neuron.
+    If return_stats=True, also returns layer-wise statistics.
     """
     import torch.distributed as dist
+    import collections
+    
     rank = 0
     world_size = 1
     if dist.is_available() and dist.is_initialized():
@@ -285,6 +288,11 @@ def map_dormant_neurons_to_layers(fsdp_module, mask):
     max_dormant_to_log = 100
     dormant_count = 0
     
+    # For statistics
+    layer_stats = collections.defaultdict(lambda: {'dormant': 0, 'total': 0})
+    total_dormant = 0
+    total_neurons = 0
+    
     for entry in index_map:
         start, end, shape, fqn = entry['start'], entry['end'], entry['shape'], entry['fqn']
         
@@ -319,6 +327,13 @@ def map_dormant_neurons_to_layers(fsdp_module, mask):
             # 1D param, e.g., LayerNorm
             # For 1D params, we need to map local indices back to global
             dormant_indices = mask_slice.nonzero(as_tuple=True)[0].tolist()
+            
+            # Update statistics
+            layer_stats[fqn]['dormant'] += len(dormant_indices)
+            layer_stats[fqn]['total'] += shape[0]  # Total neurons in this 1D layer
+            total_dormant += len(dormant_indices)
+            total_neurons += shape[0]
+            
             for local_idx in dormant_indices:
                 # Convert local index to global
                 global_idx = local_idx + (overlap.get('global_offset', 0))
@@ -338,6 +353,12 @@ def map_dormant_neurons_to_layers(fsdp_module, mask):
                 row_sums = mask_slice_2d.sum(dim=1)
                 dormant_indices = row_sums.nonzero(as_tuple=True)[0].tolist()
                 
+                # Update statistics - for 2D params, we count rows (neurons)
+                layer_stats[fqn]['dormant'] += len(dormant_indices)
+                layer_stats[fqn]['total'] += shape[0]  # Total rows/neurons in this 2D layer
+                total_dormant += len(dormant_indices)
+                total_neurons += shape[0]
+                
                 if rank == 0 and len(dormant_indices) > 0:
                     print(f"[DEBUG] Found {len(dormant_indices)} dormant rows in layer {fqn}")
                     
@@ -353,9 +374,40 @@ def map_dormant_neurons_to_layers(fsdp_module, mask):
                 continue
         # Add more cases for Conv or other shapes if needed
     
-    if rank == 0:
-        print(f"[DEBUG] Returning {len(dormant_info)} dormant neurons (limited to {max_dormant_to_log})")
+    # Compute percentages and prepare statistics output
+    if return_stats and rank == 0:
+        stats_output = []
+        for layer, counts in sorted(layer_stats.items()):
+            dormant = counts['dormant']
+            total = counts['total']
+            percentage = (dormant / total * 100) if total > 0 else 0
+            stats_output.append({
+                'layer': layer,
+                'dormant': dormant,
+                'total': total,
+                'percentage': percentage
+            })
         
+        # Add global statistics
+        global_percentage = (total_dormant / total_neurons * 100) if total_neurons > 0 else 0
+        stats_output.append({
+            'layer': 'GLOBAL',
+            'dormant': total_dormant,
+            'total': total_neurons,
+            'percentage': global_percentage
+        })
+        
+        # Print summary statistics
+        print(f"\n[DormantNeuron][Stats] Layer-wise dormant neuron statistics:")
+        for stat in stats_output:
+            print(f"  {stat['layer']}: {stat['dormant']}/{stat['total']} neurons dormant ({stat['percentage']:.2f}%)")
+        print(f"  TOTAL: {total_dormant}/{total_neurons} neurons dormant ({global_percentage:.2f}%)\n")
+        
+        if rank == 0:
+            print(f"[DEBUG] Returning {len(dormant_info)} dormant neurons (limited to {max_dormant_to_log})")
+        
+        return dormant_info, stats_output
+    
     return dormant_info
 
 def get_shard_overlap_slices(entry, my_global_start, my_global_end, flat_param_numel, verbose=False):

@@ -374,8 +374,10 @@ class DataParallelPPOActor(BasePPOActor):
                         if mask is not None:
                             print(f"[FSDP-ReDo][Actor][Boot] Step {self.global_steps}: reset {mask.sum().item()} dormant neurons.")
                             from verl.utils.redo_utils.fsdp_flat_utils import map_dormant_neurons_to_layers
-                            dormant_info = map_dormant_neurons_to_layers(self.actor_module, mask)
-                            print(f"[DormantNeuron][Boot][Step {self.global_steps}] Locations: {dormant_info}")
+                            # Get both dormant neuron locations and statistics
+                            dormant_info, stats = map_dormant_neurons_to_layers(self.actor_module, mask, return_stats=True)
+                            print(f"[DormantNeuron][Boot][Step {self.global_steps}] Locations (sample): {dormant_info[:10]}...")
+                            # Stats are already printed inside the function
                         else:
                             print(f"[FSDP-ReDo][Actor][Boot] Step {self.global_steps}: reset None.")
                 # Perform neuron reset at the specified frequency after boot period

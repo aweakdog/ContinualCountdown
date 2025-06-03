@@ -376,6 +376,7 @@ class DataParallelPPOActor(BasePPOActor):
                             from verl.utils.redo_utils.fsdp_flat_utils import map_dormant_neurons_to_layers
                             # Get both dormant neuron locations and statistics
                             dormant_info, stats = map_dormant_neurons_to_layers(self.actor_module, mask, return_stats=True)
+                            dormant_info, stats = None, None # hacky
                             print(f"[DormantNeuron][Boot][Step {self.global_steps}] Locations (sample): {dormant_info[:10]}...")
                             # Stats are already printed inside the function
                         else:

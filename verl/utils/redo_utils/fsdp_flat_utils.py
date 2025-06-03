@@ -192,14 +192,26 @@ def get_fsdp_flat_param_index_map(fsdp_module):
     flat_param = next((p for p in fsdp_module.parameters() if isinstance(p, FlatParameter)), None)
     if flat_param is not None:
         shapes = getattr(flat_param, '_shapes', None)
-        names = getattr(flat_param, '_unflattened_param_names', None)
+        # Try to get FQNs from flat_param._fqns first, then _unflattened_param_names
+        fqns_from_flat_param = getattr(flat_param, '_fqns', None)
+        unflattened_names = getattr(flat_param, '_unflattened_param_names', None)
+        
         offset = 0
         if shapes is not None:
             for i, shape in enumerate(shapes):
                 numel = 1
-                for s in shape:
-                    numel *= s
-                name = names[i] if names is not None and i < len(names) else f"param_{i}"
+                for s_dim in shape:
+                    numel *= s_dim
+                
+                # Determine the FQN for the current parameter
+                fqn = None
+                if fqns_from_flat_param is not None and i < len(fqns_from_flat_param):
+                    fqn = fqns_from_flat_param[i]
+                elif unflattened_names is not None and i < len(unflattened_names):
+                    fqn = unflattened_names[i]
+                else:
+                    fqn = f"param_{i}" # Default if no other name source found
+                    
                 start = offset
                 end = offset + numel
                 index_map.append({
@@ -207,8 +219,8 @@ def get_fsdp_flat_param_index_map(fsdp_module):
                     'start': start,
                     'end': end,
                     'shape': shape,
-                    'param': None,
-                    'fqn': name,
+                    'param': None, # Original param object not directly available here
+                    'fqn': fqn,
                 })
                 offset = end
             return index_map, flat_param

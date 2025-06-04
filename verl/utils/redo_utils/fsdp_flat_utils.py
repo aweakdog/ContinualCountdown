@@ -516,13 +516,13 @@ def get_shard_overlap_slices(entry, my_global_start, my_global_end, flat_param_n
 def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=False):
     """
     Computes the fraction of output neurons (rows) in each 2D param whose normalized gradient metric si = A/(B/H) is below tau,
-    iterating over fsdp_module.named_parameters() (expects use_orig_params=True).
-    - H_local: number of neurons (rows) in the local shard of the layer's gradient.
-    - B_local: sum of absolute gradients in the local shard of the layer's gradient.
-    - A_local_row: sum of absolute gradients for a row within the local shard.
-    - si_local_row = A_local_row / (B_local / H_local)
-    Counts of zero-gradient rows are aggregated globally.
-    Returns a dictionary with per-layer and global statistics.
+    using GLOBAL layer statistics (B_global and H_global) for consistent metric calculation.
+    
+    Key improvements:
+    1. Uses global layer statistics (B_global, H_global) for si calculation
+    2. Batched all-reduces for efficiency
+    3. Proper handling of sharded parameters
+    4. Accurate per-layer statistics
     """
     import torch
     import torch.distributed as dist
@@ -531,84 +531,105 @@ def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=False):
     if not (dist.is_available() and dist.is_initialized()):
         if verbose:
             print("[WARN][ZeroGradV2] Distributed not initialized. Skipping calculation.")
-        # Return a structure consistent with the populated case, but with zero values.
         return {'__global__': {'zero': 0, 'total': 0, 'ratio': 0.0}}
 
     rank = dist.get_rank()
-    total_zero_local = 0  # Renamed to clarify it's rank-local before aggregation
-    total_rows_local = 0    # Renamed to clarify it's rank-local before aggregation
-    layer_stats_local = collections.defaultdict(lambda: {'zero': 0, 'total': 0})
-    # world_size = dist.get_world_size() # Not explicitly needed with all_gather_object
+    device = fsdp_module.compute_device
+    layer_stats_local = {}
+    global_contributions = []
 
+    # Step 1: Collect local statistics for all layers
     for fqn, param in fsdp_module.named_parameters():
         if param.grad is not None and param.dim() == 2 and param.grad.shape[0] > 0:
-            grad_matrix = param.grad
-            H = grad_matrix.shape[0]
+            grad = param.grad
+            H_local = grad.shape[0]
             
-            grad_matrix_abs = grad_matrix.abs()
-            B_local_param = grad_matrix_abs.sum()
+            # Compute local statistics
+            grad_abs = grad.abs()
+            B_local = grad_abs.sum()
+            A_local_row = grad_abs.sum(dim=1)
             
-            if H == 0:
-                si_local_row_param = torch.empty(0, device=param.device)
-            elif B_local_param == 0:
-                # If total sum of grads is 0, all rows are effectively 'zero-activity' w.r.t this metric
-                # so si would be 0/0 effectively. Treat as all rows < tau.
-                si_local_row_param = torch.zeros(H, device=param.device)
+            # Store for global reduction
+            global_contributions.append((fqn, H_local, B_local, A_local_row))
+
+    # Step 2: Batch all-reduce for global statistics
+    if not global_contributions:
+        # No valid parameters found
+        total_zero_global = torch.tensor(0.0, device=device, dtype=torch.float32) # Ensure float for division
+        total_rows_global = torch.tensor(0.0, device=device, dtype=torch.float32)
+    else:
+        # Prepare batched tensors for all-reduce
+        H_locals_list = [item[1] for item in global_contributions]
+        B_locals_list = [item[2].item() for item in global_contributions] # .item() to get scalar from 0-dim tensor
+
+        H_global_tensor = torch.tensor(H_locals_list, device=device, dtype=torch.float32)
+        B_global_tensor = torch.tensor(B_locals_list, device=device, dtype=torch.float32)
+        
+        # All-reduce global statistics
+        dist.all_reduce(H_global_tensor, op=dist.ReduceOp.SUM)
+        dist.all_reduce(B_global_tensor, op=dist.ReduceOp.SUM)
+        
+        # Step 3: Compute per-layer metrics with GLOBAL statistics
+        total_zero_local = 0
+        total_rows_local = 0
+        
+        for i, (fqn, H_local_scalar, B_local_scalar_tensor, A_local_row_tensor) in enumerate(global_contributions):
+            H_global = H_global_tensor[i].item()
+            B_global = B_global_tensor[i].item()
+            
+            if H_global == 0 or B_global == 0:
+                # Entire layer has no gradient or no rows globally
+                si = torch.zeros(H_local_scalar, device=device) # Use H_local_scalar for shape
             else:
-                avg_row_grad_sum_metric = B_local_param / H
-                A_local_row_param = grad_matrix_abs.sum(dim=1)
-                si_local_row_param = A_local_row_param / (avg_row_grad_sum_metric + 1e-9) # Add epsilon for stability
+                avg_global = B_global / H_global
+                si = A_local_row_tensor / (avg_global + 1e-9)
             
-            zero_vectors = (si_local_row_param < tau)
-            
-            current_param_zero = zero_vectors.sum().item()
-            current_param_rows = H
+            zero_rows = (si < tau).sum().item()
+            layer_stats_local[fqn] = {'zero': zero_rows, 'total': H_local_scalar} # Use H_local_scalar
+            total_zero_local += zero_rows
+            total_rows_local += H_local_scalar # Use H_local_scalar
 
-            layer_stats_local[fqn] = {'zero': current_param_zero, 'total': current_param_rows}
-            
-            total_zero_local += current_param_zero
-            total_rows_local += current_param_rows
-
-    # Global aggregation for total_zero and total_rows
-    device = fsdp_module.compute_device # FSDP module's compute device
-
-    total_zero_tensor = torch.tensor([total_zero_local], dtype=torch.float32, device=device)
-    total_rows_tensor = torch.tensor([total_rows_local], dtype=torch.float32, device=device)
-
-    dist.all_reduce(total_zero_tensor, op=dist.ReduceOp.SUM)
-    dist.all_reduce(total_rows_tensor, op=dist.ReduceOp.SUM)
-
-    global_total_zero = total_zero_tensor.item()
-    global_total_rows = total_rows_tensor.item()
-    global_ratio = global_total_zero / (global_total_rows + 1e-8) if global_total_rows > 0 else 0.0
-
-    # Per-layer statistics aggregation
-    all_rank_layer_stats = [None] * dist.get_world_size()
-    # Convert defaultdict to dict before gathering to avoid pickling issues with lambda
-    plain_layer_stats_local = dict(layer_stats_local)
-    dist.all_gather_object(all_rank_layer_stats, plain_layer_stats_local)
-
-    final_layer_stats = collections.defaultdict(lambda: {'zero': 0, 'total': 0, 'ratio': 0.0})
-    # Process all_rank_layer_stats on all ranks, so all ranks have the full picture if needed
-    # Alternatively, can restrict this processing and subsequent printing to rank == 0
-    for rank_data in all_rank_layer_stats:
-        for fqn, stats in rank_data.items():
-            final_layer_stats[fqn]['zero'] += stats['zero']
-            final_layer_stats[fqn]['total'] += stats['total']
+        # Convert to tensors for global reduction
+        total_zero_global = torch.tensor(total_zero_local, device=device, dtype=torch.float32)
+        total_rows_global = torch.tensor(total_rows_local, device=device, dtype=torch.float32)
     
-    for fqn in final_layer_stats: # Calculate ratios after summing up zero/total from all ranks
-        layer_zero = final_layer_stats[fqn]['zero']
-        layer_total = final_layer_stats[fqn]['total']
-        final_layer_stats[fqn]['ratio'] = layer_zero / (layer_total + 1e-8) if layer_total > 0 else 0.0
+    # Step 4: Global aggregation of total zero/rows counts
+    dist.all_reduce(total_zero_global, op=dist.ReduceOp.SUM)
+    dist.all_reduce(total_rows_global, op=dist.ReduceOp.SUM)
+    
+    global_total_zero_val = total_zero_global.item()
+    global_total_rows_val = total_rows_global.item()
+    global_ratio = global_total_zero_val / (global_total_rows_val + 1e-8) if global_total_rows_val > 0 else 0.0
 
-    results = {'__global__': {'zero': global_total_zero, 'total': global_total_rows, 'ratio': global_ratio}}
-    results.update(dict(final_layer_stats)) # Convert defaultdict to dict for cleaner output/serialization
-
+    results = {'__global__': {
+        'zero': global_total_zero_val,
+        'total': global_total_rows_val,
+        'ratio': global_ratio
+    }}
+    
+    # Step 5: Aggregate per-layer statistics globally
+    all_layer_stats_gathered = [None] * dist.get_world_size()
+    dist.all_gather_object(all_layer_stats_gathered, layer_stats_local) 
+    
+    combined_stats = collections.defaultdict(lambda: {'zero': 0, 'total': 0})
+    if all_layer_stats_gathered[0] is not None: # Check if any stats were gathered
+        for stats_dict_from_rank in all_layer_stats_gathered:
+            if stats_dict_from_rank: # Ensure the dict from a rank is not empty
+                for fqn, data in stats_dict_from_rank.items():
+                    combined_stats[fqn]['zero'] += data['zero']
+                    combined_stats[fqn]['total'] += data['total']
+    
+    for fqn, data in combined_stats.items():
+        ratio = data['zero'] / (data['total'] + 1e-8) if data['total'] > 0 else 0.0
+        results[fqn] = {**data, 'ratio': ratio}
+    
+    # Optional verbose output
     if verbose and rank == 0:
-        print(f"[INFO][ZeroGradV2][Rank {rank}] Global Zero Grad Space: {global_total_zero:.0f}/{global_total_rows:.0f} ({global_ratio:.6f})")
-        for fqn, stats in sorted(results.items()): # Iterate over results to include __global__ if desired in sorted output
-            if fqn == '__global__': continue # Already printed
-            print(f"[INFO][ZeroGradV2][Rank {rank}] Layer {fqn}: Zero {stats['zero']:.0f}/{stats['total']:.0f} ({stats.get('ratio',0.0):.6f})")
+        print(f"[ZeroGradV2] Global: {results['__global__']['zero']:.0f}/{results['__global__']['total']:.0f} "
+              f"({results['__global__']['ratio']:.4f})")
+        sorted_layer_items = sorted([item for item in results.items() if item[0] != '__global__'])
+        for fqn, stats in sorted_layer_items:
+            print(f"[ZeroGradV2] {fqn}: {stats['zero']:.0f}/{stats['total']:.0f} ({stats['ratio']:.4f})")
     
     return results
 

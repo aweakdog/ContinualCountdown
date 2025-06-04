@@ -751,6 +751,7 @@ def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=True, origi
         results[fqn] = {**data, 'ratio': ratio}
     
     # Optional verbose output
+    verbose = True
     if verbose and rank == 0:
         print(f"[ZeroGradV2] Global: {results['__global__']['zero']:.0f}/{results['__global__']['total']:.0f} "
               f"({results['__global__']['ratio']:.4f})")
@@ -1181,24 +1182,6 @@ def fsdp_dormant_neuron_mask_and_reset(fsdp_module, mode='threshold', tau=0.04, 
                 # For now, this part is omitted for brevity but is crucial for effective reset.
 
             all_masks_details_local.append({'fqn': full_fqn_for_map, 'dormant': num_dormant_in_shard, 'total_in_shard': num_neurons_in_shard})
-
-        # <<< Cascade: Calculate and print module-level total and dormant neuron counts >>>
-        module_total_neurons_local_sum = sum(d['total_in_shard'] for d in all_masks_details_local if 'total_in_shard' in d)
-        module_dormant_neurons_local_sum = sum(d['dormant'] for d in all_masks_details_local if 'dormant' in d)
-
-        global_total_neurons_processed = torch.tensor(module_total_neurons_local_sum, device=device, dtype=torch.long)
-        global_dormant_neurons_found = torch.tensor(module_dormant_neurons_local_sum, device=device, dtype=torch.long)
-
-        if is_distributed:
-            dist.all_reduce(global_total_neurons_processed, op=dist.ReduceOp.SUM)
-            dist.all_reduce(global_dormant_neurons_found, op=dist.ReduceOp.SUM)
-
-        if verbose and (not is_distributed or current_rank == 0):
-            module_identifier = fqn_prefix if fqn_prefix else fsdp_module.__class__.__name__ # Use fqn_prefix if available
-            print(f"[INFO][DormantResetSummary][Module: {module_identifier}] "
-                  f"Total Neurons Processed (sum of shard rows/elements): {global_total_neurons_processed.item()}, "
-                  f"Total Dormant Neurons Found: {global_dormant_neurons_found.item()}")
-        # <<< Cascade: End of new summary print logic >>>
 
         # Aggregate reset_counts_details if distributed
         final_reset_counts = {}

@@ -687,7 +687,7 @@ def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=True, origi
     else:
         # Prepare batched tensors for all-reduce
         H_locals_list = [item[1] for item in global_contributions]
-        B_locals_list = [item[2].item() for item in global_contributions] # .item() to get scalar from 0-dim tensor
+        B_locals_list = [item[2] for item in global_contributions] # item[2] is B_local, which is already a float
 
         H_global_tensor = torch.tensor(H_locals_list, device=device, dtype=torch.float32)
         B_global_tensor = torch.tensor(B_locals_list, device=device, dtype=torch.float32)

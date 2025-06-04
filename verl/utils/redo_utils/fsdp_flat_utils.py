@@ -613,30 +613,47 @@ def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=True, origi
             continue
         
         param_count_eligible_for_contrib +=1 # Parameter passed all initial checks
-        current_grad_to_process = param.grad
-        # <<< Cascade: Reshape grad if it's flat but originally 2D >>>
-        reshaped_for_norm = False
-        if original_shapes_map and original_shape and len(original_shape) == 2 and current_grad_to_process.dim() == 1:
-            # We have an original_shape from the map, it's 2D, and the current grad is 1D (flat)
-            if current_grad_to_process.numel() == (original_shape[0] * original_shape[1]):
-                current_grad_to_process = current_grad_to_process.view(original_shape)
-                reshaped_for_norm = True
-                if rank == 0 and verbose and log_reshape_count < 5:
-                    cleaned_local_fqn_for_log = _clean_fsdp_fqn(fqn)
-                    cleaned_fqn_prefix_for_log = _clean_fsdp_fqn(fqn_prefix)
-                    full_fqn_for_map_for_log = f"{cleaned_fqn_prefix_for_log}.{cleaned_local_fqn_for_log}" if cleaned_fqn_prefix_for_log else cleaned_local_fqn_for_log
-                    print(f"[ZeroGradV2-Debug][Rank {rank}] Param local_fqn='{fqn}' (prefix='{fqn_prefix}', cleaned_prefix='{cleaned_fqn_prefix_for_log}', map_key='{full_fqn_for_map_for_log}'): Reshaped grad from {param.grad.shape} to {original_shape} using original_shapes_map.")
-                    log_reshape_count += 1
-            else: # Numel mismatch
-                if rank == 0 and verbose:
-                    cleaned_local_fqn_for_log = _clean_fsdp_fqn(fqn)
-                    cleaned_fqn_prefix_for_log = _clean_fsdp_fqn(fqn_prefix)
-                    full_fqn_for_map_for_log = f"{cleaned_fqn_prefix_for_log}.{cleaned_local_fqn_for_log}" if cleaned_fqn_prefix_for_log else cleaned_local_fqn_for_log
-                    print(f"[ZeroGradV2-Warning][Rank {rank}] Param local_fqn='{fqn}' (prefix='{fqn_prefix}', cleaned_prefix='{cleaned_fqn_prefix_for_log}', map_key='{full_fqn_for_map_for_log}'): Mismatch numel for reshape. Grad shape: {current_grad_to_process.shape}, Original shape from map: {original_shape}. Skipping reshape.")
-        # <<< End Cascade modification >>>
+        current_grad_to_process = param.grad.data.float() # Initialize with .data.float()
+        reshaped_from_map = False
+        # 'original_shape' is already available from: original_shapes_map.get(cleaned_fqn_for_map_lookup)
+        # 'cleaned_fqn_for_map_lookup' is the map key we'll use for logging.
 
-        if rank == 0 and verbose and param_count_eligible_for_contrib <= 5: # Log first 5 eligible
-            print(f"[ZeroGradV2-Debug][Rank {rank}] Param {fqn}: ELIGIBLE (original_grad_shape: {param.grad.shape}, processing_grad_shape: {current_grad_to_process.shape}, reshaped: {reshaped_for_norm}, current_param_dim: {param.dim()}).")
+        if original_shape is not None: # 'original_shape' was fetched using cleaned_fqn_for_map_lookup
+            if len(original_shape) == 2: # Original parameter was 2D (e.g., weight matrix)
+                H_orig, W_orig = original_shape
+                if current_grad_to_process.dim() == 1 and W_orig > 0 and current_grad_to_process.numel() % W_orig == 0:
+                    # Current grad is 1D (likely a shard), original was 2D. Attempt to reshape to (H_shard, W_orig)
+                    H_shard = current_grad_to_process.numel() // W_orig
+                    try:
+                        current_grad_to_process = current_grad_to_process.reshape(H_shard, W_orig)
+                        reshaped_from_map = True
+                        if rank == 0 and verbose:
+                            print(f"[ZeroGradV2-Debug][Rank {rank}] Param {cleaned_fqn_for_map_lookup}: Reshaped 1D sharded grad (numel {param.grad.data.numel()}) to 2D ({H_shard}, {W_orig}) using W_orig from map shape {original_shape}.")
+                    except Exception as e_reshape:
+                        if rank == 0 and verbose:
+                            print(f"[ZeroGradV2-Warning][Rank {rank}] Param {cleaned_fqn_for_map_lookup}: Failed to reshape 1D sharded grad to ({H_shard}, {W_orig}). Error: {e_reshape}. Using original grad shape {param.grad.data.shape}.")
+                        # current_grad_to_process remains param.grad.data.float() as initialized
+                        reshaped_from_map = False
+                # If current_grad_to_process is already 2D+, or W_orig is invalid, or not divisible, it remains as is.
+            elif current_grad_to_process.numel() == torch.prod(torch.tensor(original_shape)).item():
+                # Original parameter was not 2D (e.g., 1D bias), try to reshape if numel matches.
+                try:
+                    current_grad_to_process = current_grad_to_process.reshape(original_shape)
+                    reshaped_from_map = True 
+                    if rank == 0 and verbose:
+                         print(f"[ZeroGradV2-Debug][Rank {rank}] Param {cleaned_fqn_for_map_lookup}: Reshaped grad (shape {param.grad.data.shape}) to map shape {original_shape} for non-2D original.")
+                except Exception as e_reshape:
+                    if rank == 0 and verbose:
+                         print(f"[ZeroGradV2-Warning][Rank {rank}] Param {cleaned_fqn_for_map_lookup}: Failed to reshape grad (shape {param.grad.data.shape}) to map shape {original_shape} for non-2D original. Error: {e_reshape}.")
+                    # current_grad_to_process remains param.grad.data.float() as initialized
+                    reshaped_from_map = False
+            elif rank == 0 and verbose and not reshaped_from_map: # Log if not reshaped for other reasons
+                print(f"[ZeroGradV2-Debug][Rank {rank}] Param {cleaned_fqn_for_map_lookup}: Grad (shape {param.grad.data.shape}, numel {param.grad.data.numel()}) not reshaped using map shape {original_shape} (numel {torch.prod(torch.tensor(original_shape)).item() if original_shape else 'N/A'}). Using original grad shape.")
+        # If original_shape is None, current_grad_to_process remains param.grad.data.float() as initialized
+
+        if rank == 0 and verbose: # This is the PRE-FILTER log
+            print(f"[ZeroGradV2-Debug][Rank {rank}] Param {cleaned_fqn_for_map_lookup}: PRE-FILTER (original_grad_shape: {param.grad.data.shape}, processing_grad_shape: {current_grad_to_process.shape}, reshaped: {reshaped_from_map}, current_param_dim: {current_grad_to_process.dim()}).")
+
         
         # H_global and B_global are calculated based on all eligible params
         # For each parameter, calculate its contribution to H_global and B_global

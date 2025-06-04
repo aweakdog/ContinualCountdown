@@ -548,28 +548,29 @@ def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=False):
     skipped_shape0_is_0 = 0
 
     # Step 1: Collect local statistics for all layers
-    for fqn, param in fsdp_module.named_parameters():
+    for fqn, param in fsdp_module.named_parameters(use_orig_params=True):
         param_count_total += 1
         if param.grad is None:
             skipped_grad_none += 1
-            # Optional: Log first few skipped params if needed for deeper debugging, e.g.:
-            # if rank == 0 and verbose and skipped_grad_none < 4: 
-            #     print(f"[ZeroGradV2-Debug][Rank {rank}] Param {fqn}: grad is None.")
+            if rank == 0 and verbose and skipped_grad_none < 5: # Log first 4 occurrences
+                print(f"[ZeroGradV2-Debug][Rank {rank}] Param {fqn}: SKIPPED (grad is None).")
             continue
         
         if param.dim() != 2:
             skipped_dim_not_2 += 1
-            # if rank == 0 and verbose and skipped_dim_not_2 < 4: 
-            #     print(f"[ZeroGradV2-Debug][Rank {rank}] Param {fqn}: dim is {param.dim()} (not 2). Grad shape: {param.grad.shape}")
+            if rank == 0 and verbose and skipped_dim_not_2 < 5: # Log first 4 occurrences
+                print(f"[ZeroGradV2-Debug][Rank {rank}] Param {fqn}: SKIPPED (dim is {param.dim()}, grad_shape: {param.grad.shape if param.grad is not None else 'N/A'}).")
             continue
 
         if param.grad.shape[0] == 0:
             skipped_shape0_is_0 += 1
-            # if rank == 0 and verbose and skipped_shape0_is_0 < 4: 
-            #     print(f"[ZeroGradV2-Debug][Rank {rank}] Param {fqn}: grad.shape[0] is 0. Grad shape: {param.grad.shape}")
+            if rank == 0 and verbose and skipped_shape0_is_0 < 5: # Log first 4 occurrences
+                print(f"[ZeroGradV2-Debug][Rank {rank}] Param {fqn}: SKIPPED (grad.shape[0] is 0, grad_shape: {param.grad.shape}).")
             continue
         
         param_count_eligible_for_contrib +=1 # Parameter passed all initial checks
+        if rank == 0 and verbose and param_count_eligible_for_contrib <= 5: # Log first 5 eligible
+            print(f"[ZeroGradV2-Debug][Rank {rank}] Param {fqn}: ELIGIBLE (grad_shape: {param.grad.shape}, dim: {param.dim()}).")
         # Original condition was: if param.grad is not None and param.dim() == 2 and param.grad.shape[0] > 0:
         grad = param.grad
         H_local = grad.shape[0]

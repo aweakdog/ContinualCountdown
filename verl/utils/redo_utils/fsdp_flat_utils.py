@@ -527,6 +527,7 @@ def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=False):
     import torch
     import torch.distributed as dist
     import collections
+    from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 
     if not (dist.is_available() and dist.is_initialized()):
         if verbose:
@@ -548,7 +549,14 @@ def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=False):
     skipped_shape0_is_0 = 0
 
     # Step 1: Collect local statistics for all layers
-    for fqn, param in fsdp_module.named_parameters(use_orig_params=True):
+    if isinstance(fsdp_module, FSDP):
+        param_iterator = fsdp_module.named_parameters(use_orig_params=True)
+    else:
+        if rank == 0 and verbose:
+            print(f"[ZeroGradV2-Debug][Rank {rank}] Module {fsdp_module.__class__.__name__} is NOT an FSDP instance. Iterating params without use_orig_params.")
+        param_iterator = fsdp_module.named_parameters()
+
+    for fqn, param in param_iterator:
         param_count_total += 1
         if param.grad is None:
             skipped_grad_none += 1

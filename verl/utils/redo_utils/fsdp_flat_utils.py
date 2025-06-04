@@ -584,7 +584,9 @@ def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=False):
 
     # Per-layer statistics aggregation
     all_rank_layer_stats = [None] * dist.get_world_size()
-    dist.all_gather_object(all_rank_layer_stats, layer_stats_local)
+    # Convert defaultdict to dict before gathering to avoid pickling issues with lambda
+    plain_layer_stats_local = dict(layer_stats_local)
+    dist.all_gather_object(all_rank_layer_stats, plain_layer_stats_local)
 
     final_layer_stats = collections.defaultdict(lambda: {'zero': 0, 'total': 0, 'ratio': 0.0})
     # Process all_rank_layer_stats on all ranks, so all ranks have the full picture if needed

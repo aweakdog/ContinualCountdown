@@ -99,7 +99,7 @@ def analyze_all_fsdp_dormant_neurons(module, mode='threshold', tau=0.1, verbose=
     #    print(f"[DormantNeuron][ALL] total_dormant={total_dormant}, total_params={total_count}, ratio={total_dormant/(total_count+1e-8):.6f}")
     return results
 
-def analyze_all_fsdp_zero_grad_space(module, tau=0.1, verbose=True, original_shapes_map=None): # <<< Cascade: Added original_shapes_map
+def analyze_all_fsdp_zero_grad_space(module, tau=0.1, verbose=True, original_shapes_map=None):
     """
     Analyze all leaf FSDP-wrapped submodules for zero grad space ratio.
     Returns a dict mapping module names to their zero grad stats and the global aggregate.
@@ -110,7 +110,7 @@ def analyze_all_fsdp_zero_grad_space(module, tau=0.1, verbose=True, original_sha
     total_rows = 0
     for name, submodule in iter_leaf_fsdp_modules(module):
         try:
-            stats = compute_fsdp_zero_grad_space_ratio(submodule, tau=tau, verbose=verbose, original_shapes_map=original_shapes_map) 
+            stats = compute_fsdp_zero_grad_space_ratio(submodule, tau=tau, verbose=verbose, original_shapes_map=original_shapes_map, fqn_prefix=name) # <<< Cascade: Pass FQN prefix (name)
             if stats is not None and '__global__' in stats:
                 submodule_global_stats = stats['__global__']
                 total_zero += submodule_global_stats.get('zero', 0)
@@ -513,7 +513,7 @@ def get_shard_overlap_slices(entry, my_global_start, my_global_end, flat_param_n
             print(f"[ERROR] Unsupported shape {shape} for entry {entry.get('fqn', None) or entry.get('name', None)}.")
         return None
 
-def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=False, original_shapes_map=None): 
+def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=True, original_shapes_map=None, fqn_prefix=""):
     """
     Computes the fraction of output neurons (rows) in each 2D param whose normalized gradient metric si = A/(B/H) is below tau,
     using GLOBAL layer statistics (B_global and H_global) for consistent metric calculation.
@@ -563,6 +563,7 @@ def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=False, orig
 
     # Step 1: Collect local statistics for all layers
     param_iterator = fsdp_module.named_parameters()
+    log_reshape_count = 0 # Initialize counter for logging reshape events
 
     for fqn, param in param_iterator:
         param_count_total += 1
@@ -576,14 +577,17 @@ def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=False, orig
         param_dim_to_check = -1
         original_shape_str = "N/A (no map)"
         if original_shapes_map:
-            cleaned_fqn = _clean_fsdp_fqn(fqn)
-            original_shape = original_shapes_map.get(cleaned_fqn)
+            cleaned_local_fqn = _clean_fsdp_fqn(fqn) # fqn is from fsdp_module.named_parameters()
+            # Construct the full FQN using the provided prefix
+            full_fqn_for_map = f"{fqn_prefix}.{cleaned_local_fqn}" if fqn_prefix else cleaned_local_fqn
+            
+            original_shape = original_shapes_map.get(full_fqn_for_map)
             if original_shape:
                 param_dim_to_check = len(original_shape)
                 original_shape_str = str(original_shape)
             else:
-                if rank == 0 and verbose and skipped_dim_not_2 < 5: 
-                    print(f"[ZeroGradV2-Debug][Rank {rank}] Param {fqn} (cleaned: {cleaned_fqn}): SKIPPED (FQN not in original_shapes_map). Current dim: {param.dim()}, grad_shape: {param.grad.shape if param.grad is not None else 'N/A'}.")
+                if rank == 0 and verbose and skipped_dim_not_2 < 5:
+                    print(f"[ZeroGradV2-Debug][Rank {rank}] Param local_fqn='{fqn}' (cleaned_local='{cleaned_local_fqn}', attempted_map_key='{full_fqn_for_map}'): SKIPPED (FQN not in original_shapes_map). Current dim: {param.dim()}, grad_shape: {param.grad.shape if param.grad is not None else 'N/A'}.")
                 skipped_dim_not_2 += 1
                 continue
         else: # Fallback if no map is provided
@@ -592,8 +596,9 @@ def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=False, orig
         if param_dim_to_check != 2:
             skipped_dim_not_2 += 1
             if rank == 0 and verbose and skipped_dim_not_2 < 5: # Log first 4 occurrences
-                print(f"[ZeroGradV2-Debug][Rank {rank}] Param {fqn}: SKIPPED (dim_to_check is {param_dim_to_check}, original_shape: {original_shape_str}, current_param_dim: {param.dim()}, grad_shape: {param.grad.shape if param.grad is not None else 'N/A'}).")
-                # print('param.grad:', param.grad) # Already printed by user's change
+                cleaned_local_fqn_for_log = _clean_fsdp_fqn(fqn) # fqn is from fsdp_module.named_parameters()
+                full_fqn_for_map_for_log = f"{fqn_prefix}.{cleaned_local_fqn_for_log}" if fqn_prefix else cleaned_local_fqn_for_log
+                print(f"[ZeroGradV2-Debug][Rank {rank}] Param local_fqn='{fqn}' (cleaned_local='{cleaned_local_fqn_for_log}', attempted_map_key='{full_fqn_for_map_for_log}'): SKIPPED (dim_to_check is {param_dim_to_check}, original_shape: {original_shape_str}, current_param_dim: {param.dim()}, grad_shape: {param.grad.shape if param.grad is not None else 'N/A'}).")
             continue
         # <<< End Cascade modification >>>
 
@@ -607,16 +612,21 @@ def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=False, orig
         current_grad_to_process = param.grad
         # <<< Cascade: Reshape grad if it's flat but originally 2D >>>
         reshaped_for_norm = False
-        if original_shapes_map:
-            cleaned_fqn = _clean_fsdp_fqn(fqn) # Ensure cleaned_fqn is available here too
-            original_shape = original_shapes_map.get(cleaned_fqn)
-            if original_shape and len(original_shape) == 2 and current_grad_to_process.dim() == 1:
-                # Sanity check for number of elements before reshaping
-                if current_grad_to_process.numel() == (original_shape[0] * original_shape[1]):
-                    current_grad_to_process = current_grad_to_process.view(original_shape)
-                    reshaped_for_norm = True
-                elif rank == 0 and verbose:
-                    print(f"[ZeroGradV2-Warning][Rank {rank}] Param {fqn}: Mismatch numel for reshape. Grad shape: {current_grad_to_process.shape}, Original: {original_shape}. Skipping reshape.")
+        if original_shapes_map and original_shape and len(original_shape) == 2 and current_grad_to_process.dim() == 1:
+            # We have an original_shape from the map, it's 2D, and the current grad is 1D (flat)
+            if current_grad_to_process.numel() == (original_shape[0] * original_shape[1]):
+                current_grad_to_process = current_grad_to_process.view(original_shape)
+                reshaped_for_norm = True
+                if rank == 0 and verbose and log_reshape_count < 5:
+                    cleaned_local_fqn_for_log = _clean_fsdp_fqn(fqn)
+                    full_fqn_for_map_for_log = f"{fqn_prefix}.{cleaned_local_fqn_for_log}" if fqn_prefix else cleaned_local_fqn_for_log
+                    print(f"[ZeroGradV2-Debug][Rank {rank}] Param local_fqn='{fqn}' (map_key='{full_fqn_for_map_for_log}'): Reshaped grad from {param.grad.shape} to {original_shape} using original_shapes_map.")
+                    log_reshape_count += 1
+            else: # Numel mismatch
+                if rank == 0 and verbose:
+                    cleaned_local_fqn_for_log = _clean_fsdp_fqn(fqn)
+                    full_fqn_for_map_for_log = f"{fqn_prefix}.{cleaned_local_fqn_for_log}" if fqn_prefix else cleaned_local_fqn_for_log
+                    print(f"[ZeroGradV2-Warning][Rank {rank}] Param local_fqn='{fqn}' (map_key='{full_fqn_for_map_for_log}'): Mismatch numel for reshape. Grad shape: {current_grad_to_process.shape}, Original shape from map: {original_shape}. Skipping reshape.")
         # <<< End Cascade modification >>>
 
         if rank == 0 and verbose and param_count_eligible_for_contrib <= 5: # Log first 5 eligible
@@ -635,7 +645,9 @@ def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=False, orig
         # S_local is the count of rows where the norm is below the tau-adjusted metric
         # This calculation is deferred until after B_global and H_global are known.
         
-        param_details[fqn] = {
+        cleaned_local_fqn_for_key = _clean_fsdp_fqn(fqn)
+        full_fqn_key = f"{fqn_prefix}.{cleaned_local_fqn_for_key}" if fqn_prefix else cleaned_local_fqn_for_key
+        param_details[full_fqn_key] = {
             'H_local': H_local, 
             'B_local': B_local, 
             'grad_shape': current_grad_to_process.shape, # Use shape of (potentially reshaped) grad
@@ -970,7 +982,7 @@ def kaiming_reset(param_slice, mask, shape, is_layernorm=False, bias_slice=None)
             bias_slice[mask] = torch.empty_like(bias_slice[mask]).uniform_(-bias_bound, bias_bound)
 
 
-def fsdp_dormant_neuron_mask_and_reset(fsdp_module, mode='threshold', tau=0.04, percentage=0.01, max_percentage=0.01, use_lecun_init=True, verbose=True, optimizer=None, original_shapes_map=None):
+def fsdp_dormant_neuron_mask_and_reset(fsdp_module, mode='threshold', tau=0.04, percentage=0.01, max_percentage=0.01, use_lecun_init=True, verbose=True, optimizer=None, original_shapes_map=None, fqn_prefix=""):
     """
 
     def _clean_fsdp_fqn(fqn_str):
@@ -1048,16 +1060,17 @@ def fsdp_dormant_neuron_mask_and_reset(fsdp_module, mode='threshold', tau=0.04, 
             if overlap_info is None:
                 continue
 
-            fqn = entry.get('fqn', str(idx))
-            cleaned_fqn = _clean_fsdp_fqn(fqn)
+            fqn_local = entry.get('fqn', str(idx))
+            cleaned_local_fqn = _clean_fsdp_fqn(fqn_local)
+            full_fqn_for_map = f"{fqn_prefix}.{cleaned_local_fqn}" if fqn_prefix else cleaned_local_fqn
 
             param_is_valid_for_dormancy_check = False
             log_shape_info = "N/A"
             is_1d_param = False
             original_shape_for_analysis = None
 
-            if original_shapes_map and cleaned_fqn in original_shapes_map:
-                original_shape = original_shapes_map[cleaned_fqn]
+            if original_shapes_map and full_fqn_for_map in original_shapes_map:
+                original_shape = original_shapes_map[full_fqn_for_map]
                 original_shape_for_analysis = original_shape
                 log_shape_info = f"original_map_shape={original_shape}"
                 if isinstance(original_shape, (list, tuple)) and len(original_shape) == 2 and original_shape[0] > 0 and original_shape[1] > 0:
@@ -1076,19 +1089,19 @@ def fsdp_dormant_neuron_mask_and_reset(fsdp_module, mode='threshold', tau=0.04, 
             
             if not param_is_valid_for_dormancy_check:
                 if verbose and (not is_distributed or current_rank == 0):
-                    print(f"[INFO][DormantReset] Skipping entry {fqn} (cleaned: {cleaned_fqn}). Not valid 1D/2D or shape info missing. Details: {log_shape_info}")
+                    print(f"[INFO][DormantReset] Skipping entry local_fqn='{fqn_local}' (cleaned_local='{cleaned_local_fqn}', map_key='{full_fqn_for_map}'). Not valid 1D/2D or shape info missing. Details: {log_shape_info}")
                 continue
             
             if not (isinstance(original_shape_for_analysis, (tuple, list)) and len(original_shape_for_analysis) > 0 and all(dim > 0 for dim in original_shape_for_analysis)):
                  if verbose and (not is_distributed or current_rank == 0):
-                    print(f"[ERROR][DormantReset] Invalid original_shape_for_analysis {original_shape_for_analysis} for {fqn} (cleaned: {cleaned_fqn}). Skipping.")
+                    print(f"[ERROR][DormantReset] Invalid original_shape_for_analysis {original_shape_for_analysis} for local_fqn='{fqn_local}' (map_key='{full_fqn_for_map}'). Skipping.")
                  continue
 
             local_param_data = flat_param.data[overlap_info['local_slice_start'] : overlap_info['local_slice_start'] + overlap_info['valid_numel']]
             
             if local_param_data.numel() == 0:
                  if verbose and (not is_distributed or current_rank == 0):
-                    print(f"[DEBUG][DormantReset] Empty local_param_data for {fqn} (cleaned: {cleaned_fqn}). Skipping.")
+                    print(f"[DEBUG][DormantReset] Empty local_param_data for local_fqn='{fqn_local}' (map_key='{full_fqn_for_map}'). Skipping.")
                  continue
 
             param_view_for_analysis = None
@@ -1099,11 +1112,11 @@ def fsdp_dormant_neuron_mask_and_reset(fsdp_module, mode='threshold', tau=0.04, 
                      param_view_for_analysis = local_param_data.view(current_shard_shape)
                 else:
                     if verbose and (not is_distributed or current_rank == 0):
-                        print(f"[WARN][DormantReset] Numel mismatch for shard view. FQN: {fqn}, Shard Numel: {local_param_data.numel()}, Expected Shard Shape: {current_shard_shape}. Skipping.")
+                        print(f"[WARN][DormantReset] Numel mismatch for shard view. local_fqn='{fqn_local}' (map_key='{full_fqn_for_map}'), Shard Numel: {local_param_data.numel()}, Expected Shard Shape: {current_shard_shape}. Skipping.")
                     continue
             except RuntimeError as e:
                 if verbose and (not is_distributed or current_rank == 0):
-                    print(f"[ERROR][DormantReset] Error viewing shard {fqn} with shape {current_shard_shape}: {e}. Skipping.")
+                    print(f"[ERROR][DormantReset] Error viewing shard local_fqn='{fqn_local}' (map_key='{full_fqn_for_map}') with shape {current_shard_shape}: {e}. Skipping.")
                 continue
             
             if param_view_for_analysis is None: continue
@@ -1124,14 +1137,14 @@ def fsdp_dormant_neuron_mask_and_reset(fsdp_module, mode='threshold', tau=0.04, 
                 if mode == 'threshold': dormant_mask_for_shard = torch.abs(param_view_for_analysis.data) < tau
                 else: dormant_mask_for_shard = torch.abs(param_view_for_analysis.data) < tau # Fallback
             else:
-                if verbose and (not is_distributed or current_rank == 0): print(f"[ERROR][DormantReset] Param {fqn} has unexpected shard shape {param_view_for_analysis.shape}. Skipping.")
+                if verbose and (not is_distributed or current_rank == 0): print(f"[ERROR][DormantReset] Param local_fqn='{fqn_local}' (map_key='{full_fqn_for_map}') has unexpected shard shape {param_view_for_analysis.shape}. Skipping.")
                 continue
             
             num_dormant_in_shard = torch.sum(dormant_mask_for_shard).item()
 
             if num_dormant_in_shard > 0:
                 if verbose and (not is_distributed or current_rank == 0):
-                    print(f"[INFO][DormantReset] Param {fqn} (cleaned: {cleaned_fqn}), Shard Shape: {param_view_for_analysis.shape}, Dormant in shard: {num_dormant_in_shard}/{num_neurons_in_shard}")
+                    print(f"[INFO][DormantReset] Param local_fqn='{fqn_local}' (map_key='{full_fqn_for_map}'), Shard Shape: {param_view_for_analysis.shape}, Dormant in shard: {num_dormant_in_shard}/{num_neurons_in_shard}")
                 with torch.no_grad():
                     if not is_1d_param:
                         rows_to_reset = param_view_for_analysis.data[dormant_mask_for_shard]
@@ -1144,12 +1157,12 @@ def fsdp_dormant_neuron_mask_and_reset(fsdp_module, mode='threshold', tau=0.04, 
                         else: kaiming_reset(elements_to_reset, is_bias=True)
                         param_view_for_analysis.data[dormant_mask_for_shard] = elements_to_reset
                 
-                reset_counts_details_local[cleaned_fqn] = reset_counts_details_local.get(cleaned_fqn, 0) + num_dormant_in_shard
+                reset_counts_details_local[full_fqn_for_map] = reset_counts_details_local.get(full_fqn_for_map, 0) + num_dormant_in_shard
                 # Optimizer state reset logic would be very complex here and needs careful handling of flat_param and optimizer state indices.
                 # This is often done via custom hooks or by directly manipulating optimizer.state[flat_param].
                 # For now, this part is omitted for brevity but is crucial for effective reset.
 
-            all_masks_details_local.append({'fqn': cleaned_fqn, 'dormant': num_dormant_in_shard, 'total_in_shard': num_neurons_in_shard})
+            all_masks_details_local.append({'fqn': full_fqn_for_map, 'dormant': num_dormant_in_shard, 'total_in_shard': num_neurons_in_shard})
 
         # Aggregate reset_counts_details if distributed
         final_reset_counts = {}

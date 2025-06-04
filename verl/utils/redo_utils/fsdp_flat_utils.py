@@ -528,7 +528,6 @@ def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=False):
     import torch.distributed as dist
     import collections
     from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
-    from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 
     if not (dist.is_available() and dist.is_initialized()):
         if verbose:
@@ -551,7 +550,12 @@ def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=False):
 
     # Step 1: Collect local statistics for all layers
     if isinstance(fsdp_module, FSDP):
-        param_iterator = fsdp_module.named_parameters(use_orig_params=True)
+        try:
+            param_iterator = fsdp_module.named_parameters(use_orig_params=True)
+        except TypeError:
+            if rank == 0 and verbose:
+                print(f"[ZeroGradV2-Debug][Rank {rank}] FSDP module {fsdp_module.__class__.__name__} ({fsdp_module.name if hasattr(fsdp_module, 'name') else 'N/A'}) does not support use_orig_params. Falling back.")
+            param_iterator = fsdp_module.named_parameters()
     else:
         if rank == 0 and verbose:
             print(f"[ZeroGradV2-Debug][Rank {rank}] Module {fsdp_module.__class__.__name__} is NOT an FSDP instance. Iterating params without use_orig_params.")

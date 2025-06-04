@@ -640,10 +640,20 @@ def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=True, origi
         
         # H_global and B_global are calculated based on all eligible params
         # For each parameter, calculate its contribution to H_global and B_global
-        # grad_norm_row: (output_dim,)
-        grad_norm_row = torch.norm(current_grad_to_process, p=2, dim=1)  # Norm along input_dim (dim 1)
-        # H_local is the number of rows (output dimension) from the (potentially reshaped) gradient tensor
-        H_local = current_grad_to_process.shape[0]
+        if current_grad_to_process.dim() == 2:
+            # grad_norm_row: (output_dim,)
+            grad_norm_row = torch.norm(current_grad_to_process, p=2, dim=1)  # Norm along input_dim (dim 1)
+            # H_local is the number of rows (output dimension) from the (potentially reshaped) gradient tensor
+            H_local = current_grad_to_process.shape[0]
+        elif current_grad_to_process.dim() == 1:
+            # Treat 1D tensor as a single row
+            grad_norm_row = torch.norm(current_grad_to_process, p=2, dim=0).unsqueeze(0) # Shape [1]
+            H_local = 1
+        else:
+            # Should not happen if eligibility checks are correct (param_dim_to_check == 2, or 1D fallback)
+            if rank == 0 and verbose:
+                print(f"[ZeroGradV2-ERROR][Rank {rank}] Param {fqn} has unexpected dim {current_grad_to_process.dim()} for norm calculation. Skipping contribution.")
+            continue # Skip this parameter's contribution
         
         # B_local is the sum of squared norms of all rows in the current layer's gradient
         B_local = torch.sum(grad_norm_row**2).item() 
@@ -1171,6 +1181,24 @@ def fsdp_dormant_neuron_mask_and_reset(fsdp_module, mode='threshold', tau=0.04, 
                 # For now, this part is omitted for brevity but is crucial for effective reset.
 
             all_masks_details_local.append({'fqn': full_fqn_for_map, 'dormant': num_dormant_in_shard, 'total_in_shard': num_neurons_in_shard})
+
+        # <<< Cascade: Calculate and print module-level total and dormant neuron counts >>>
+        module_total_neurons_local_sum = sum(d['total_in_shard'] for d in all_masks_details_local if 'total_in_shard' in d)
+        module_dormant_neurons_local_sum = sum(d['dormant'] for d in all_masks_details_local if 'dormant' in d)
+
+        global_total_neurons_processed = torch.tensor(module_total_neurons_local_sum, device=device, dtype=torch.long)
+        global_dormant_neurons_found = torch.tensor(module_dormant_neurons_local_sum, device=device, dtype=torch.long)
+
+        if is_distributed:
+            dist.all_reduce(global_total_neurons_processed, op=dist.ReduceOp.SUM)
+            dist.all_reduce(global_dormant_neurons_found, op=dist.ReduceOp.SUM)
+
+        if verbose and (not is_distributed or current_rank == 0):
+            module_identifier = fqn_prefix if fqn_prefix else fsdp_module.__class__.__name__ # Use fqn_prefix if available
+            print(f"[INFO][DormantResetSummary][Module: {module_identifier}] "
+                  f"Total Neurons Processed (sum of shard rows/elements): {global_total_neurons_processed.item()}, "
+                  f"Total Dormant Neurons Found: {global_dormant_neurons_found.item()}")
+        # <<< Cascade: End of new summary print logic >>>
 
         # Aggregate reset_counts_details if distributed
         final_reset_counts = {}

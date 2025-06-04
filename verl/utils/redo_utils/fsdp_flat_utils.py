@@ -677,6 +677,25 @@ def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=True, origi
         print(f"[ZeroGradV2-Debug][Rank {rank}] Param iteration summary: Total iterated: {param_count_total}, Eligible for contribution processing: {param_count_eligible_for_contrib}, Actually added to global_contributions: {len(global_contributions)}")
         print(f"[ZeroGradV2-Debug][Rank {rank}] Skipped counts: grad_none={skipped_grad_none}, dim_not_2={skipped_dim_not_2}, shape0_is_0={skipped_shape0_is_0}")
 
+    # Diagnostic: Check for consistent number of contributions across ranks
+    num_contributions_local = torch.tensor(len(global_contributions), device=device, dtype=torch.int64)
+    if dist.get_world_size() > 1: # Only gather if more than one rank
+        num_contributions_all_ranks_list = [torch.zeros_like(num_contributions_local) for _ in range(dist.get_world_size())]
+        dist.all_gather(num_contributions_all_ranks_list, num_contributions_local)
+    else:
+        num_contributions_all_ranks_list = [num_contributions_local]
+
+    if rank == 0 and verbose:
+        contribution_counts = [x.item() for x in num_contributions_all_ranks_list]
+        print(f"[ZeroGradV2-Debug][Rank 0] Number of contributions per rank: {contribution_counts}")
+
+    first_rank_contributions = num_contributions_all_ranks_list[0].item()
+    if not all(x.item() == first_rank_contributions for x in num_contributions_all_ranks_list):
+        if rank == 0 and verbose:
+            error_counts = [x.item() for x in num_contributions_all_ranks_list]
+            print(f"[ZeroGradV2-ERROR][Rank {rank}] Mismatch in number of contributions across ranks: {error_counts}. This would cause a hang. Aborting metric calculation.")
+        return {'__global__': {'zero': 0, 'total': 0, 'ratio': 0.0}, 'error': 'mismatched_contributions'}
+
     # Step 2: Batch all-reduce for global statistics
     if not global_contributions:
         if rank == 0 and verbose:

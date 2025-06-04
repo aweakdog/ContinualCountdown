@@ -111,18 +111,23 @@ def analyze_all_fsdp_zero_grad_space(module, tau=0.1, verbose=True):
     for name, submodule in iter_leaf_fsdp_modules(module):
         try:
             stats = compute_fsdp_zero_grad_space_ratio(submodule, tau=tau, verbose=verbose)
-            # Only use keys that are always present: 'zero', 'total', 'ratio'.
-            if stats is not None:
-                zero = stats.get('zero', 0)
-                total = stats.get('total', 0)
-                total_zero += zero
-                total_rows += total
-                results[name] = stats
+            if stats is not None and '__global__' in stats:
+                submodule_global_stats = stats['__global__']
+                total_zero += submodule_global_stats.get('zero', 0)
+                total_rows += submodule_global_stats.get('total', 0)
+                results[name] = stats # Store the full detailed stats for this submodule
             else:
                 results[name] = None
+                if verbose:
+                    if stats is None:
+                        print(f"[WARN][analyze_all_fsdp_zero_grad_space] compute_fsdp_zero_grad_space_ratio returned None for submodule {name}")
+                    elif '__global__' not in stats:
+                        print(f"[WARN][analyze_all_fsdp_zero_grad_space] '__global__' key missing in stats from compute_fsdp_zero_grad_space_ratio for submodule {name}. Stats: {stats}")
         except Exception as e:
             if verbose:
                 print(f"[WARN] Could not analyze zero grad space for {name}: {e}")
+            results[name] = None
+
     global_ratio = total_zero / (total_rows + 1e-8) if total_rows > 0 else 0.0
     results['__global__'] = {'zero': total_zero, 'total': total_rows, 'ratio': global_ratio}
     return results
@@ -166,6 +171,7 @@ def get_fsdp_flat_param_index_map(fsdp_module):
     flat_param = None
     try:
         for name, param in fsdp_module.named_parameters():
+            print('170name:',name,'param:',type(param),'shape:',param.shape)
             has_prev = hasattr(param, "_fsdp_prev")
             has_offset = has_prev and hasattr(param._fsdp_prev, "offset_in_flat_param")
             if has_offset:
@@ -509,142 +515,100 @@ def get_shard_overlap_slices(entry, my_global_start, my_global_end, flat_param_n
 
 def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=False):
     """
-    Computes the fraction of output neurons (rows) in each 2D param whose normalized gradient metric si = A/(B/H) is below tau.
-    - H: number of neurons (rows) in the layer
-    - B: sum of absolute gradients in this layer (all elements)
-    - A: sum of absolute gradients for this neuron (row)
-    - si = A / (B / H)
-    Handles global-to-local index mapping for FSDP shards.
-    Returns the global ratio: (total zero-grad rows) / (total rows across all 2D params)
+    Computes the fraction of output neurons (rows) in each 2D param whose normalized gradient metric si = A/(B/H) is below tau,
+    iterating over fsdp_module.named_parameters() (expects use_orig_params=True).
+    - H_local: number of neurons (rows) in the local shard of the layer's gradient.
+    - B_local: sum of absolute gradients in the local shard of the layer's gradient.
+    - A_local_row: sum of absolute gradients for a row within the local shard.
+    - si_local_row = A_local_row / (B_local / H_local)
+    Counts of zero-gradient rows are aggregated globally.
+    Returns a dictionary with per-layer and global statistics.
     """
-    #tau = 0.04
-    index_map, flat_param = get_fsdp_flat_param_index_map(fsdp_module)
-    grad = flat_param.grad
-    if grad is None:
-        print("[WARN] flat_param.grad is None, skipping zero grad space calculation.")
-        return {'zero': 0, 'total': 0, 'ratio': 0.0}
+    import torch
+    import torch.distributed as dist
+    import collections
 
-    my_global_start = getattr(flat_param, '_shard_start_idx', None)
-    my_global_end = None
-    if my_global_start is None:
-        # Manual computation fallback (same as compute_fsdp_dormant_mask_only)
-        try:
-            import torch.distributed as dist
-            dist_ok = dist.is_available() and dist.is_initialized()
-            if dist_ok:
-                rank = dist.get_rank()
-                world_size = dist.get_world_size()
-                if len(index_map) > 0:
-                    global_flat_param_numel = max(entry['end'] for entry in index_map)
-                    shard_size = (global_flat_param_numel + world_size - 1) // world_size
-                    my_global_start = rank * shard_size
-                    my_global_end = min((rank + 1) * shard_size, global_flat_param_numel) # for last rank
-                    my_global_end = min(my_global_end, my_global_start + flat_param.numel())
-                    if verbose:
-                        # print(f"[DEBUG] rank={rank}, my_global_start={my_global_start}, my_global_end={my_global_end}, global_flat_param_numel={global_flat_param_numel}, shard_size={shard_size}")
-                        pass
-                else:
-                    my_global_start = 0
-                    my_global_end = 0
-                    if verbose:
-                        # print(f"[DEBUG] rank={rank}, my_global_start={my_global_start}, my_global_end={my_global_end}, global_flat_param_numel=0")
-                        pass
-            else:
-                my_global_start = 0
-                my_global_end = flat_param.numel()
-        except Exception as e:
-            print(f"[WARN] Could not infer global shard start idx: {e}")
-            my_global_start = 0
-            my_global_end = flat_param.numel()
-    else:
-        print('[WARN][my_global_start] is Not None! Got it from param! ')
-        my_global_end = my_global_start + flat_param.numel()
-    #print(f"[DEBUG][ZeroGrad] my_global_start={my_global_start}, my_global_end={my_global_end}, local flat_param.numel={flat_param.numel()}")
+    if not (dist.is_available() and dist.is_initialized()):
+        if verbose:
+            print("[WARN][ZeroGradV2] Distributed not initialized. Skipping calculation.")
+        # Return a structure consistent with the populated case, but with zero values.
+        return {'__global__': {'zero': 0, 'total': 0, 'ratio': 0.0}}
 
-    total_zero = 0
-    total_rows = 0
-    for idx, entry in enumerate(index_map):
-        #print(f"[DEBUG][ZeroGrad][{idx}] entry:{entry}")
-        overlap_info = get_shard_overlap_slices(entry, my_global_start, my_global_end, flat_param.numel(), verbose=verbose)
-        if overlap_info is None:
-            continue
-        local_slice_start = overlap_info['local_slice_start']
-        valid_numel = overlap_info['valid_numel']
-        sub_shape = overlap_info['sub_shape']
-        # Robust shape check: only apply for 2D shapes
-        if len(sub_shape) == 2 and (not isinstance(sub_shape, (tuple, list)) or sub_shape[0] <= 0 or sub_shape[1] <= 0):
-            if verbose:
-                print(f"[ERROR][ZeroGrad] Invalid sub_shape {sub_shape} for entry {idx}, skipping.")
-            continue
-        # For other shapes (1D, 3D, 4D), do not skip here; let further logic handle them.
-        grad_raw = grad[local_slice_start:local_slice_start + valid_numel]
-        if grad_raw.numel() != valid_numel:
-            if verbose:
-                print(f"[WARN][ZeroGrad] grad_raw size mismatch ({grad_raw.numel()} != {valid_numel}), skipping entry {idx}.")
-            continue
-        try:
-            grad_matrix = grad_raw.view(sub_shape)
-        except Exception as e:
-            if verbose:
-                print(f"[ERROR][ZeroGrad] Could not reshape grad_raw to {sub_shape} for entry {idx}: {e}")
-            continue
-        grad_matrix_abs = grad_matrix.abs()
-        # Robustly handle all shapes
-        if len(sub_shape) == 1:
-            H = grad_matrix_abs.numel()
-            B = grad_matrix_abs.sum().item()
-            if H == 0 or B == 0:
-                zero_vectors = (grad_matrix_abs < float('inf'))
-            else:
-                avg_elem = B / H
-                si = grad_matrix_abs / (avg_elem + 1e-9)
-                zero_vectors = (si < tau)
-            total_zero += zero_vectors.sum().item()
-            total_rows += H
-        elif len(sub_shape) == 2:
-            H = grad_matrix_abs.size(0)
-            B = grad_matrix_abs.sum().item()
-            if H == 0 or B == 0:
-                zero_vectors = (grad_matrix_abs.sum(dim=1) < float('inf'))
-            else:
-                row_sums = grad_matrix_abs.sum(dim=1)
-                avg_row_sum = B / H
-                si = row_sums / (avg_row_sum + 1e-9)
-                zero_vectors = (si < tau)
-            total_zero += zero_vectors.sum().item()
-            total_rows += H
-        elif len(sub_shape) == 3:
-            H = grad_matrix_abs.size(0)
-            B = grad_matrix_abs.sum().item()
-            if H == 0 or B == 0:
-                zero_vectors = (grad_matrix_abs.sum(dim=(1,2)) < float('inf'))
-            else:
-                slice_sums = grad_matrix_abs.sum(dim=(1,2))
-                avg_slice_sum = B / H
-                si = slice_sums / (avg_slice_sum + 1e-9)
-                zero_vectors = (si < tau)
-            total_zero += zero_vectors.sum().item()
-            total_rows += H
-        elif len(sub_shape) == 4:
-            H = grad_matrix_abs.size(0)
-            B = grad_matrix_abs.sum().item()
-            if H == 0 or B == 0:
-                zero_vectors = (grad_matrix_abs.sum(dim=(1,2,3)) < float('inf'))
-            else:
-                slice_sums = grad_matrix_abs.sum(dim=(1,2,3))
-                avg_slice_sum = B / H
-                si = slice_sums / (avg_slice_sum + 1e-9)
-                zero_vectors = (si < tau)
-            total_zero += zero_vectors.sum().item()
-            total_rows += H
+    rank = dist.get_rank()
+    total_zero_local = 0  # Renamed to clarify it's rank-local before aggregation
+    total_rows_local = 0    # Renamed to clarify it's rank-local before aggregation
+    layer_stats_local = collections.defaultdict(lambda: {'zero': 0, 'total': 0})
+    # world_size = dist.get_world_size() # Not explicitly needed with all_gather_object
 
-        #print(f"[DEBUG][ZeroGrad]total_zero:{total_zero}")
-        #print(f"[DEBUG][ZeroGrad]total_rows:{total_rows}")
+    for fqn, param in fsdp_module.named_parameters():
+        if param.grad is not None and param.dim() == 2 and param.grad.shape[0] > 0:
+            grad_matrix = param.grad
+            H = grad_matrix.shape[0]
+            
+            grad_matrix_abs = grad_matrix.abs()
+            B_local_param = grad_matrix_abs.sum()
+            
+            if H == 0:
+                si_local_row_param = torch.empty(0, device=param.device)
+            elif B_local_param == 0:
+                # If total sum of grads is 0, all rows are effectively 'zero-activity' w.r.t this metric
+                # so si would be 0/0 effectively. Treat as all rows < tau.
+                si_local_row_param = torch.zeros(H, device=param.device)
+            else:
+                avg_row_grad_sum_metric = B_local_param / H
+                A_local_row_param = grad_matrix_abs.sum(dim=1)
+                si_local_row_param = A_local_row_param / (avg_row_grad_sum_metric + 1e-9) # Add epsilon for stability
+            
+            zero_vectors = (si_local_row_param < tau)
+            
+            current_param_zero = zero_vectors.sum().item()
+            current_param_rows = H
 
-    ratio = total_zero / (total_rows + 1e-8) if total_rows > 0 else 0.0
-    # if verbose:
-    #     print(f"[DEBUG] Zero grad space: {total_zero}/{total_rows} ({ratio:.6f})")
-    return {'zero': total_zero, 'total': total_rows, 'ratio': ratio}
+            layer_stats_local[fqn] = {'zero': current_param_zero, 'total': current_param_rows}
+            
+            total_zero_local += current_param_zero
+            total_rows_local += current_param_rows
+
+    # Global aggregation for total_zero and total_rows
+    device = fsdp_module.compute_device # FSDP module's compute device
+
+    total_zero_tensor = torch.tensor([total_zero_local], dtype=torch.float32, device=device)
+    total_rows_tensor = torch.tensor([total_rows_local], dtype=torch.float32, device=device)
+
+    dist.all_reduce(total_zero_tensor, op=dist.ReduceOp.SUM)
+    dist.all_reduce(total_rows_tensor, op=dist.ReduceOp.SUM)
+
+    global_total_zero = total_zero_tensor.item()
+    global_total_rows = total_rows_tensor.item()
+    global_ratio = global_total_zero / (global_total_rows + 1e-8) if global_total_rows > 0 else 0.0
+
+    # Per-layer statistics aggregation
+    all_rank_layer_stats = [None] * dist.get_world_size()
+    dist.all_gather_object(all_rank_layer_stats, layer_stats_local)
+
+    final_layer_stats = collections.defaultdict(lambda: {'zero': 0, 'total': 0, 'ratio': 0.0})
+    # Process all_rank_layer_stats on all ranks, so all ranks have the full picture if needed
+    # Alternatively, can restrict this processing and subsequent printing to rank == 0
+    for rank_data in all_rank_layer_stats:
+        for fqn, stats in rank_data.items():
+            final_layer_stats[fqn]['zero'] += stats['zero']
+            final_layer_stats[fqn]['total'] += stats['total']
+    
+    for fqn in final_layer_stats: # Calculate ratios after summing up zero/total from all ranks
+        layer_zero = final_layer_stats[fqn]['zero']
+        layer_total = final_layer_stats[fqn]['total']
+        final_layer_stats[fqn]['ratio'] = layer_zero / (layer_total + 1e-8) if layer_total > 0 else 0.0
+
+    results = {'__global__': {'zero': global_total_zero, 'total': global_total_rows, 'ratio': global_ratio}}
+    results.update(dict(final_layer_stats)) # Convert defaultdict to dict for cleaner output/serialization
+
+    if verbose and rank == 0:
+        print(f"[INFO][ZeroGradV2][Rank {rank}] Global Zero Grad Space: {global_total_zero:.0f}/{global_total_rows:.0f} ({global_ratio:.6f})")
+        for fqn, stats in sorted(results.items()): # Iterate over results to include __global__ if desired in sorted output
+            if fqn == '__global__': continue # Already printed
+            print(f"[INFO][ZeroGradV2][Rank {rank}] Layer {fqn}: Zero {stats['zero']:.0f}/{stats['total']:.0f} ({stats.get('ratio',0.0):.6f})")
+    
+    return results
 
 def compute_fsdp_dormant_mask_only(fsdp_module, mode='threshold', tau=0.04, percentage=0.01, max_percentage=0.01, use_lecun_init=True, verbose=True):
     """

@@ -538,6 +538,7 @@ def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=True, origi
     device = fsdp_module.compute_device
     layer_stats_local = {}
     global_contributions = []
+    param_details = {} # <<< Cascade: Re-initialize param_details
 
     def _clean_fsdp_fqn(fqn_str):
         # FSDP often prepends '_fsdp_wrapped_module.' to parameter names.

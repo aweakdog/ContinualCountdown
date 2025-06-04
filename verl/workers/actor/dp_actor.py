@@ -333,22 +333,6 @@ class DataParallelPPOActor(BasePPOActor):
                 loss = policy_loss / self.gradient_accumulation
                 loss.backward()
 
-                # <<< Cascade: FSDP Zero-Grad Analysis BEFORE optimizer step >>>
-                if isinstance(self.actor_module, FSDP) and getattr(self, 'redo_enabled', False) and (self.global_steps % self.redo_metric_freq == 0):
-                    if torch.distributed.get_rank() == 0:
-                        print(f"[INFO][Actor][Step {self.global_steps}] Analyzing FSDP gradient metrics BEFORE optimizer step...")
-                    zero_grad_stats_before_step = analyze_all_fsdp_zero_grad_space(
-                        self.actor_module, 
-                        tau=self.redo_tau, 
-                        verbose=(torch.distributed.get_rank()==0), 
-                        original_shapes_map=self.original_param_shapes
-                    )
-                    if torch.distributed.get_rank() == 0 and zero_grad_stats_before_step and '__global__' in zero_grad_stats_before_step:
-                        print(f"[ZeroGradV2-Metrics][Before Optim Step][Step {self.global_steps}] Zero Grad Space Ratio: {zero_grad_stats_before_step['__global__']}")
-                        # Storing in metrics if needed:
-                        # metrics['actor/zero_grad_ratio_before_step'] = zero_grad_stats_before_step['__global__'].get('ratio', 0.0)
-                # <<< End Cascade modification >>>
-
                 data = {
                     'actor/entropy_loss': entropy_loss.detach().item(),
                     'actor/pg_loss': pg_loss.detach().item(),

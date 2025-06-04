@@ -48,6 +48,7 @@ class DataParallelPPOActor(BasePPOActor):
         config,
         actor_module: nn.Module,
         actor_optimizer: torch.optim.Optimizer = None,
+        original_param_shapes: dict = None, # <<< Cascade: Added original_param_shapes
     ):
         """When optimizer is None, it is Reference Policy"""
         super().__init__(config)
@@ -58,6 +59,7 @@ class DataParallelPPOActor(BasePPOActor):
         print("[DEBUG][Actor] fsdp_grad_metric_enabled in config:", getattr(config, "fsdp_grad_metric_enabled", None))
         self.actor_module = actor_module
         self.actor_optimizer = actor_optimizer
+        self.original_param_shapes = original_param_shapes # <<< Cascade: Store original_param_shapes
         self.use_remove_padding = self.config.get('use_remove_padding', False)
         print(f'Actor use_remove_padding={self.use_remove_padding}')
         self.ulysses_sequence_parallel_size = self.config.ulysses_sequence_parallel_size
@@ -331,6 +333,22 @@ class DataParallelPPOActor(BasePPOActor):
                 loss = policy_loss / self.gradient_accumulation
                 loss.backward()
 
+                # <<< Cascade: FSDP Zero-Grad Analysis BEFORE optimizer step >>>
+                if isinstance(self.actor_module, FSDP) and getattr(self, 'redo_enabled', False) and (self.global_steps % self.redo_metric_freq == 0):
+                    if torch.distributed.get_rank() == 0:
+                        print(f"[INFO][Actor][Step {self.global_steps}] Analyzing FSDP gradient metrics BEFORE optimizer step...")
+                    zero_grad_stats_before_step = analyze_all_fsdp_zero_grad_space(
+                        self.actor_module, 
+                        tau=self.redo_tau, 
+                        verbose=(torch.distributed.get_rank()==0), 
+                        original_shapes_map=self.original_param_shapes
+                    )
+                    if torch.distributed.get_rank() == 0 and zero_grad_stats_before_step and '__global__' in zero_grad_stats_before_step:
+                        print(f"[ZeroGradV2-Metrics][Before Optim Step][Step {self.global_steps}] Zero Grad Space Ratio: {zero_grad_stats_before_step['__global__']}")
+                        # Storing in metrics if needed:
+                        # metrics['actor/zero_grad_ratio_before_step'] = zero_grad_stats_before_step['__global__'].get('ratio', 0.0)
+                # <<< End Cascade modification >>>
+
                 data = {
                     'actor/entropy_loss': entropy_loss.detach().item(),
                     'actor/pg_loss': pg_loss.detach().item(),
@@ -361,7 +379,7 @@ class DataParallelPPOActor(BasePPOActor):
                     # from verl.utils.redo_utils.fsdp_flat_utils import analyze_all_fsdp_zero_grad_space, analyze_all_fsdp_dormant_neurons
                     
                     if rank == 0: print(f"[INFO][Actor][Step {self.global_steps}] Analyzing FSDP gradient metrics...")
-                    zero_grad_stats = analyze_all_fsdp_zero_grad_space(self.actor_module, tau=self.redo_tau, verbose=(rank==0))
+                    zero_grad_stats = analyze_all_fsdp_zero_grad_space(self.actor_module, tau=self.redo_tau, verbose=(rank==0), original_shapes_map=self.original_param_shapes) # <<< Cascade: Pass original_param_shapes
                     #dormant_stats = analyze_all_fsdp_dormant_neurons(self.actor_module, mode=self.redo_mode, tau=self.redo_tau, verbose=(rank==0))
                     
                     # if dormant_stats and '__global__' in dormant_stats: # analyze_all_fsdp_dormant_neurons also returns a __global__ key
@@ -369,20 +387,6 @@ class DataParallelPPOActor(BasePPOActor):
                     #     total_neurons = dormant_stats['__global__'].get('total_neurons', 0)
                     #     if rank == 0 and total_neurons > 0:
                     #         print(f"[INFO][Actor][Step {self.global_steps}] Dormant Neuron Stats (Global): {total_dormant}/{total_neurons} ({total_dormant/total_neurons:.2%})")
-                    #     # Individual layer stats for dormant_stats are printed by analyze_all_fsdp_dormant_neurons if verbose
-                    # else:
-                    #     if rank == 0: print(f"[WARN][Actor][Step {self.global_steps}] No global dormant stats found or dormant_stats is None.")
-
-                    if zero_grad_stats and '__global__' in zero_grad_stats and zero_grad_stats['__global__']['total'] > 0:
-                        zero_gradspace_ratio = zero_grad_stats['__global__']['ratio']
-                        if rank == 0:
-                            print(f"[INFO][Actor][Step {self.global_steps}] Zero Grad Space Ratio (Global): {zero_gradspace_ratio:.6f}")
-                        # Individual layer stats for zero_grad_stats are printed by compute_fsdp_zero_grad_space_ratio if verbose
-                    else:
-                        if rank == 0: print(f"[WARN][Actor][Step {self.global_steps}] No global zero_grad_stats found or total is zero.")
-                # Always perform dormant neuron reset for the first 30 global_steps
-                # if self.global_steps < 30:
-                #     mask = fsdp_dormant_neuron_mask_and_reset(self.actor_module, mode=self.redo_mode, tau=self.redo_tau, optimizer=self.actor_optimizer)
                 #     if rank == 0:
                 #         if mask is not None:
                 #             print(f"[FSDP-ReDo][Actor][Boot] Step {self.global_steps}: reset {mask.sum().item()} dormant neurons.")
@@ -419,8 +423,8 @@ class DataParallelPPOActor(BasePPOActor):
                 global_zero_grad, global_total_grad = zero_grad_tensor.tolist()
                 zero_gradspace_ratio_avg = global_zero_grad / (global_total_grad + 1e-8) if global_total_grad > 0 else 0.0
                 if rank == 0:
-
                     metrics['actor/zero_gradspace_ratio'] = zero_gradspace_ratio_avg
+                    print(f"[ZeroGradV2-Metrics][After Optim Step][Step {self.global_steps}] Aggregated Zero Grad Space Ratio: {zero_gradspace_ratio_avg:.4f}")
         # --- END FSDP analysis/reset ---
 
         self.actor_optimizer.zero_grad()

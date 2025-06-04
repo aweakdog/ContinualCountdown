@@ -66,7 +66,7 @@ def iter_leaf_fsdp_modules(module):
                 yield name, submodule
 
 
-def analyze_all_fsdp_dormant_neurons(module, mode='threshold', tau=0.1, verbose=True):
+def analyze_all_fsdp_dormant_neurons(module, mode='threshold', tau=0.1, verbose=True, original_shapes_map=None):
     """
     Analyze all leaf FSDP-wrapped submodules for dormant neurons.
     Returns a dict mapping module names to their dormant neuron mask and statistics.
@@ -77,7 +77,7 @@ def analyze_all_fsdp_dormant_neurons(module, mode='threshold', tau=0.1, verbose=
     total_count = 0
     for name, submodule in iter_leaf_fsdp_modules(module):
         try:
-            mask = compute_fsdp_dormant_mask_only(submodule, mode=mode, tau=tau)
+            mask = compute_fsdp_dormant_mask_only(submodule, mode=mode, tau=tau, verbose=verbose, original_shapes_map=original_shapes_map)
             if mask is not None:
                 dormant = mask.sum().item()
                 count = mask.numel()
@@ -99,7 +99,7 @@ def analyze_all_fsdp_dormant_neurons(module, mode='threshold', tau=0.1, verbose=
     #    print(f"[DormantNeuron][ALL] total_dormant={total_dormant}, total_params={total_count}, ratio={total_dormant/(total_count+1e-8):.6f}")
     return results
 
-def analyze_all_fsdp_zero_grad_space(module, tau=0.1, verbose=True):
+def analyze_all_fsdp_zero_grad_space(module, tau=0.1, verbose=True, original_shapes_map=None): # <<< Cascade: Added original_shapes_map
     """
     Analyze all leaf FSDP-wrapped submodules for zero grad space ratio.
     Returns a dict mapping module names to their zero grad stats and the global aggregate.
@@ -110,7 +110,7 @@ def analyze_all_fsdp_zero_grad_space(module, tau=0.1, verbose=True):
     total_rows = 0
     for name, submodule in iter_leaf_fsdp_modules(module):
         try:
-            stats = compute_fsdp_zero_grad_space_ratio(submodule, tau=tau, verbose=verbose)
+            stats = compute_fsdp_zero_grad_space_ratio(submodule, tau=tau, verbose=verbose, original_shapes_map=original_shapes_map) 
             if stats is not None and '__global__' in stats:
                 submodule_global_stats = stats['__global__']
                 total_zero += submodule_global_stats.get('zero', 0)
@@ -132,7 +132,7 @@ def analyze_all_fsdp_zero_grad_space(module, tau=0.1, verbose=True):
     results['__global__'] = {'zero': total_zero, 'total': total_rows, 'ratio': global_ratio}
     return results
 
-def redo_reset_all_fsdp_layers(module, mode='threshold', tau=0.1, verbose=True, use_lecun_init=True):
+def redo_reset_all_fsdp_layers(module, mode='threshold', tau=0.1, verbose=True, use_lecun_init=True, original_shapes_map=None):
     """
     Reset dormant neurons for all leaf FSDP-wrapped submodules.
     Returns a dict mapping module names to the number of resets performed.
@@ -148,7 +148,7 @@ def redo_reset_all_fsdp_layers(module, mode='threshold', tau=0.1, verbose=True, 
     total_reset = 0
     for name, submodule in iter_leaf_fsdp_modules(module):
         try:
-            mask = fsdp_dormant_neuron_mask_and_reset(submodule, mode=mode, tau=tau, use_lecun_init=use_lecun_init)
+            mask = fsdp_dormant_neuron_mask_and_reset(submodule, mode=mode, tau=tau, use_lecun_init=use_lecun_init, verbose=verbose, optimizer=getattr(submodule, 'optimizer', None), original_shapes_map=original_shapes_map)
             if mask is not None:
                 reset_count = mask.sum().item()
                 total_reset += reset_count
@@ -513,7 +513,7 @@ def get_shard_overlap_slices(entry, my_global_start, my_global_end, flat_param_n
             print(f"[ERROR] Unsupported shape {shape} for entry {entry.get('fqn', None) or entry.get('name', None)}.")
         return None
 
-def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=False):
+def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=False, original_shapes_map=None): 
     """
     Computes the fraction of output neurons (rows) in each 2D param whose normalized gradient metric si = A/(B/H) is below tau,
     using GLOBAL layer statistics (B_global and H_global) for consistent metric calculation.
@@ -559,12 +559,29 @@ def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=False):
                 print(f"[ZeroGradV2-Debug][Rank {rank}] Param {fqn}: SKIPPED (grad is None).")
             continue
         
-        if param.dim() != 2:
+        # <<< Cascade: Use original_shapes_map if available for dimension check >>>
+        param_dim_to_check = -1
+        original_shape_str = "N/A (no map)"
+        if original_shapes_map:
+            original_shape = original_shapes_map.get(fqn)
+            if original_shape:
+                param_dim_to_check = len(original_shape)
+                original_shape_str = str(original_shape)
+            else:
+                if rank == 0 and verbose and skipped_dim_not_2 < 5: 
+                    print(f"[ZeroGradV2-Debug][Rank {rank}] Param {fqn}: SKIPPED (FQN not in original_shapes_map). Current dim: {param.dim()}, grad_shape: {param.grad.shape if param.grad is not None else 'N/A'}.")
+                skipped_dim_not_2 += 1
+                continue
+        else: # Fallback if no map is provided
+            param_dim_to_check = param.dim()
+
+        if param_dim_to_check != 2:
             skipped_dim_not_2 += 1
             if rank == 0 and verbose and skipped_dim_not_2 < 5: # Log first 4 occurrences
-                print(f"[ZeroGradV2-Debug][Rank {rank}] Param {fqn}: SKIPPED (dim is {param.dim()}, grad_shape: {param.grad.shape if param.grad is not None else 'N/A'}).")
-                print('param.grad:', param.grad)
+                print(f"[ZeroGradV2-Debug][Rank {rank}] Param {fqn}: SKIPPED (dim_to_check is {param_dim_to_check}, original_shape: {original_shape_str}, current_param_dim: {param.dim()}, grad_shape: {param.grad.shape if param.grad is not None else 'N/A'}).")
+                # print('param.grad:', param.grad) # Already printed by user's change
             continue
+        # <<< End Cascade modification >>>
 
         if param.grad.shape[0] == 0:
             skipped_shape0_is_0 += 1
@@ -573,19 +590,44 @@ def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=False):
             continue
         
         param_count_eligible_for_contrib +=1 # Parameter passed all initial checks
+        current_grad_to_process = param.grad
+        # <<< Cascade: Reshape grad if it's flat but originally 2D >>>
+        reshaped_for_norm = False
+        if original_shapes_map:
+            original_shape = original_shapes_map.get(fqn)
+            if original_shape and len(original_shape) == 2 and current_grad_to_process.dim() == 1:
+                # Sanity check for number of elements before reshaping
+                if current_grad_to_process.numel() == (original_shape[0] * original_shape[1]):
+                    current_grad_to_process = current_grad_to_process.view(original_shape)
+                    reshaped_for_norm = True
+                elif rank == 0 and verbose:
+                    print(f"[ZeroGradV2-Warning][Rank {rank}] Param {fqn}: Mismatch numel for reshape. Grad shape: {current_grad_to_process.shape}, Original: {original_shape}. Skipping reshape.")
+        # <<< End Cascade modification >>>
+
         if rank == 0 and verbose and param_count_eligible_for_contrib <= 5: # Log first 5 eligible
-            print(f"[ZeroGradV2-Debug][Rank {rank}] Param {fqn}: ELIGIBLE (grad_shape: {param.grad.shape}, dim: {param.dim()}).")
-        # Original condition was: if param.grad is not None and param.dim() == 2 and param.grad.shape[0] > 0:
-        grad = param.grad
-        H_local = grad.shape[0]
+            print(f"[ZeroGradV2-Debug][Rank {rank}] Param {fqn}: ELIGIBLE (original_grad_shape: {param.grad.shape}, processing_grad_shape: {current_grad_to_process.shape}, reshaped: {reshaped_for_norm}, current_param_dim: {param.dim()}).")
         
-        # Compute local statistics
-        grad_abs = grad.abs()
-        B_local = grad_abs.sum()
-        A_local_row = grad_abs.sum(dim=1)
+        # H_global and B_global are calculated based on all eligible params
+        # For each parameter, calculate its contribution to H_global and B_global
+        # grad_norm_row: (output_dim,)
+        grad_norm_row = torch.norm(current_grad_to_process, p=2, dim=1)  # Norm along input_dim (dim 1)
+        # H_local is the number of rows (output dimension) from the (potentially reshaped) gradient tensor
+        H_local = current_grad_to_process.shape[0]
         
-        # Store for global reduction
-        global_contributions.append((fqn, H_local, B_local, A_local_row))
+        # B_local is the sum of squared norms of all rows in the current layer's gradient
+        B_local = torch.sum(grad_norm_row**2).item() 
+        
+        # S_local is the count of rows where the norm is below the tau-adjusted metric
+        # This calculation is deferred until after B_global and H_global are known.
+        
+        param_details[fqn] = {
+            'H_local': H_local, 
+            'B_local': B_local, 
+            'grad_shape': current_grad_to_process.shape, # Use shape of (potentially reshaped) grad
+            'grad_norm_row_sample': grad_norm_row[:5].tolist() if H_local > 0 else []
+        }
+
+        global_contributions.append((fqn, H_local, B_local, grad_norm_row))
 
     if rank == 0 and verbose:
         print(f"[ZeroGradV2-Debug][Rank {rank}] Param iteration summary: Total iterated: {param_count_total}, Eligible for contribution processing: {param_count_eligible_for_contrib}, Actually added to global_contributions: {len(global_contributions)}")
@@ -674,7 +716,7 @@ def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=False):
     
     return results
 
-def compute_fsdp_dormant_mask_only(fsdp_module, mode='threshold', tau=0.04, percentage=0.01, max_percentage=0.01, use_lecun_init=True, verbose=True):
+def compute_fsdp_dormant_mask_only(fsdp_module, mode='threshold', tau=0.04, percentage=0.01, max_percentage=0.01, use_lecun_init=True, verbose=True, original_shapes_map=None):
     """
     Computes and returns the dormant neuron mask for the FSDP flat parameter, but does NOT reset weights.
     Works with both FSDP FlatParameters and regular Parameters.
@@ -732,13 +774,26 @@ def compute_fsdp_dormant_mask_only(fsdp_module, mode='threshold', tau=0.04, perc
             local_slice_start = overlap_info['local_slice_start']
             valid_numel = overlap_info['valid_numel']
 
-            # Ensure this is a 2D parameter for which num_rows/num_cols would be present
-            # The current dormant neuron logic (si calculation) is specific to 2D matrices.
-            if 'num_rows' not in overlap_info or 'num_cols' not in overlap_info:
+            fqn = entry.get('fqn', str(idx)) # Use FQN if available, else index string
+
+            # Determine if the parameter is authoritatively a valid 2D matrix
+            param_is_valid_2d = False
+            log_shape_info = "N/A"
+
+            if original_shapes_map and fqn in original_shapes_map:
+                original_shape = original_shapes_map[fqn]
+                log_shape_info = f"original_map_shape={original_shape}"
+                if isinstance(original_shape, (list, tuple)) and len(original_shape) == 2 and original_shape[0] > 0 and original_shape[1] > 0:
+                    param_is_valid_2d = True
+            elif 'num_rows' in overlap_info and 'num_cols' in overlap_info: # Fallback to info from get_shard_overlap_slices
+                log_shape_info = f"overlap_info_shape={overlap_info.get('sub_shape')}, entry_shape={entry.get('shape')}"
+                if overlap_info['num_rows'] > 0 and overlap_info['num_cols'] > 0:
+                    param_is_valid_2d = True
+            # Else, not 2D by any available information
+            
+            if not param_is_valid_2d:
                 if verbose:
-                    entry_name_for_log = overlap_info.get('entry_name', idx)
-                    param_shape_for_log = overlap_info.get('sub_shape', 'Unknown shape')
-                    print(f"[INFO][DormantMask] Skipping entry {entry_name_for_log} for dormant neuron analysis as it's not 2D (or num_rows/num_cols missing). Shape: {param_shape_for_log}")
+                    print(f"[INFO][DormantMask] Skipping entry {fqn} for dormant neuron analysis as it's not a valid 2D parameter. Details: {log_shape_info}")
                 continue
             
             num_rows = overlap_info['num_rows']
@@ -899,7 +954,7 @@ def kaiming_reset(param_slice, mask, shape, is_layernorm=False, bias_slice=None)
                 bias_bound = 0.0
             bias_slice[mask] = torch.empty_like(bias_slice[mask]).uniform_(-bias_bound, bias_bound)
 
-def fsdp_dormant_neuron_mask_and_reset(fsdp_module, mode='threshold', tau=0.04, percentage=0.01, max_percentage=0.01, use_lecun_init=True, verbose=True, optimizer=None):
+def fsdp_dormant_neuron_mask_and_reset(fsdp_module, mode='threshold', tau=0.04, percentage=0.01, max_percentage=0.01, use_lecun_init=True, verbose=True, optimizer=None, original_shapes_map=None):
     """
     Computes the dormant neuron mask for the FSDP flat parameter and resets the weights of dormant neurons.
     Also resets optimizer state for those neurons if optimizer is provided.
@@ -951,10 +1006,40 @@ def fsdp_dormant_neuron_mask_and_reset(fsdp_module, mode='threshold', tau=0.04, 
             local_slice_start = overlap_info['local_slice_start']
             valid_numel = overlap_info['valid_numel']
             sub_shape = overlap_info['sub_shape']
-            if not isinstance(sub_shape, (tuple, list)) or len(sub_shape) < 1 or any(dim <= 0 for dim in sub_shape):
+            fqn = entry.get('fqn', str(idx))
+
+            # Determine if the parameter is authoritatively a valid 2D matrix for dormant neuron analysis
+            param_is_valid_for_dormancy_check = False
+            log_shape_info = "N/A"
+            is_1d_param = False
+
+            if original_shapes_map and fqn in original_shapes_map:
+                original_shape = original_shapes_map[fqn]
+                log_shape_info = f"original_map_shape={original_shape}"
+                if isinstance(original_shape, (list, tuple)) and len(original_shape) == 2 and original_shape[0] > 0 and original_shape[1] > 0:
+                    param_is_valid_for_dormancy_check = True
+                elif isinstance(original_shape, (list, tuple)) and len(original_shape) == 1 and original_shape[0] > 0: # e.g. bias or layernorm weight
+                    param_is_valid_for_dormancy_check = True # Allow 1D for simple thresholding
+                    is_1d_param = True
+            elif isinstance(sub_shape, (tuple, list)) and len(sub_shape) > 0 and all(dim > 0 for dim in sub_shape):
+                # Fallback to sub_shape if original_shapes_map is not definitive
+                log_shape_info = f"sub_shape={sub_shape}, entry_shape={entry.get('shape')}"
+                if len(sub_shape) == 2:
+                    param_is_valid_for_dormancy_check = True
+                elif len(sub_shape) == 1:
+                    param_is_valid_for_dormancy_check = True # Allow 1D for simple thresholding
+                    is_1d_param = True
+            
+            if not param_is_valid_for_dormancy_check:
                 if verbose:
-                    print(f"[ERROR] Invalid sub_shape {sub_shape} for entry {entry_name}, skipping.")
+                    print(f"[INFO][DormantReset] Skipping entry {fqn} for dormant neuron analysis/reset as it's not a valid 1D/2D parameter. Details: {log_shape_info}")
                 continue
+            
+            # Ensure sub_shape is sensible for subsequent view operations
+            if not (isinstance(sub_shape, (tuple, list)) and len(sub_shape) > 0 and all(dim > 0 for dim in sub_shape)):
+                 if verbose:
+                    print(f"[ERROR][DormantReset] Invalid sub_shape {sub_shape} for entry {fqn} despite passing initial checks. Skipping.")
+                 continue
             try:
                 param_mask = torch.zeros(sub_shape, dtype=torch.bool, device=flat_param.device)
             except Exception as e:
@@ -979,7 +1064,7 @@ def fsdp_dormant_neuron_mask_and_reset(fsdp_module, mode='threshold', tau=0.04, 
                     print(f"[ERROR] Could not reshape grad_raw to {sub_shape} for entry {entry_name}: {e}")
                 continue
             grad_magnitude = grad_slice.abs()
-            if len(sub_shape) == 1:
+            if is_1d_param or len(sub_shape) == 1: # Use is_1d_param determined from original_shapes_map if possible
                 mask = grad_magnitude <= tau
             else:
                 if mode == 'threshold':

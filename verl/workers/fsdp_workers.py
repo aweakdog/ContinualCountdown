@@ -186,6 +186,23 @@ class ActorRolloutRefWorker(Worker):
             # some parameters may not in torch_dtype. TODO(zhangchi.usc1992) remove this after we switch to fsdp2
             actor_module.to(torch_dtype)
 
+            # <<< Cascade: Collect original parameter shapes before FSDP wrapping >>>
+            self.original_param_shapes = {}
+            if self.rank == 0: # Collect only on rank 0 to avoid redundancy, will be broadcast or passed if needed by all ranks
+                print("[INFO] Collecting original parameter shapes before FSDP wrapping...")
+            for fqn, param in actor_module.named_parameters():
+                if self.rank == 0:
+                    print(f"[DEBUG][OriginalShapes] Storing FQN: {fqn} with shape: {param.shape}")
+                self.original_param_shapes[fqn] = param.shape
+            # Broadcast the shapes map to all ranks if necessary, or ensure it's accessible
+            # For now, assuming it might be used by rank 0 primarily or passed down correctly.
+            # If all ranks need it for local computation in compute_fsdp_zero_grad_space_ratio, broadcasting is better.
+            # Let's refine this if all ranks need the full map for the analysis function.
+            # For now, let's assume the analysis function will handle getting this map appropriately.
+            if self.rank == 0 and len(self.original_param_shapes) > 0:
+                print(f"[INFO] Collected {len(self.original_param_shapes)} original parameter shapes. Example: {list(self.original_param_shapes.items())[0] if self.original_param_shapes else 'N/A'}")
+            # <<< End Cascade modification >>>
+
             if enable_gradient_checkpointing:
                 actor_module.gradient_checkpointing_enable(gradient_checkpointing_kwargs={'use_reentrant': False})
         torch.distributed.barrier()
@@ -354,7 +371,8 @@ class ActorRolloutRefWorker(Worker):
                 self.config.actor.use_remove_padding = use_remove_padding
             self.actor = DataParallelPPOActor(config=self.config.actor,
                                               actor_module=self.actor_module_fsdp,
-                                              actor_optimizer=self.actor_optimizer)
+                                              actor_optimizer=self.actor_optimizer,
+                                              original_param_shapes=self.original_param_shapes) # <<< Cascade: Pass original_param_shapes
             # (Re-)initialize verl-compatible analyzer and redo for actor after checkpoint/model load
             self.actor_redo_enabled = getattr(self.config, 'redo_enabled', True)
             self.actor_redo_tau = getattr(self.config, 'redo_tau', 0.1)
@@ -380,7 +398,9 @@ class ActorRolloutRefWorker(Worker):
             OmegaConf.set_struct(self.config.ref, True)
             with open_dict(self.config.ref):
                 self.config.ref.use_remove_padding = use_remove_padding
-            self.ref_policy = DataParallelPPOActor(config=self.config.ref, actor_module=self.ref_module_fsdp)
+            self.ref_policy = DataParallelPPOActor(config=self.config.ref, 
+                                                   actor_module=self.ref_module_fsdp,
+                                                   original_param_shapes=self.original_param_shapes) # <<< Cascade: Pass original_param_shapes
 
         if self._is_actor:
             self.flops_counter = FlopsCounter(self.actor_model_config)

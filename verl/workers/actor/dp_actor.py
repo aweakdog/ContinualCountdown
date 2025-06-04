@@ -362,16 +362,16 @@ class DataParallelPPOActor(BasePPOActor):
                     
                     if rank == 0: print(f"[INFO][Actor][Step {self.global_steps}] Analyzing FSDP gradient metrics...")
                     zero_grad_stats = analyze_all_fsdp_zero_grad_space(self.actor_module, tau=self.redo_tau, verbose=(rank==0))
-                    dormant_stats = analyze_all_fsdp_dormant_neurons(self.actor_module, mode=self.redo_mode, tau=self.redo_tau, verbose=(rank==0))
+                    #dormant_stats = analyze_all_fsdp_dormant_neurons(self.actor_module, mode=self.redo_mode, tau=self.redo_tau, verbose=(rank==0))
                     
-                    if dormant_stats and '__global__' in dormant_stats: # analyze_all_fsdp_dormant_neurons also returns a __global__ key
-                        total_dormant = dormant_stats['__global__'].get('dormant', 0)
-                        total_neurons = dormant_stats['__global__'].get('total_neurons', 0)
-                        if rank == 0 and total_neurons > 0:
-                            print(f"[INFO][Actor][Step {self.global_steps}] Dormant Neuron Stats (Global): {total_dormant}/{total_neurons} ({total_dormant/total_neurons:.2%})")
-                        # Individual layer stats for dormant_stats are printed by analyze_all_fsdp_dormant_neurons if verbose
-                    else:
-                        if rank == 0: print(f"[WARN][Actor][Step {self.global_steps}] No global dormant stats found or dormant_stats is None.")
+                    # if dormant_stats and '__global__' in dormant_stats: # analyze_all_fsdp_dormant_neurons also returns a __global__ key
+                    #     total_dormant = dormant_stats['__global__'].get('dormant', 0)
+                    #     total_neurons = dormant_stats['__global__'].get('total_neurons', 0)
+                    #     if rank == 0 and total_neurons > 0:
+                    #         print(f"[INFO][Actor][Step {self.global_steps}] Dormant Neuron Stats (Global): {total_dormant}/{total_neurons} ({total_dormant/total_neurons:.2%})")
+                    #     # Individual layer stats for dormant_stats are printed by analyze_all_fsdp_dormant_neurons if verbose
+                    # else:
+                    #     if rank == 0: print(f"[WARN][Actor][Step {self.global_steps}] No global dormant stats found or dormant_stats is None.")
 
                     if zero_grad_stats and '__global__' in zero_grad_stats and zero_grad_stats['__global__']['total'] > 0:
                         zero_gradspace_ratio = zero_grad_stats['__global__']['ratio']
@@ -381,31 +381,31 @@ class DataParallelPPOActor(BasePPOActor):
                     else:
                         if rank == 0: print(f"[WARN][Actor][Step {self.global_steps}] No global zero_grad_stats found or total is zero.")
                 # Always perform dormant neuron reset for the first 30 global_steps
-                if self.global_steps < 30:
-                    mask = fsdp_dormant_neuron_mask_and_reset(self.actor_module, mode=self.redo_mode, tau=self.redo_tau, optimizer=self.actor_optimizer)
-                    if rank == 0:
-                        if mask is not None:
-                            print(f"[FSDP-ReDo][Actor][Boot] Step {self.global_steps}: reset {mask.sum().item()} dormant neurons.")
-                            from verl.utils.redo_utils.fsdp_flat_utils import map_dormant_neurons_to_layers
-                            # Get both dormant neuron locations and statistics
-                            dormant_info, stats = map_dormant_neurons_to_layers(self.actor_module, mask, return_stats=True)
-                            # Removed: dormant_info, stats = None, None # hacky
-                            print(f"[DormantNeuron][Boot][Step {self.global_steps}] Locations (sample): {str(dormant_info[:10]) if dormant_info else 'N/A'}...")
-                            # Stats are expected to be printed by map_dormant_neurons_to_layers itself
-                        else:
-                            print(f"[FSDP-ReDo][Actor][Boot] Step {self.global_steps}: reset None.")
+                # if self.global_steps < 30:
+                #     mask = fsdp_dormant_neuron_mask_and_reset(self.actor_module, mode=self.redo_mode, tau=self.redo_tau, optimizer=self.actor_optimizer)
+                #     if rank == 0:
+                #         if mask is not None:
+                #             print(f"[FSDP-ReDo][Actor][Boot] Step {self.global_steps}: reset {mask.sum().item()} dormant neurons.")
+                #             from verl.utils.redo_utils.fsdp_flat_utils import map_dormant_neurons_to_layers
+                #             # Get both dormant neuron locations and statistics
+                #             dormant_info, stats = map_dormant_neurons_to_layers(self.actor_module, mask, return_stats=True)
+                #             # Removed: dormant_info, stats = None, None # hacky
+                #             print(f"[DormantNeuron][Boot][Step {self.global_steps}] Locations (sample): {str(dormant_info[:10]) if dormant_info else 'N/A'}...")
+                #             # Stats are expected to be printed by map_dormant_neurons_to_layers itself
+                #         else:
+                #             print(f"[FSDP-ReDo][Actor][Boot] Step {self.global_steps}: reset None.")
                 # Perform neuron reset at the specified frequency after boot period
-                elif self.global_steps % self.redo_reset_freq == 0 and self.global_steps > 0:
-                    mask = fsdp_dormant_neuron_mask_and_reset(self.actor_module, mode=self.redo_mode, tau=self.redo_tau, optimizer=self.actor_optimizer)
-                    if rank == 0:
-                        if mask is not None:
-                            print(f"[FSDP-ReDo][Actor] Step {self.global_steps}: Performed neuron reset, {mask.sum().item()} dormant neurons reset.")
-                            # Optionally, you can also print detailed stats here if needed, similar to the boot phase
-                            # from verl.utils.redo_utils.fsdp_flat_utils import map_dormant_neurons_to_layers
-                            # dormant_info, stats = map_dormant_neurons_to_layers(self.actor_module, mask, return_stats=True)
-                            # print(f"[DormantNeuron][Regular][Step {self.global_steps}] Locations (sample): {str(dormant_info[:10]) if dormant_info else 'N/A'}...")
-                        else:
-                            print(f"[FSDP-ReDo][Actor] Step {self.global_steps}: fsdp_dormant_neuron_mask_and_reset returned None, no reset performed.")
+                # elif self.global_steps % self.redo_reset_freq == 0 and self.global_steps > 0:
+                #     mask = fsdp_dormant_neuron_mask_and_reset(self.actor_module, mode=self.redo_mode, tau=self.redo_tau, optimizer=self.actor_optimizer)
+                #     if rank == 0:
+                #         if mask is not None:
+                #             print(f"[FSDP-ReDo][Actor] Step {self.global_steps}: Performed neuron reset, {mask.sum().item()} dormant neurons reset.")
+                #             # Optionally, you can also print detailed stats here if needed, similar to the boot phase
+                #             # from verl.utils.redo_utils.fsdp_flat_utils import map_dormant_neurons_to_layers
+                #             # dormant_info, stats = map_dormant_neurons_to_layers(self.actor_module, mask, return_stats=True)
+                #             # print(f"[DormantNeuron][Regular][Step {self.global_steps}] Locations (sample): {str(dormant_info[:10]) if dormant_info else 'N/A'}...")
+                #         else:
+                #             print(f"[FSDP-ReDo][Actor] Step {self.global_steps}: fsdp_dormant_neuron_mask_and_reset returned None, no reset performed.")
 
                 # Aggregate zero grad space ratio across all ranks
                 if zero_grad_stats and '__global__' in zero_grad_stats:

@@ -667,6 +667,16 @@ def compute_fsdp_dormant_mask_only(fsdp_module, mode='threshold', tau=0.04, perc
             entry_name = overlap_info['entry_name'] or idx
             local_slice_start = overlap_info['local_slice_start']
             valid_numel = overlap_info['valid_numel']
+
+            # Ensure this is a 2D parameter for which num_rows/num_cols would be present
+            # The current dormant neuron logic (si calculation) is specific to 2D matrices.
+            if 'num_rows' not in overlap_info or 'num_cols' not in overlap_info:
+                if verbose:
+                    entry_name_for_log = overlap_info.get('entry_name', idx)
+                    param_shape_for_log = overlap_info.get('sub_shape', 'Unknown shape')
+                    print(f"[INFO][DormantMask] Skipping entry {entry_name_for_log} for dormant neuron analysis as it's not 2D (or num_rows/num_cols missing). Shape: {param_shape_for_log}")
+                continue
+            
             num_rows = overlap_info['num_rows']
             num_cols = overlap_info['num_cols']
             sub_shape = overlap_info['sub_shape']

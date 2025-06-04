@@ -538,22 +538,58 @@ def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=False):
     layer_stats_local = {}
     global_contributions = []
 
+    if rank == 0 and verbose:
+        print(f"[ZeroGradV2-Debug][Rank {rank}] Starting analysis. Iterating named_parameters...")
+    
+    param_count_total = 0
+    param_count_eligible_for_contrib = 0
+    skipped_grad_none = 0
+    skipped_dim_not_2 = 0
+    skipped_shape0_is_0 = 0
+
     # Step 1: Collect local statistics for all layers
     for fqn, param in fsdp_module.named_parameters():
-        if param.grad is not None and param.dim() == 2 and param.grad.shape[0] > 0:
-            grad = param.grad
-            H_local = grad.shape[0]
-            
-            # Compute local statistics
-            grad_abs = grad.abs()
-            B_local = grad_abs.sum()
-            A_local_row = grad_abs.sum(dim=1)
-            
-            # Store for global reduction
-            global_contributions.append((fqn, H_local, B_local, A_local_row))
+        param_count_total += 1
+        if param.grad is None:
+            skipped_grad_none += 1
+            # Optional: Log first few skipped params if needed for deeper debugging, e.g.:
+            # if rank == 0 and verbose and skipped_grad_none < 4: 
+            #     print(f"[ZeroGradV2-Debug][Rank {rank}] Param {fqn}: grad is None.")
+            continue
+        
+        if param.dim() != 2:
+            skipped_dim_not_2 += 1
+            # if rank == 0 and verbose and skipped_dim_not_2 < 4: 
+            #     print(f"[ZeroGradV2-Debug][Rank {rank}] Param {fqn}: dim is {param.dim()} (not 2). Grad shape: {param.grad.shape}")
+            continue
+
+        if param.grad.shape[0] == 0:
+            skipped_shape0_is_0 += 1
+            # if rank == 0 and verbose and skipped_shape0_is_0 < 4: 
+            #     print(f"[ZeroGradV2-Debug][Rank {rank}] Param {fqn}: grad.shape[0] is 0. Grad shape: {param.grad.shape}")
+            continue
+        
+        param_count_eligible_for_contrib +=1 # Parameter passed all initial checks
+        # Original condition was: if param.grad is not None and param.dim() == 2 and param.grad.shape[0] > 0:
+        grad = param.grad
+        H_local = grad.shape[0]
+        
+        # Compute local statistics
+        grad_abs = grad.abs()
+        B_local = grad_abs.sum()
+        A_local_row = grad_abs.sum(dim=1)
+        
+        # Store for global reduction
+        global_contributions.append((fqn, H_local, B_local, A_local_row))
+
+    if rank == 0 and verbose:
+        print(f"[ZeroGradV2-Debug][Rank {rank}] Param iteration summary: Total iterated: {param_count_total}, Eligible for contribution processing: {param_count_eligible_for_contrib}, Actually added to global_contributions: {len(global_contributions)}")
+        print(f"[ZeroGradV2-Debug][Rank {rank}] Skipped counts: grad_none={skipped_grad_none}, dim_not_2={skipped_dim_not_2}, shape0_is_0={skipped_shape0_is_0}")
 
     # Step 2: Batch all-reduce for global statistics
     if not global_contributions:
+        if rank == 0 and verbose:
+            print(f"[ZeroGradV2-Debug][Rank {rank}] global_contributions is empty. No valid parameters found or retained for metric calculation on this rank.")
         # No valid parameters found
         total_zero_global = torch.tensor(0.0, device=device, dtype=torch.float32) # Ensure float for division
         total_rows_global = torch.tensor(0.0, device=device, dtype=torch.float32)

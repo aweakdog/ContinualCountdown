@@ -103,17 +103,47 @@ def analyze_all_fsdp_zero_grad_space(module, tau=0.1, verbose=True, original_sha
     """
     Analyze all leaf FSDP-wrapped submodules for zero grad space ratio.
     Returns a dict mapping module names to their zero grad stats and the global aggregate.
+    
+    If analyze_per_layer is False, only the top-level module will be analyzed.
     """
     from verl.utils.redo_utils.fsdp_flat_utils import compute_fsdp_zero_grad_space_ratio
     results = {}
     total_zero = 0
     total_rows = 0
-    cnt = 0
-    for name, submodule in iter_leaf_fsdp_modules(module):
-        cnt += 1
-        print("112cnt:", cnt, "112name:", name, "112submodule:", submodule)
+    
+    # Check if the module itself is FSDP-wrapped
+    if hasattr(module, '_fsdp_wrapped_module'):
+        if verbose:
+            print(f"[ZeroGradV2] Analyzing top-level FSDP module directly")
         try:
-            stats = compute_fsdp_zero_grad_space_ratio(submodule, tau=tau, verbose=verbose, original_shapes_map=original_shapes_map, fqn_prefix=name) # <<< Cascade: Pass FQN prefix (name)
+            # Analyze the top-level module directly
+            stats = compute_fsdp_zero_grad_space_ratio(module, tau=tau, verbose=verbose, 
+                                                      original_shapes_map=original_shapes_map, 
+                                                      fqn_prefix="model")
+            if stats is not None and '__global__' in stats:
+                results["model"] = stats
+                global_stats = stats['__global__']
+                total_zero = global_stats.get('zero', 0)
+                total_rows = global_stats.get('total', 0)
+                global_ratio = total_zero / (total_rows + 1e-8) if total_rows > 0 else 0.0
+                results['__global__'] = {'zero': total_zero, 'total': total_rows, 'ratio': global_ratio}
+                return results
+            else:
+                if verbose:
+                    print(f"[WARN] Top-level module analysis failed or returned no global stats")
+        except Exception as e:
+            if verbose:
+                print(f"[WARN] Could not analyze zero grad space for top-level module: {e}")
+    
+    # Fall back to per-layer analysis if top-level analysis fails or module is not FSDP-wrapped
+    if verbose:
+        print(f"[ZeroGradV2] Falling back to per-layer FSDP module analysis")
+    
+    for name, submodule in iter_leaf_fsdp_modules(module):
+        try:
+            stats = compute_fsdp_zero_grad_space_ratio(submodule, tau=tau, verbose=verbose, 
+                                                      original_shapes_map=original_shapes_map, 
+                                                      fqn_prefix=name)
             if stats is not None and '__global__' in stats:
                 submodule_global_stats = stats['__global__']
                 total_zero += submodule_global_stats.get('zero', 0)
@@ -123,9 +153,9 @@ def analyze_all_fsdp_zero_grad_space(module, tau=0.1, verbose=True, original_sha
                 results[name] = None
                 if verbose:
                     if stats is None:
-                        print(f"[WARN][analyze_all_fsdp_zero_grad_space] compute_fsdp_zero_grad_space_ratio returned None for submodule {name}")
+                        print(f"[WARN] Zero-grad analysis returned None for submodule {name}")
                     elif '__global__' not in stats:
-                        print(f"[WARN][analyze_all_fsdp_zero_grad_space] '__global__' key missing in stats from compute_fsdp_zero_grad_space_ratio for submodule {name}. Stats: {stats}")
+                        print(f"[WARN] '__global__' key missing in stats for submodule {name}")
         except Exception as e:
             if verbose:
                 print(f"[WARN] Could not analyze zero grad space for {name}: {e}")

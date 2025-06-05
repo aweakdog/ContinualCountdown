@@ -704,7 +704,7 @@ def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=True, origi
                             # For lm_head specifically, also try the transpose dimensions
                             # (lm_head can be either [hidden_size, vocab_size] or [vocab_size, hidden_size])
                             if not reshaped_from_map and "lm_head" in full_fqn_for_map:
-                                for embedding_dim in [151936, 32000, 65536]:  # Common vocab sizes
+                                for embedding_dim in [151936, 32000, 65536, 151937]:  # Common vocab sizes
                                     if current_grad_to_process.numel() % embedding_dim == 0:
                                         H_shard = current_grad_to_process.numel() // embedding_dim
                                         try:
@@ -934,7 +934,6 @@ def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=True, origi
         results[fqn] = {**data, 'ratio': ratio}
     
     # Optional verbose output
-    verbose = True # hacky
     if verbose and rank == 0:
         print(f"[ZeroGradV2] Global: {results['__global__']['zero']:.0f}/{results['__global__']['total']:.0f} "
               f"({results['__global__']['ratio']:.4f})")

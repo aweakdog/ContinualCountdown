@@ -556,60 +556,75 @@ def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=True, origi
     if rank == 0 and verbose:
         print(f"[ZeroGradV2-Debug][Rank {rank}] Starting analysis. Iterating named_parameters...")
     
+    # Create a canonical list of parameter FQNs from original_shapes_map if available
+    # This ensures all ranks process the same parameters in the same order
+    canonical_param_fqns = []
+    if original_shapes_map:
+        # Sort to ensure consistent order across ranks
+        canonical_param_fqns = sorted(original_shapes_map.keys())
+        if rank == 0 and verbose:
+            print(f"[ZeroGradV2-Debug][Rank {rank}] Using canonical parameter list from original_shapes_map with {len(canonical_param_fqns)} parameters.")
+    
+    # Create a map of local parameters for lookup
+    local_params = {_clean_fsdp_fqn(f"{fqn_prefix}.{name}" if fqn_prefix else name): param 
+                   for name, param in fsdp_module.named_parameters()}
+    
+    # Counters for diagnostics
     param_count_total = 0
     param_count_eligible_for_contrib = 0
     skipped_grad_none = 0
     skipped_dim_not_2 = 0
     skipped_shape0_is_0 = 0
-
-    # Step 1: Collect local statistics for all layers
-    param_iterator = fsdp_module.named_parameters()
-    log_reshape_count = 0 # Initialize counter for logging reshape events
-
-    for fqn, param in param_iterator:
+    skipped_not_in_local = 0
+    
+    global_contributions = []
+    param_details = {}
+    
+    # If we have a canonical list, use it; otherwise fall back to iterating local parameters
+    if canonical_param_fqns:
+        param_iterator = canonical_param_fqns
+        if rank == 0 and verbose:
+            print(f"[ZeroGradV2-Debug][Rank {rank}] Using canonical parameter list with {len(canonical_param_fqns)} parameters.")
+    else:
+        # Fall back to local parameters if no original_shapes_map
+        param_iterator = [_clean_fsdp_fqn(f"{fqn_prefix}.{name}" if fqn_prefix else name) 
+                         for name, param in fsdp_module.named_parameters()]
+        if rank == 0 and verbose:
+            print(f"[ZeroGradV2-Debug][Rank {rank}] Using local parameter list with {len(param_iterator)} parameters.")
+    
+    # Process parameters in canonical order
+    for full_fqn_for_map in param_iterator:
         param_count_total += 1
+        if full_fqn_for_map not in local_params:
+            skipped_not_in_local += 1
+            if rank == 0 and verbose and skipped_not_in_local < 5:
+                print(f"[ZeroGradV2-Debug][Rank {rank}] Param {full_fqn_for_map}: SKIPPED (not in local_params).")
+            continue
+        
+        param = local_params[full_fqn_for_map]
         if param.grad is None:
             skipped_grad_none += 1
             if rank == 0 and verbose and skipped_grad_none < 5: # Log first 4 occurrences
-                print(f"[ZeroGradV2-Debug][Rank {rank}] Param {fqn}: SKIPPED (grad is None).")
+                print(f"[ZeroGradV2-Debug][Rank {rank}] Param {full_fqn_for_map}: SKIPPED (grad is None).")
             continue
         
-        # <<< Cascade: Use original_shapes_map if available for dimension check >>>
-        param_dim_to_check = -1
-        original_shape_str = "N/A (no map)"
-        if original_shapes_map:
-            cleaned_local_fqn = _clean_fsdp_fqn(fqn) # fqn is from fsdp_module.named_parameters()
-            cleaned_fqn_prefix = _clean_fsdp_fqn(fqn_prefix)
-            # Construct the full FQN using the cleaned prefix
-            full_fqn_for_map = f"{cleaned_fqn_prefix}.{cleaned_local_fqn}" if cleaned_fqn_prefix else cleaned_local_fqn
-            
-            original_shape = original_shapes_map.get(full_fqn_for_map)
-            if original_shape:
-                param_dim_to_check = len(original_shape)
-                original_shape_str = str(original_shape)
-            else:
-                if rank == 0 and verbose and skipped_dim_not_2 < 5:
-                    # full_fqn_for_map is already constructed with cleaned_fqn_prefix above
-                    print(f"[ZeroGradV2-Debug][Rank {rank}] Param local_fqn='{fqn}' (prefix='{fqn_prefix}', cleaned_prefix='{cleaned_fqn_prefix}', cleaned_local='{cleaned_local_fqn}', attempted_map_key='{full_fqn_for_map}'): SKIPPED (FQN not in original_shapes_map). Current dim: {param.dim()}, grad_shape: {param.grad.shape if param.grad is not None else 'N/A'}.")
-                skipped_dim_not_2 += 1
-                continue
-        else: # Fallback if no map is provided
-            param_dim_to_check = param.dim()
-
+        # Since we're using the canonical parameter list, original_shape lookup is straightforward
+        original_shape = original_shapes_map.get(full_fqn_for_map) if original_shapes_map else None
+        original_shape_str = str(original_shape) if original_shape else "N/A (no map)"
+        param_dim_to_check = len(original_shape) if original_shape else param.dim()
+        
+        # Skip parameters that aren't 2D (either by original shape or current shape)
         if param_dim_to_check != 2:
             skipped_dim_not_2 += 1
             if rank == 0 and verbose and skipped_dim_not_2 < 5: # Log first 4 occurrences
-                cleaned_local_fqn_for_log = _clean_fsdp_fqn(fqn)
-                cleaned_fqn_prefix_for_log = _clean_fsdp_fqn(fqn_prefix)
-                full_fqn_for_map_for_log = f"{cleaned_fqn_prefix_for_log}.{cleaned_local_fqn_for_log}" if cleaned_fqn_prefix_for_log else cleaned_local_fqn_for_log
-                print(f"[ZeroGradV2-Debug][Rank {rank}] Param local_fqn='{fqn}' (prefix='{fqn_prefix}', cleaned_prefix='{cleaned_fqn_prefix_for_log}', cleaned_local='{cleaned_local_fqn_for_log}', attempted_map_key='{full_fqn_for_map_for_log}'): SKIPPED (dim_to_check is {param_dim_to_check}, original_shape: {original_shape_str}, current_param_dim: {param.dim()}, grad_shape: {param.grad.shape if param.grad is not None else 'N/A'}).")
+                print(f"[ZeroGradV2-Debug][Rank {rank}] Param {full_fqn_for_map}: SKIPPED (dim_to_check is {param_dim_to_check}, original_shape: {original_shape_str}, current_param_dim: {param.dim()}, grad_shape: {param.grad.shape if param.grad is not None else 'N/A'}).")
             continue
         # <<< End Cascade modification >>>
 
         if param.grad.shape[0] == 0:
             skipped_shape0_is_0 += 1
             if rank == 0 and verbose and skipped_shape0_is_0 < 5: # Log first 4 occurrences
-                print(f"[ZeroGradV2-Debug][Rank {rank}] Param {fqn}: SKIPPED (grad.shape[0] is 0, grad_shape: {param.grad.shape}).")
+                print(f"[ZeroGradV2-Debug][Rank {rank}] Param {full_fqn_for_map}: SKIPPED (grad.shape[0] is 0, grad_shape: {param.grad.shape}).")
             continue
         
         param_count_eligible_for_contrib +=1 # Parameter passed all initial checks
@@ -668,7 +683,7 @@ def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=True, origi
         else:
             # Should not happen if eligibility checks are correct (param_dim_to_check == 2, or 1D fallback)
             if rank == 0 and verbose:
-                print(f"[ZeroGradV2-ERROR][Rank {rank}] Param {fqn} has unexpected dim {current_grad_to_process.dim()} for norm calculation. Skipping contribution.")
+                print(f"[ZeroGradV2-ERROR][Rank {rank}] Param {full_fqn_for_map} has unexpected dim {current_grad_to_process.dim()} for norm calculation. Skipping contribution.")
             continue # Skip this parameter's contribution
         
         # B_local is the sum of squared norms of all rows in the current layer's gradient
@@ -677,21 +692,21 @@ def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=True, origi
         # S_local is the count of rows where the norm is below the tau-adjusted metric
         # This calculation is deferred until after B_global and H_global are known.
         
-        cleaned_local_fqn_for_key = _clean_fsdp_fqn(fqn)
-        cleaned_fqn_prefix_for_key = _clean_fsdp_fqn(fqn_prefix)
-        full_fqn_key = f"{cleaned_fqn_prefix_for_key}.{cleaned_local_fqn_for_key}" if cleaned_fqn_prefix_for_key else cleaned_local_fqn_for_key
-        param_details[full_fqn_key] = {
+        # Since we're using the canonical parameter list, we can use full_fqn_for_map directly as the key
+        param_details[full_fqn_for_map] = {
             'H_local': H_local, 
             'B_local': B_local, 
             'grad_shape': current_grad_to_process.shape, # Use shape of (potentially reshaped) grad
             'grad_norm_row_sample': grad_norm_row[:5].tolist() if H_local > 0 else []
         }
 
-        global_contributions.append((fqn, H_local, B_local, grad_norm_row))
+        # Store the parameter's contribution using the canonical FQN
+        global_contributions.append((full_fqn_for_map, H_local, B_local, grad_norm_row))
 
     if rank == 0 and verbose:
         print(f"[ZeroGradV2-Debug][Rank {rank}] Param iteration summary: Total iterated: {param_count_total}, Eligible for contribution processing: {param_count_eligible_for_contrib}, Actually added to global_contributions: {len(global_contributions)}")
-        print(f"[ZeroGradV2-Debug][Rank {rank}] Skipped counts: grad_none={skipped_grad_none}, dim_not_2={skipped_dim_not_2}, shape0_is_0={skipped_shape0_is_0}")
+        print(f"[ZeroGradV2-Debug][Rank {rank}] Skipped counts: not_in_local={skipped_not_in_local}, grad_none={skipped_grad_none}, dim_not_2={skipped_dim_not_2}, shape0_is_0={skipped_shape0_is_0}")
+        print(f"[ZeroGradV2-Debug][Rank {rank}] Using canonical parameter list: {True if canonical_param_fqns else False}, with {len(canonical_param_fqns) if canonical_param_fqns else 0} parameters")
 
     # Diagnostic: Check for consistent number of contributions across ranks
     num_contributions_local = torch.tensor(len(global_contributions), device=device, dtype=torch.int64)

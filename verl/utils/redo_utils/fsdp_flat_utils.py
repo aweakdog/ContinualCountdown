@@ -618,6 +618,29 @@ def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=True, origi
                 original_shape_str = str(original_shape) if original_shape else "N/A (no map)"
                 param_dim_to_check = len(original_shape) if original_shape else param.dim()
                 
+                # Add detailed debugging for embed_tokens parameter
+                if rank == 0 and verbose and "embed_tokens" in full_fqn_for_map:
+                    print(f"[ZeroGradV2-Debug][Rank {rank}] Param {full_fqn_for_map}: Original shape from map: {original_shape}")
+                    print(f"[ZeroGradV2-Debug][Rank {rank}] Param {full_fqn_for_map}: Grad shape: {param.grad.shape}, numel: {param.grad.numel()}")
+                    if original_shape and len(original_shape) == 2:
+                        print(f"[ZeroGradV2-Debug][Rank {rank}] Param {full_fqn_for_map}: Expected numel from original shape: {original_shape[0] * original_shape[1]}")
+                        print(f"[ZeroGradV2-Debug][Rank {rank}] Param {full_fqn_for_map}: Actual grad numel: {param.grad.numel()}, match: {param.grad.numel() == original_shape[0] * original_shape[1]}")
+                        if param.grad.numel() != original_shape[0] * original_shape[1]:
+                            print(f"[ZeroGradV2-Debug][Rank {rank}] Param {full_fqn_for_map}: MISMATCH in numel! This could be due to sharding.")
+                            if param.grad.numel() < original_shape[0] * original_shape[1]:
+                                shard_ratio = param.grad.numel() / (original_shape[0] * original_shape[1])
+                                print(f"[ZeroGradV2-Debug][Rank {rank}] Param {full_fqn_for_map}: Possible shard ratio: {shard_ratio:.4f}")
+                                possible_shard_count = 1 / shard_ratio if shard_ratio > 0 else 'unknown'
+                                print(f"[ZeroGradV2-Debug][Rank {rank}] Param {full_fqn_for_map}: Possibly sharded across {possible_shard_count} ranks")
+                        if param.grad.dim() == 1 and original_shape[1] > 0 and param.grad.numel() % original_shape[1] == 0:
+                            print(f"[ZeroGradV2-Debug][Rank {rank}] Param {full_fqn_for_map}: Can reshape to [{param.grad.numel() // original_shape[1]}, {original_shape[1]}]")
+                        else:
+                            print(f"[ZeroGradV2-Debug][Rank {rank}] Param {full_fqn_for_map}: Cannot reshape using original width {original_shape[1]}")
+                    if param.grad.numel() % 2048 == 0:  # Assuming embedding_dim is 2048 for Qwen2.5
+                        print(f"[ZeroGradV2-Debug][Rank {rank}] Param {full_fqn_for_map}: Could reshape to [{param.grad.numel() // 2048}, 2048] if embedding_dim=2048")
+                    if param.grad.numel() % 1024 == 0:  # Alternative embedding_dim
+                        print(f"[ZeroGradV2-Debug][Rank {rank}] Param {full_fqn_for_map}: Could reshape to [{param.grad.numel() // 1024}, 1024] if embedding_dim=1024")
+                
                 # Check if parameter has the right dimension
                 if param_dim_to_check != 2:
                     skipped_dim_not_2 += 1
@@ -642,7 +665,28 @@ def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=True, origi
             if original_shape is not None:
                 if len(original_shape) == 2: # Original parameter was 2D (e.g., weight matrix)
                     H_orig, W_orig = original_shape
-                    if current_grad_to_process.dim() == 1 and W_orig > 0 and current_grad_to_process.numel() % W_orig == 0:
+                    
+                    # Special handling for embedding parameters (often very large)
+                    if "embed_tokens" in full_fqn_for_map and current_grad_to_process.dim() == 1:
+                        # For embedding weights, we know the embedding dimension (width) should be preserved
+                        # Qwen2.5 models typically use embedding_dim=2048 or embedding_dim=1024
+                        embedding_dim_candidates = [2048, 1024]
+                        
+                        for embedding_dim in embedding_dim_candidates:
+                            if current_grad_to_process.numel() % embedding_dim == 0:
+                                H_shard = current_grad_to_process.numel() // embedding_dim
+                                try:
+                                    current_grad_to_process = current_grad_to_process.reshape(H_shard, embedding_dim)
+                                    reshaped_from_map = True
+                                    if rank == 0 and verbose:
+                                        print(f"[ZeroGradV2-Debug][Rank {rank}] Param {full_fqn_for_map}: Reshaped 1D embedding grad (numel {param.grad.data.numel()}) to 2D ({H_shard}, {embedding_dim}) using embedding_dim={embedding_dim}.")
+                                    break
+                                except Exception as e_reshape:
+                                    if rank == 0 and verbose:
+                                        print(f"[ZeroGradV2-Warning][Rank {rank}] Param {full_fqn_for_map}: Failed to reshape 1D embedding grad to ({H_shard}, {embedding_dim}). Error: {e_reshape}.")
+                    
+                    # Standard reshaping for other 2D parameters
+                    elif current_grad_to_process.dim() == 1 and W_orig > 0 and current_grad_to_process.numel() % W_orig == 0:
                         # Current grad is 1D (likely a shard), original was 2D. Attempt to reshape to (H_shard, W_orig)
                         H_shard = current_grad_to_process.numel() // W_orig
                         try:
@@ -656,6 +700,8 @@ def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=True, origi
                             # current_grad_to_process remains param.grad.data.float() as initialized
                             reshaped_from_map = False
                     # If current_grad_to_process is already 2D+, or W_orig is invalid, or not divisible, it remains as is.
+                
+                # Handle non-2D parameters
                 elif current_grad_to_process.numel() == torch.prod(torch.tensor(original_shape)).item():
                     # Original parameter was not 2D (e.g., 1D bias), try to reshape if numel matches.
                     try:
@@ -831,7 +877,7 @@ def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=True, origi
         results[fqn] = {**data, 'ratio': ratio}
     
     # Optional verbose output
-    verbose = True
+    verbose = True # hacky
     if verbose and rank == 0:
         print(f"[ZeroGradV2] Global: {results['__global__']['zero']:.0f}/{results['__global__']['total']:.0f} "
               f"({results['__global__']['ratio']:.4f})")
@@ -1161,7 +1207,6 @@ def fsdp_dormant_neuron_mask_and_reset(fsdp_module, mode='threshold', tau=0.04, 
             fqn_local = entry.get('fqn', str(idx))
             cleaned_local_fqn = _clean_fsdp_fqn(fqn_local)
             cleaned_fqn_prefix = _clean_fsdp_fqn(fqn_prefix) # Clean the prefix
-            full_fqn_for_map = f"{cleaned_fqn_prefix}.{cleaned_local_fqn}" if cleaned_fqn_prefix else cleaned_local_fqn # Use cleaned prefix
 
             param_is_valid_for_dormancy_check = False
             log_shape_info = "N/A"
@@ -1170,14 +1215,56 @@ def fsdp_dormant_neuron_mask_and_reset(fsdp_module, mode='threshold', tau=0.04, 
 
             if original_shapes_map and full_fqn_for_map in original_shapes_map:
                 original_shape = original_shapes_map[full_fqn_for_map]
-                original_shape_for_analysis = original_shape
-                log_shape_info = f"original_map_shape={original_shape}"
-                if isinstance(original_shape, (list, tuple)) and len(original_shape) == 2 and original_shape[0] > 0 and original_shape[1] > 0:
-                    param_is_valid_for_dormancy_check = True
-                elif isinstance(original_shape, (list, tuple)) and len(original_shape) == 1 and original_shape[0] > 0:
-                    param_is_valid_for_dormancy_check = True
-                    is_1d_param = True
-            elif isinstance(overlap_info['sub_shape'], (tuple, list)) and len(overlap_info['sub_shape']) > 0 and all(dim > 0 for dim in overlap_info['sub_shape']):
+                if current_rank == 0 and verbose and "embed_tokens" in full_fqn_for_map:
+                    print(
+                        f"[ZeroGradV2-Debug][Rank {current_rank}] Param {full_fqn_for_map}: Found in map with original shape: {original_shape}")
+            elif cleaned_fqn_for_map_lookup and original_shapes_map and cleaned_fqn_for_map_lookup in original_shapes_map:
+                original_shape = original_shapes_map[cleaned_fqn_for_map_lookup]
+                if current_rank == 0 and verbose and "embed_tokens" in full_fqn_for_map:
+                    print(
+                        f"[ZeroGradV2-Debug][Rank {current_rank}] Param {full_fqn_for_map}: Found in map using cleaned FQN {cleaned_fqn_for_map_lookup} with original shape: {original_shape}")
+            else:
+                if current_rank == 0 and verbose and "embed_tokens" in full_fqn_for_map:
+                    print(f"[ZeroGradV2-Debug][Rank {current_rank}] Param {full_fqn_for_map}: NOT FOUND in original shapes map!")
+                    if original_shapes_map:
+                        print(
+                            f"[ZeroGradV2-Debug][Rank {current_rank}] Available keys in original_shapes_map: {list(original_shapes_map.keys())[:5]}... (showing first 5)")
+
+            if current_rank == 0 and verbose and "embed_tokens" in full_fqn_for_map:
+                print(f"[ZeroGradV2-Debug][Rank {current_rank}] Param {full_fqn_for_map}: Original shape from map: {original_shape}")
+                if param.grad is not None:
+                    print(
+                        f"[ZeroGradV2-Debug][Rank {current_rank}] Param {full_fqn_for_map}: Grad shape: {param.grad.shape}, numel: {param.grad.numel()}, expected 2D shape if reshaped: [{param.grad.numel() // 2048 if param.grad.numel() % 2048 == 0 else '?'}, 2048]")
+                if original_shape and len(original_shape) == 2:
+                    print(
+                        f"[ZeroGradV2-Debug][Rank {current_rank}] Param {full_fqn_for_map}: Expected numel from original shape: {original_shape[0] * original_shape[1]}")
+                    if param.grad is not None:
+                        print(
+                            f"[ZeroGradV2-Debug][Rank {current_rank}] Param {full_fqn_for_map}: Actual grad numel: {param.grad.numel()}, match: {param.grad.numel() == original_shape[0] * original_shape[1]}")
+                        if param.grad.numel() != original_shape[0] * original_shape[1]:
+                            print(
+                                f"[ZeroGradV2-Debug][Rank {current_rank}] Param {full_fqn_for_map}: MISMATCH in numel! This could be due to sharding.")
+                            if param.grad.numel() < original_shape[0] * original_shape[1]:
+                                shard_ratio = param.grad.numel() / (original_shape[0] * original_shape[1])
+                                print(
+                                    f"[ZeroGradV2-Debug][Rank {current_rank}] Param {full_fqn_for_map}: Possible shard ratio: {shard_ratio:.4f}")
+                                possible_shard_count = 1 / shard_ratio if shard_ratio > 0 else 'unknown'
+                                print(
+                                    f"[ZeroGradV2-Debug][Rank {current_rank}] Param {full_fqn_for_map}: Possibly sharded across {possible_shard_count} ranks")
+                                if param.grad.dim() == 1 and original_shape[1] > 0 and param.grad.numel() % original_shape[1] == 0:
+                                    print(
+                                        f"[ZeroGradV2-Debug][Rank {current_rank}] Param {full_fqn_for_map}: Can reshape to [{param.grad.numel() // original_shape[1]}, {original_shape[1]}]")
+                                else:
+                                    print(
+                                        f"[ZeroGradV2-Debug][Rank {current_rank}] Param {full_fqn_for_map}: Cannot reshape using original width {original_shape[1]}")
+
+            if isinstance(original_shape, (list, tuple)) and len(original_shape) == 2 and original_shape[0] > 0 and original_shape[1] > 0:
+                param_is_valid_for_dormancy_check = True
+            elif isinstance(original_shape, (list, tuple)) and len(original_shape) == 1 and original_shape[0] > 0:
+                param_is_valid_for_dormancy_check = True
+                is_1d_param = True
+            elif isinstance(overlap_info['sub_shape'], (tuple, list)) and len(overlap_info['sub_shape']) > 0 and all(
+                    dim > 0 for dim in overlap_info['sub_shape']):
                 original_shape_for_analysis = overlap_info['sub_shape']
                 log_shape_info = f"sub_shape={overlap_info['sub_shape']} (used as fallback), entry_orig_shape={entry.get('shape')}"
                 if len(overlap_info['sub_shape']) == 2:

@@ -798,13 +798,33 @@ def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=True, origi
     all_layer_stats_gathered = [None] * dist.get_world_size()
     dist.all_gather_object(all_layer_stats_gathered, layer_stats_local) 
     
-    combined_stats = collections.defaultdict(lambda: {'zero': 0, 'total': 0})
-    if all_layer_stats_gathered[0] is not None: # Check if any stats were gathered
-        for stats_dict_from_rank in all_layer_stats_gathered:
-            if stats_dict_from_rank: # Ensure the dict from a rank is not empty
-                for fqn, data in stats_dict_from_rank.items():
-                    combined_stats[fqn]['zero'] += data['zero']
-                    combined_stats[fqn]['total'] += data['total']
+    # First, collect all unique FQNs across all ranks
+    all_fqns = set()
+    for stats_dict_from_rank in all_layer_stats_gathered:
+        if stats_dict_from_rank:  # Ensure the dict from a rank is not empty
+            all_fqns.update(stats_dict_from_rank.keys())
+    
+    # Initialize combined stats with zeros for all FQNs
+    combined_stats = {fqn: {'zero': 0, 'total': 0} for fqn in all_fqns}
+    
+    # For each FQN, take the maximum total across all ranks to avoid overcounting
+    # Sum the zero counts as they represent unique zero gradients
+    if all_layer_stats_gathered[0] is not None:  # Check if any stats were gathered
+        for fqn in all_fqns:
+            max_total = 0
+            zero_sum = 0
+            
+            for stats_dict_from_rank in all_layer_stats_gathered:
+                if stats_dict_from_rank and fqn in stats_dict_from_rank:
+                    data = stats_dict_from_rank[fqn]
+                    max_total = max(max_total, data['total'])
+                    zero_sum += data['zero']
+            
+            # Ensure zero count doesn't exceed total
+            zero_sum = min(zero_sum, max_total)
+            
+            combined_stats[fqn]['zero'] = zero_sum
+            combined_stats[fqn]['total'] = max_total
     
     for fqn, data in combined_stats.items():
         ratio = data['zero'] / (data['total'] + 1e-8) if data['total'] > 0 else 0.0

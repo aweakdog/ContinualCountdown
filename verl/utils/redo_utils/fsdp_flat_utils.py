@@ -108,8 +108,10 @@ def analyze_all_fsdp_zero_grad_space(module, tau=0.1, verbose=True, original_sha
     results = {}
     total_zero = 0
     total_rows = 0
+    cnt = 0
     for name, submodule in iter_leaf_fsdp_modules(module):
-        print("112name:", name, "112submodule:", submodule)
+        cnt += 1
+        print("112cnt:", cnt, "112name:", name, "112submodule:", submodule)
         try:
             stats = compute_fsdp_zero_grad_space_ratio(submodule, tau=tau, verbose=verbose, original_shapes_map=original_shapes_map, fqn_prefix=name) # <<< Cascade: Pass FQN prefix (name)
             if stats is not None and '__global__' in stats:

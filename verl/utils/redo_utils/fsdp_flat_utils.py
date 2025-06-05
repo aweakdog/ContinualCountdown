@@ -595,118 +595,128 @@ def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=True, origi
     # Process parameters in canonical order
     for full_fqn_for_map in param_iterator:
         param_count_total += 1
+        # Initialize default values for this parameter (will be used if parameter is not eligible)
+        H_local = 0
+        B_local = 0.0
+        grad_norm_row = torch.zeros(1, device=device)
+        is_eligible = False
+        
+        # Check if parameter is in local parameters
         if full_fqn_for_map not in local_params:
             skipped_not_in_local += 1
             if rank == 0 and verbose and skipped_not_in_local < 5:
-                print(f"[ZeroGradV2-Debug][Rank {rank}] Param {full_fqn_for_map}: SKIPPED (not in local_params).")
-            continue
+                print(f"[ZeroGradV2-Debug][Rank {rank}] Param {full_fqn_for_map}: CONTRIBUTING ZEROS (not in local_params).")
+        else:
+            param = local_params[full_fqn_for_map]
+            if param.grad is None:
+                skipped_grad_none += 1
+                if rank == 0 and verbose and skipped_grad_none < 5:
+                    print(f"[ZeroGradV2-Debug][Rank {rank}] Param {full_fqn_for_map}: CONTRIBUTING ZEROS (grad is None).")
+            else:
+                # Since we're using the canonical parameter list, original_shape lookup is straightforward
+                original_shape = original_shapes_map.get(full_fqn_for_map) if original_shapes_map else None
+                original_shape_str = str(original_shape) if original_shape else "N/A (no map)"
+                param_dim_to_check = len(original_shape) if original_shape else param.dim()
+                
+                # Check if parameter has the right dimension
+                if param_dim_to_check != 2:
+                    skipped_dim_not_2 += 1
+                    if rank == 0 and verbose and skipped_dim_not_2 < 5:
+                        print(f"[ZeroGradV2-Debug][Rank {rank}] Param {full_fqn_for_map}: CONTRIBUTING ZEROS (dim_to_check is {param_dim_to_check}, original_shape: {original_shape_str}, current_param_dim: {param.dim()}, grad_shape: {param.grad.shape}).")
+                elif param.grad.shape[0] == 0:
+                    skipped_shape0_is_0 += 1
+                    if rank == 0 and verbose and skipped_shape0_is_0 < 5:
+                        print(f"[ZeroGradV2-Debug][Rank {rank}] Param {full_fqn_for_map}: CONTRIBUTING ZEROS (grad.shape[0] is 0, grad_shape: {param.grad.shape}).")
+                else:
+                    # Parameter is eligible for processing
+                    is_eligible = True
         
-        param = local_params[full_fqn_for_map]
-        if param.grad is None:
-            skipped_grad_none += 1
-            if rank == 0 and verbose and skipped_grad_none < 5: # Log first 4 occurrences
-                print(f"[ZeroGradV2-Debug][Rank {rank}] Param {full_fqn_for_map}: SKIPPED (grad is None).")
-            continue
-        
-        # Since we're using the canonical parameter list, original_shape lookup is straightforward
-        original_shape = original_shapes_map.get(full_fqn_for_map) if original_shapes_map else None
-        original_shape_str = str(original_shape) if original_shape else "N/A (no map)"
-        param_dim_to_check = len(original_shape) if original_shape else param.dim()
-        
-        # Skip parameters that aren't 2D (either by original shape or current shape)
-        if param_dim_to_check != 2:
-            skipped_dim_not_2 += 1
-            if rank == 0 and verbose and skipped_dim_not_2 < 5: # Log first 4 occurrences
-                print(f"[ZeroGradV2-Debug][Rank {rank}] Param {full_fqn_for_map}: SKIPPED (dim_to_check is {param_dim_to_check}, original_shape: {original_shape_str}, current_param_dim: {param.dim()}, grad_shape: {param.grad.shape if param.grad is not None else 'N/A'}).")
-            continue
-        # <<< End Cascade modification >>>
+        # Only process eligible parameters, otherwise use the default zero values
+        if is_eligible:
+            param_count_eligible_for_contrib += 1 # Parameter passed all initial checks
+            current_grad_to_process = param.grad.data.float() # Initialize with .data.float()
+            reshaped_from_map = False
 
-        if param.grad.shape[0] == 0:
-            skipped_shape0_is_0 += 1
-            if rank == 0 and verbose and skipped_shape0_is_0 < 5: # Log first 4 occurrences
-                print(f"[ZeroGradV2-Debug][Rank {rank}] Param {full_fqn_for_map}: SKIPPED (grad.shape[0] is 0, grad_shape: {param.grad.shape}).")
-            continue
-        
-        param_count_eligible_for_contrib +=1 # Parameter passed all initial checks
-        current_grad_to_process = param.grad.data.float() # Initialize with .data.float()
-        reshaped_from_map = False
 
-
-        if original_shape is not None: # 'original_shape' was fetched using cleaned_fqn_for_map_lookup
-            if len(original_shape) == 2: # Original parameter was 2D (e.g., weight matrix)
-                H_orig, W_orig = original_shape
-                if current_grad_to_process.dim() == 1 and W_orig > 0 and current_grad_to_process.numel() % W_orig == 0:
-                    # Current grad is 1D (likely a shard), original was 2D. Attempt to reshape to (H_shard, W_orig)
-                    H_shard = current_grad_to_process.numel() // W_orig
+            # Only attempt reshaping for eligible parameters
+            if original_shape is not None:
+                if len(original_shape) == 2: # Original parameter was 2D (e.g., weight matrix)
+                    H_orig, W_orig = original_shape
+                    if current_grad_to_process.dim() == 1 and W_orig > 0 and current_grad_to_process.numel() % W_orig == 0:
+                        # Current grad is 1D (likely a shard), original was 2D. Attempt to reshape to (H_shard, W_orig)
+                        H_shard = current_grad_to_process.numel() // W_orig
+                        try:
+                            current_grad_to_process = current_grad_to_process.reshape(H_shard, W_orig)
+                            reshaped_from_map = True
+                            if rank == 0 and verbose:
+                                print(f"[ZeroGradV2-Debug][Rank {rank}] Param {full_fqn_for_map}: Reshaped 1D sharded grad (numel {param.grad.data.numel()}) to 2D ({H_shard}, {W_orig}) using W_orig from map shape {original_shape}.")
+                        except Exception as e_reshape:
+                            if rank == 0 and verbose:
+                                print(f"[ZeroGradV2-Warning][Rank {rank}] Param {full_fqn_for_map}: Failed to reshape 1D sharded grad to ({H_shard}, {W_orig}). Error: {e_reshape}. Using original grad shape {param.grad.data.shape}.")
+                            # current_grad_to_process remains param.grad.data.float() as initialized
+                            reshaped_from_map = False
+                    # If current_grad_to_process is already 2D+, or W_orig is invalid, or not divisible, it remains as is.
+                elif current_grad_to_process.numel() == torch.prod(torch.tensor(original_shape)).item():
+                    # Original parameter was not 2D (e.g., 1D bias), try to reshape if numel matches.
                     try:
-                        current_grad_to_process = current_grad_to_process.reshape(H_shard, W_orig)
-                        reshaped_from_map = True
+                        current_grad_to_process = current_grad_to_process.reshape(original_shape)
+                        reshaped_from_map = True 
                         if rank == 0 and verbose:
-                            print(f"[ZeroGradV2-Debug][Rank {rank}] Param {full_fqn_for_map}: Reshaped 1D sharded grad (numel {param.grad.data.numel()}) to 2D ({H_shard}, {W_orig}) using W_orig from map shape {original_shape}.")
+                            print(f"[ZeroGradV2-Debug][Rank {rank}] Param {full_fqn_for_map}: Reshaped grad (shape {param.grad.data.shape}) to map shape {original_shape} for non-2D original.")
                     except Exception as e_reshape:
                         if rank == 0 and verbose:
-                            print(f"[ZeroGradV2-Warning][Rank {rank}] Param {full_fqn_for_map}: Failed to reshape 1D sharded grad to ({H_shard}, {W_orig}). Error: {e_reshape}. Using original grad shape {param.grad.data.shape}.")
+                            print(f"[ZeroGradV2-Warning][Rank {rank}] Param {full_fqn_for_map}: Failed to reshape grad (shape {param.grad.data.shape}) to map shape {original_shape} for non-2D original. Error: {e_reshape}.")
                         # current_grad_to_process remains param.grad.data.float() as initialized
                         reshaped_from_map = False
-                # If current_grad_to_process is already 2D+, or W_orig is invalid, or not divisible, it remains as is.
-            elif current_grad_to_process.numel() == torch.prod(torch.tensor(original_shape)).item():
-                # Original parameter was not 2D (e.g., 1D bias), try to reshape if numel matches.
-                try:
-                    current_grad_to_process = current_grad_to_process.reshape(original_shape)
-                    reshaped_from_map = True 
-                    if rank == 0 and verbose:
-                         print(f"[ZeroGradV2-Debug][Rank {rank}] Param {full_fqn_for_map}: Reshaped grad (shape {param.grad.data.shape}) to map shape {original_shape} for non-2D original.")
-                except Exception as e_reshape:
-                    if rank == 0 and verbose:
-                         print(f"[ZeroGradV2-Warning][Rank {rank}] Param {full_fqn_for_map}: Failed to reshape grad (shape {param.grad.data.shape}) to map shape {original_shape} for non-2D original. Error: {e_reshape}.")
-                    # current_grad_to_process remains param.grad.data.float() as initialized
-                    reshaped_from_map = False
             elif rank == 0 and verbose and not reshaped_from_map: # Log if not reshaped for other reasons
                 print(f"[ZeroGradV2-Debug][Rank {rank}] Param {full_fqn_for_map}: Grad (shape {param.grad.data.shape}, numel {param.grad.data.numel()}) not reshaped using map shape {original_shape} (numel {torch.prod(torch.tensor(original_shape)).item() if original_shape else 'N/A'}). Using original grad shape.")
-        # If original_shape is None, current_grad_to_process remains param.grad.data.float() as initialized
+            # If original_shape is None, current_grad_to_process remains param.grad.data.float() as initialized
 
-        if rank == 0 and verbose: # This is the PRE-FILTER log
-            print(f"[ZeroGradV2-Debug][Rank {rank}] Param {full_fqn_for_map}: PRE-FILTER (original_grad_shape: {param.grad.data.shape}, processing_grad_shape: {current_grad_to_process.shape}, reshaped: {reshaped_from_map}, current_param_dim: {current_grad_to_process.dim()}).")
-
+            if rank == 0 and verbose: # This is the PRE-FILTER log
+                print(f"[ZeroGradV2-Debug][Rank {rank}] Param {full_fqn_for_map}: PRE-FILTER (original_grad_shape: {param.grad.data.shape}, processing_grad_shape: {current_grad_to_process.shape}, reshaped: {reshaped_from_map}, current_param_dim: {current_grad_to_process.dim()}).")
+            
+            # H_global and B_global are calculated based on all eligible params
+            # For each parameter, calculate its contribution to H_global and B_global
+            if current_grad_to_process.dim() == 2:
+                # grad_norm_row: (output_dim,)
+                grad_norm_row = torch.norm(current_grad_to_process, p=2, dim=1)  # Norm along input_dim (dim 1)
+                # H_local is the number of rows (output dimension) from the (potentially reshaped) gradient tensor
+                H_local = current_grad_to_process.shape[0]
+            elif current_grad_to_process.dim() == 1:
+                # Treat 1D tensor as a single row
+                grad_norm_row = torch.norm(current_grad_to_process, p=2, dim=0).unsqueeze(0) # Shape [1]
+                H_local = 1
+            else:
+                # Should not happen if eligibility checks are correct (param_dim_to_check == 2, or 1D fallback)
+                if rank == 0 and verbose:
+                    print(f"[ZeroGradV2-ERROR][Rank {rank}] Param {full_fqn_for_map} has unexpected dim {current_grad_to_process.dim()} for norm calculation. Using zeros.")
+                H_local = 0
+                grad_norm_row = torch.zeros(1, device=device)
+            
+            # B_local is the sum of squared norms of all rows in the current layer's gradient
+            B_local = torch.sum(grad_norm_row**2).item() 
         
-        # H_global and B_global are calculated based on all eligible params
-        # For each parameter, calculate its contribution to H_global and B_global
-        if current_grad_to_process.dim() == 2:
-            # grad_norm_row: (output_dim,)
-            grad_norm_row = torch.norm(current_grad_to_process, p=2, dim=1)  # Norm along input_dim (dim 1)
-            # H_local is the number of rows (output dimension) from the (potentially reshaped) gradient tensor
-            H_local = current_grad_to_process.shape[0]
-        elif current_grad_to_process.dim() == 1:
-            # Treat 1D tensor as a single row
-            grad_norm_row = torch.norm(current_grad_to_process, p=2, dim=0).unsqueeze(0) # Shape [1]
-            H_local = 1
-        else:
-            # Should not happen if eligibility checks are correct (param_dim_to_check == 2, or 1D fallback)
-            if rank == 0 and verbose:
-                print(f"[ZeroGradV2-ERROR][Rank {rank}] Param {full_fqn_for_map} has unexpected dim {current_grad_to_process.dim()} for norm calculation. Skipping contribution.")
-            continue # Skip this parameter's contribution
-        
-        # B_local is the sum of squared norms of all rows in the current layer's gradient
-        B_local = torch.sum(grad_norm_row**2).item() 
-        
-        # S_local is the count of rows where the norm is below the tau-adjusted metric
-        # This calculation is deferred until after B_global and H_global are known.
+            # S_local is the count of rows where the norm is below the tau-adjusted metric
+            # This calculation is deferred until after B_global and H_global are known.
         
         # Since we're using the canonical parameter list, we can use full_fqn_for_map directly as the key
         param_details[full_fqn_for_map] = {
             'H_local': H_local, 
             'B_local': B_local, 
-            'grad_shape': current_grad_to_process.shape, # Use shape of (potentially reshaped) grad
+            'grad_shape': current_grad_to_process.shape if is_eligible else 'N/A', 
             'grad_norm_row_sample': grad_norm_row[:5].tolist() if H_local > 0 else []
         }
 
         # Store the parameter's contribution using the canonical FQN
+        # Always add to global_contributions regardless of eligibility
+        # This ensures all ranks process the same number of parameters
         global_contributions.append((full_fqn_for_map, H_local, B_local, grad_norm_row))
 
     if rank == 0 and verbose:
         print(f"[ZeroGradV2-Debug][Rank {rank}] Param iteration summary: Total iterated: {param_count_total}, Eligible for contribution processing: {param_count_eligible_for_contrib}, Actually added to global_contributions: {len(global_contributions)}")
-        print(f"[ZeroGradV2-Debug][Rank {rank}] Skipped counts: not_in_local={skipped_not_in_local}, grad_none={skipped_grad_none}, dim_not_2={skipped_dim_not_2}, shape0_is_0={skipped_shape0_is_0}")
+        print(f"[ZeroGradV2-Debug][Rank {rank}] Zero contributions: not_in_local={skipped_not_in_local}, grad_none={skipped_grad_none}, dim_not_2={skipped_dim_not_2}, shape0_is_0={skipped_shape0_is_0}")
         print(f"[ZeroGradV2-Debug][Rank {rank}] Using canonical parameter list: {True if canonical_param_fqns else False}, with {len(canonical_param_fqns) if canonical_param_fqns else 0} parameters")
+        print(f"[ZeroGradV2-Debug][Rank {rank}] IMPORTANT: All ranks will process the same {len(canonical_param_fqns) if canonical_param_fqns else 0} parameters, contributing zeros for ineligible parameters.")
 
     # Diagnostic: Check for consistent number of contributions across ranks
     num_contributions_local = torch.tensor(len(global_contributions), device=device, dtype=torch.int64)

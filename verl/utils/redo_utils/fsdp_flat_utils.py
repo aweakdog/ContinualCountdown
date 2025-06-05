@@ -666,39 +666,96 @@ def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=True, origi
                 if len(original_shape) == 2: # Original parameter was 2D (e.g., weight matrix)
                     H_orig, W_orig = original_shape
                     
-                    # Special handling for embedding parameters (often very large)
-                    if "embed_tokens" in full_fqn_for_map and current_grad_to_process.dim() == 1:
-                        # For embedding weights, we know the embedding dimension (width) should be preserved
-                        # Qwen2.5 models typically use embedding_dim=2048 or embedding_dim=1024
-                        embedding_dim_candidates = [2048, 1024]
+                    # Enhanced reshaping for all 1D parameters that should be 2D
+                    if current_grad_to_process.dim() == 1 and original_shape and len(original_shape) == 2:
+                        # Get original width from the shape map
+                        original_width = original_shape[1]
                         
-                        for embedding_dim in embedding_dim_candidates:
-                            if current_grad_to_process.numel() % embedding_dim == 0:
-                                H_shard = current_grad_to_process.numel() // embedding_dim
-                                try:
-                                    current_grad_to_process = current_grad_to_process.reshape(H_shard, embedding_dim)
-                                    reshaped_from_map = True
-                                    if rank == 0 and verbose:
-                                        print(f"[ZeroGradV2-Debug][Rank {rank}] Param {full_fqn_for_map}: Reshaped 1D embedding grad (numel {param.grad.data.numel()}) to 2D ({H_shard}, {embedding_dim}) using embedding_dim={embedding_dim}.")
-                                    break
-                                except Exception as e_reshape:
-                                    if rank == 0 and verbose:
-                                        print(f"[ZeroGradV2-Warning][Rank {rank}] Param {full_fqn_for_map}: Failed to reshape 1D embedding grad to ({H_shard}, {embedding_dim}). Error: {e_reshape}.")
-                    
-                    # Standard reshaping for other 2D parameters
-                    elif current_grad_to_process.dim() == 1 and W_orig > 0 and current_grad_to_process.numel() % W_orig == 0:
-                        # Current grad is 1D (likely a shard), original was 2D. Attempt to reshape to (H_shard, W_orig)
-                        H_shard = current_grad_to_process.numel() // W_orig
-                        try:
-                            current_grad_to_process = current_grad_to_process.reshape(H_shard, W_orig)
-                            reshaped_from_map = True
+                        # First try: Use original width if possible
+                        if original_width > 0 and current_grad_to_process.numel() % original_width == 0:
+                            H_shard = current_grad_to_process.numel() // original_width
+                            try:
+                                current_grad_to_process = current_grad_to_process.reshape(H_shard, original_width)
+                                reshaped_from_map = True
+                                if rank == 0 and verbose:
+                                    print(f"[ZeroGradV2-Debug][Rank {rank}] Param {full_fqn_for_map}: Reshaped 1D grad (numel {param.grad.data.numel()}) to 2D ({H_shard}, {original_width}) using width from original_shape.")
+                            except Exception as e_reshape:
+                                if rank == 0 and verbose:
+                                    print(f"[ZeroGradV2-Warning][Rank {rank}] Param {full_fqn_for_map}: Failed to reshape using width from original_shape. Error: {e_reshape}.")
+                        
+                        # If that fails and it's an embedding or lm_head, try common embedding/vocab dimensions
+                        if not reshaped_from_map and ("embed_tokens" in full_fqn_for_map or "lm_head" in full_fqn_for_map):
+                            # For embeddings and lm_head, we need to try both ways (width could be vocab_size or hidden_size)
+                            embedding_dim_candidates = [2048, 1024, 4096, 768, 256, 151936, 32000, 65536]
+                            
+                            for embedding_dim in embedding_dim_candidates:
+                                if current_grad_to_process.numel() % embedding_dim == 0:
+                                    H_shard = current_grad_to_process.numel() // embedding_dim
+                                    try:
+                                        current_grad_to_process = current_grad_to_process.reshape(H_shard, embedding_dim)
+                                        reshaped_from_map = True
+                                        if rank == 0 and verbose:
+                                            print(f"[ZeroGradV2-Debug][Rank {rank}] Param {full_fqn_for_map}: Reshaped 1D {'lm_head' if 'lm_head' in full_fqn_for_map else 'embedding'} grad to 2D ({H_shard}, {embedding_dim}) using common dimension.")
+                                        break
+                                    except Exception as e_reshape:
+                                        if rank == 0 and verbose:
+                                            print(f"[ZeroGradV2-Warning][Rank {rank}] Param {full_fqn_for_map}: Failed to reshape with dim={embedding_dim}. Error: {e_reshape}.")
+                            
+                            # For lm_head specifically, also try the transpose dimensions
+                            # (lm_head can be either [hidden_size, vocab_size] or [vocab_size, hidden_size])
+                            if not reshaped_from_map and "lm_head" in full_fqn_for_map:
+                                for embedding_dim in [151936, 32000, 65536]:  # Common vocab sizes
+                                    if current_grad_to_process.numel() % embedding_dim == 0:
+                                        H_shard = current_grad_to_process.numel() // embedding_dim
+                                        try:
+                                            current_grad_to_process = current_grad_to_process.reshape(H_shard, embedding_dim)
+                                            reshaped_from_map = True
+                                            if rank == 0 and verbose:
+                                                print(f"[ZeroGradV2-Debug][Rank {rank}] Param {full_fqn_for_map}: Reshaped 1D lm_head grad to 2D ({H_shard}, {embedding_dim}) using vocab size.")
+                                            break
+                                        except Exception as e_reshape:
+                                            continue
+                        
+                        # For MLP layers, try common hidden dimensions
+                        if not reshaped_from_map and ("mlp" in full_fqn_for_map or "attn" in full_fqn_for_map):
+                            # Common hidden dimensions in transformer models
+                            hidden_dim_candidates = [2048, 4096, 8192, 1024, 768, 3072, 6144, 16]
+                            for hidden_dim in hidden_dim_candidates:
+                                if current_grad_to_process.numel() % hidden_dim == 0:
+                                    H_shard = current_grad_to_process.numel() // hidden_dim
+                                    try:
+                                        current_grad_to_process = current_grad_to_process.reshape(H_shard, hidden_dim)
+                                        reshaped_from_map = True
+                                        if rank == 0 and verbose:
+                                            print(f"[ZeroGradV2-Debug][Rank {rank}] Param {full_fqn_for_map}: Reshaped 1D MLP/attention grad to 2D ({H_shard}, {hidden_dim}) using common hidden_dim.")
+                                        break
+                                    except Exception as e_reshape:
+                                        continue  # Try next dimension
+                        
+                        # Last resort: Calculate shard ratio and try to use adjusted dimensions
+                        if not reshaped_from_map:
+                            original_numel = original_shape[0] * original_shape[1]
+                            shard_ratio = param.grad.data.numel() / original_numel if original_numel > 0 else 0
+                            
                             if rank == 0 and verbose:
-                                print(f"[ZeroGradV2-Debug][Rank {rank}] Param {full_fqn_for_map}: Reshaped 1D sharded grad (numel {param.grad.data.numel()}) to 2D ({H_shard}, {W_orig}) using W_orig from map shape {original_shape}.")
-                        except Exception as e_reshape:
-                            if rank == 0 and verbose:
-                                print(f"[ZeroGradV2-Warning][Rank {rank}] Param {full_fqn_for_map}: Failed to reshape 1D sharded grad to ({H_shard}, {W_orig}). Error: {e_reshape}. Using original grad shape {param.grad.data.shape}.")
-                            # current_grad_to_process remains param.grad.data.float() as initialized
-                            reshaped_from_map = False
+                                print(f"[ZeroGradV2-Debug][Rank {rank}] Param {full_fqn_for_map}: Shard ratio: {shard_ratio:.4f}, likely sharded across {1/shard_ratio:.1f} ranks if evenly distributed")
+                                print(f"[ZeroGradV2-Debug][Rank {rank}] Param {full_fqn_for_map}: Original shape: {original_shape}, Sharded numel: {param.grad.data.numel()}")
+                            
+                            # Try to reshape using the original width and adjusted height
+                            if original_width > 0:
+                                adjusted_height = param.grad.data.numel() // original_width
+                                if adjusted_height > 0 and param.grad.data.numel() % original_width == 0:
+                                    try:
+                                        current_grad_to_process = current_grad_to_process.reshape(adjusted_height, original_width)
+                                        reshaped_from_map = True
+                                        if rank == 0 and verbose:
+                                            print(f"[ZeroGradV2-Debug][Rank {rank}] Param {full_fqn_for_map}: Successfully reshaped using adjusted height {adjusted_height} and original width {original_width}.")
+                                    except Exception as e_reshape:
+                                        if rank == 0 and verbose:
+                                            print(f"[ZeroGradV2-Warning][Rank {rank}] Param {full_fqn_for_map}: Failed final reshape attempt. Error: {e_reshape}.")
+                                            print(f"[ZeroGradV2-Warning][Rank {rank}] Param {full_fqn_for_map}: Will use 1D gradient for analysis.")
+                            
+                            # If all reshaping attempts fail, we'll use the 1D gradient as is
                     # If current_grad_to_process is already 2D+, or W_orig is invalid, or not divisible, it remains as is.
                 
                 # Handle non-2D parameters

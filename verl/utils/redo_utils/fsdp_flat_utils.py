@@ -1076,9 +1076,10 @@ def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=True, origi
                 elif len(original_shape) == 1:  # For 1D tensors (like biases)
                     true_param_count = original_shape[0]
             
-            # Check how many ranks have this parameter
+            # Check how many ranks have this parameter and collect their stats
             ranks_with_param = 0
             max_param_count = 0
+            total_observed_params = 0
             
             for stats_dict_from_rank in all_layer_stats_gathered:
                 if stats_dict_from_rank and fqn in stats_dict_from_rank:
@@ -1086,6 +1087,7 @@ def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=True, origi
                     if data['total'] > 0:  # Only count ranks with parameters
                         ranks_with_param += 1
                         max_param_count = max(max_param_count, data['total'])
+                        total_observed_params += data['total']
             
             # Determine if this parameter is sharded across ranks
             is_sharded = ranks_with_param > 1 and max_param_count > 0
@@ -1094,42 +1096,43 @@ def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=True, origi
             # Use the true parameter count from original_shapes_map if available
             total_params = true_param_count if true_param_count is not None else max_param_count
             total_zeros = 0
-            zero_counts = []
             
-            # Collect zero counts from all ranks that have this parameter
-            for stats_dict_from_rank in all_layer_stats_gathered:
-                if stats_dict_from_rank and fqn in stats_dict_from_rank:
-                    data = stats_dict_from_rank[fqn]
-                    if data['total'] > 0:  # Only consider ranks with parameters
-                        zero_counts.append(data['zero'])
-            
-            # For sharded parameters, average the zero counts across ranks
-            # For non-sharded parameters, sum the zero counts (should only be one non-zero value)
-            if is_sharded and zero_counts:
-                if true_param_count is not None:
-                    # If we know the true parameter count, scale the zero counts appropriately
-                    # Calculate the average ratio of zeros across all shards
-                    shard_zero_ratios = []
-                    for i, zero_count in enumerate(zero_counts):
-                        # Get the total for this shard
-                        shard_total = 0
-                        for stats_dict_from_rank in all_layer_stats_gathered:
-                            if stats_dict_from_rank and fqn in stats_dict_from_rank:
-                                data = stats_dict_from_rank[fqn]
-                                if data['total'] > 0:  # Only consider ranks with parameters
-                                    shard_total = data['total']
-                                    break
-                        if shard_total > 0:
+            # For sharded parameters, we need special handling
+            if is_sharded:
+                # Collect zero counts and totals from each rank that has the parameter
+                zero_counts = []
+                shard_zero_ratios = []
+                shard_totals = []
+                
+                for stats_dict_from_rank in all_layer_stats_gathered:
+                    if stats_dict_from_rank and fqn in stats_dict_from_rank:
+                        data = stats_dict_from_rank[fqn]
+                        if data['total'] > 0:  # Only include ranks with parameters
+                            zero_count = data['zero']
+                            shard_total = data['total']
+                            zero_counts.append(zero_count)
+                            shard_totals.append(shard_total)
                             shard_zero_ratios.append(zero_count / shard_total)
+                
+                # Calculate the weighted average zero ratio based on shard sizes
+                if shard_zero_ratios and sum(shard_totals) > 0:
+                    # Weight each shard's ratio by its relative size
+                    weighted_ratios = [ratio * (total / total_observed_params) 
+                                      for ratio, total in zip(shard_zero_ratios, shard_totals)]
+                    weighted_avg_ratio = sum(weighted_ratios)
                     
-                    # Average the ratios and scale to the true parameter count
-                    if shard_zero_ratios:
-                        avg_zero_ratio = sum(shard_zero_ratios) / len(shard_zero_ratios)
-                        total_zeros = int(avg_zero_ratio * true_param_count)
+                    # Scale to the true parameter count if available, otherwise use observed total
+                    if true_param_count is not None and true_param_count > 0:
+                        total_zeros = int(weighted_avg_ratio * true_param_count)
+                    else:
+                        total_zeros = int(weighted_avg_ratio * total_params)
+                        
+                    # Store for debugging
+                    avg_zero_ratio = weighted_avg_ratio
                 else:
-                    # Fall back to previous method if true_param_count is not available
-                    avg_zero_ratio = sum(zero_count / max_param_count for zero_count in zero_counts) / len(zero_counts)
-                    total_zeros = int(avg_zero_ratio * total_params)
+                    # Fall back if no valid shards
+                    avg_zero_ratio = 0
+                    total_zeros = 0
             else:
                 # For non-sharded parameters, just sum the zeros (should only be from one rank)
                 total_zeros = sum(zero_counts)
@@ -1164,9 +1167,10 @@ def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=True, origi
                 if is_sharded and zero_counts:
                     if true_param_count is not None:
                         print(f"[ZeroGradV2-FIXED] Individual zero counts: {zero_counts}, shard_ratios: {shard_zero_ratios}, avg_ratio: {avg_zero_ratio:.6f}")
+                        print(f"[ZeroGradV2-FIXED] Shard totals: {shard_totals}, total observed: {total_observed_params} ({total_observed_params/full_params*100:.2f}% of full)")
                     else:
                         print(f"[ZeroGradV2-FIXED] Individual zero counts: {zero_counts}, avg_ratio: {avg_zero_ratio:.6f}")
-                print(f"[ZeroGradV2-FIXED] Zero ratio: {total_zeros/total_params if total_params > 0 else 0:.6f}")
+                print(f"[ZeroGradV2-FIXED] Zero ratio: {total_zeros/total_params if total_params > 0 else 0:.6f}, total_zeros: {total_zeros}, total_params: {total_params}")
             
             # Ensure zero count doesn't exceed total (shouldn't happen with correct counting)
             zero_sum = min(total_zeros, total_params)

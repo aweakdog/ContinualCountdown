@@ -99,12 +99,18 @@ def analyze_all_fsdp_dormant_neurons(module, mode='threshold', tau=0.1, verbose=
     #    print(f"[DormantNeuron][ALL] total_dormant={total_dormant}, total_params={total_count}, ratio={total_dormant/(total_count+1e-8):.6f}")
     return results
 
-def analyze_all_fsdp_zero_grad_space(module, tau=0.1, verbose=True, original_shapes_map=None):
+def analyze_all_fsdp_zero_grad_space(module, tau=0.1, verbose=True, original_shapes_map=None, top_level_prefix=None):
     """
     Analyze all leaf FSDP-wrapped submodules for zero grad space ratio.
     Returns a dict mapping module names to their zero grad stats and the global aggregate.
     
-    If analyze_per_layer is False, only the top-level module will be analyzed.
+    Args:
+        module: The module to analyze
+        tau: Threshold for considering a gradient as zero
+        verbose: Whether to print verbose output
+        original_shapes_map: Map of parameter FQNs to their original shapes before FSDP wrapping
+        top_level_prefix: Prefix to use for parameter FQNs when analyzing the top-level module
+                         If None, will attempt to detect the appropriate prefix
     """
     from verl.utils.redo_utils.fsdp_flat_utils import compute_fsdp_zero_grad_space_ratio
     results = {}
@@ -113,15 +119,32 @@ def analyze_all_fsdp_zero_grad_space(module, tau=0.1, verbose=True, original_sha
     
     # Check if the module itself is FSDP-wrapped
     if hasattr(module, '_fsdp_wrapped_module'):
+        # Try to determine the appropriate prefix for the top-level module
+        if top_level_prefix is None:
+            # Check if this is a Qwen model by inspecting the wrapped module
+            wrapped_module = module._fsdp_wrapped_module
+            if hasattr(wrapped_module, 'model') and hasattr(wrapped_module.model, 'embed_tokens'):
+                # For Qwen models, parameters are typically prefixed with 'model'
+                detected_prefix = "model"
+            else:
+                # Default to empty prefix if we can't determine the structure
+                detected_prefix = ""
+            
+            if verbose:
+                print(f"[ZeroGradV2] Auto-detected top-level prefix: '{detected_prefix}'")
+        else:
+            detected_prefix = top_level_prefix
+        
         if verbose:
-            print(f"[ZeroGradV2] Analyzing top-level FSDP module directly")
+            print(f"[ZeroGradV2] Analyzing top-level FSDP module directly with prefix: '{detected_prefix}'")
+        
         try:
             # Analyze the top-level module directly
             stats = compute_fsdp_zero_grad_space_ratio(module, tau=tau, verbose=verbose, 
                                                       original_shapes_map=original_shapes_map, 
-                                                      fqn_prefix="model")
+                                                      fqn_prefix=detected_prefix)
             if stats is not None and '__global__' in stats:
-                results["model"] = stats
+                results[detected_prefix or "top_level"] = stats
                 global_stats = stats['__global__']
                 total_zero = global_stats.get('zero', 0)
                 total_rows = global_stats.get('total', 0)
@@ -134,6 +157,8 @@ def analyze_all_fsdp_zero_grad_space(module, tau=0.1, verbose=True, original_sha
         except Exception as e:
             if verbose:
                 print(f"[WARN] Could not analyze zero grad space for top-level module: {e}")
+                import traceback
+                traceback.print_exc()
     
     # Fall back to per-layer analysis if top-level analysis fails or module is not FSDP-wrapped
     if verbose:

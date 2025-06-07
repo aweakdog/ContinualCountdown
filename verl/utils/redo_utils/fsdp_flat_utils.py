@@ -934,6 +934,27 @@ def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=True, origi
             else:
                 avg_global = B_global / H_global
                 si = A_local_row_tensor / (avg_global + 1e-9)
+                
+                # Debug embedding layer specifically
+                if "embed_tokens" in fqn and rank == 0 and verbose:
+                    # Print detailed stats for embedding layer
+                    print(f"[ZeroGradV2-DEBUG] Embedding layer stats for {fqn}:")
+                    print(f"  - H_local_scalar: {H_local_scalar}, H_global: {H_global}")
+                    print(f"  - B_local: {B_local_scalar_tensor:.6e}, B_global: {B_global:.6e}")
+                    print(f"  - avg_global: {avg_global:.6e}")
+                    print(f"  - A_local_row_tensor min/max/mean: {A_local_row_tensor.min().item():.6e}/{A_local_row_tensor.max().item():.6e}/{A_local_row_tensor.mean().item():.6e}")
+                    print(f"  - si min/max/mean: {si.min().item():.6e}/{si.max().item():.6e}/{si.mean().item():.6e}")
+                    print(f"  - tau: {tau}")
+                    print(f"  - (si < tau).sum(): {(si < tau).sum().item()}, total: {si.numel()}")
+                    print(f"  - zero ratio: {(si < tau).sum().item() / (si.numel() + 1e-9):.6f}")
+                    
+                    # Check if all gradients are exactly zero
+                    if A_local_row_tensor.abs().max().item() == 0:
+                        print(f"  - WARNING: All embedding gradients are EXACTLY zero!")
+                    
+                    # Check for numerical issues
+                    if avg_global < 1e-10:
+                        print(f"  - WARNING: Very small avg_global ({avg_global:.6e}), potential numerical issues")
             
             zero_rows = (si < tau).sum().item()
             layer_stats_local[fqn] = {'zero': zero_rows, 'total': H_local_scalar} # Use H_local_scalar

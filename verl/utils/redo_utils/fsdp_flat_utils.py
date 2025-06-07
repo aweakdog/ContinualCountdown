@@ -997,13 +997,16 @@ def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=True, origi
         for fqn in all_fqns:
             # First check if we have the original shape for this parameter
             true_param_count = None
+            original_shape = None
             if original_shapes_map and fqn in original_shapes_map:
+                # Get the original shape
+                original_shape = original_shapes_map[fqn]
+                
                 # Calculate the true parameter count from the original shape
-                shape = original_shapes_map[fqn]
-                if len(shape) >= 2:  # For 2D+ tensors, we want the first dimension (output neurons)
-                    true_param_count = shape[0]
-                elif len(shape) == 1:  # For 1D tensors (like biases)
-                    true_param_count = shape[0]
+                if len(original_shape) >= 2:  # For 2D+ tensors, we want the first dimension (output neurons)
+                    true_param_count = original_shape[0]
+                elif len(original_shape) == 1:  # For 1D tensors (like biases)
+                    true_param_count = original_shape[0]
             
             # Check how many ranks have this parameter
             ranks_with_param = 0
@@ -1066,8 +1069,24 @@ def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=True, origi
             # Debug output for important layers
             if verbose and rank == 0 and ("embed_tokens" in fqn or "mlp.up_proj" in fqn or "mlp.gate_proj" in fqn or "down_proj" in fqn):
                 sharded_str = "sharded" if is_sharded else "non-sharded"
-                orig_shape_str = f", orig_shape={original_shapes_map.get(fqn, 'unknown')}" if original_shapes_map else ""
-                print(f"[ZeroGradV2-FIXED] {fqn} ({sharded_str}): ranks={ranks_with_param}, total_params={total_params}, total_zeros={total_zeros}{orig_shape_str}")
+                
+                # Calculate expected parameters per rank if using tensor parallelism
+                expected_per_rank = ""
+                if original_shape and len(original_shape) >= 2:
+                    full_params = original_shape[0] * original_shape[1]
+                    expected_per_rank = f", expected_per_rank={full_params/dist.get_world_size():.0f}"
+                
+                orig_shape_str = f", orig_shape={original_shape}" if original_shape else ""
+                print(f"[ZeroGradV2-FIXED] {fqn} ({sharded_str}): ranks={ranks_with_param}, total_params={total_params}, total_zeros={total_zeros}{orig_shape_str}{expected_per_rank}")
+                
+                # For MLP layers, check if tensor parallelism might be in use
+                if ("mlp." in fqn or "attn." in fqn) and original_shape and len(original_shape) >= 2:
+                    full_params = original_shape[0] * original_shape[1]
+                    params_per_rank = max_param_count * ranks_with_param
+                    if params_per_rank < full_params * 0.9:  # If we're seeing significantly fewer params than expected
+                        tp_factor = full_params / params_per_rank
+                        print(f"[ZeroGradV2-FIXED] Detected possible tensor parallelism: full_params={full_params}, params_per_rank={params_per_rank}, tp_factor≈{tp_factor:.1f}")
+                
                 if is_sharded and zero_counts:
                     if true_param_count is not None:
                         print(f"[ZeroGradV2-FIXED] Individual zero counts: {zero_counts}, shard_ratios: {shard_zero_ratios}, avg_ratio: {avg_zero_ratio:.6f}")

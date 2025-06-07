@@ -117,54 +117,56 @@ def analyze_all_fsdp_zero_grad_space(module, tau=0.1, verbose=True, original_sha
     total_zero = 0
     total_rows = 0
     
-    # Check if the module itself is FSDP-wrapped
-    if hasattr(module, '_fsdp_wrapped_module'):
-        # Try to determine the appropriate prefix for the top-level module
-        if top_level_prefix is None:
-            # Check if this is a Qwen model by inspecting the wrapped module
-            wrapped_module = module._fsdp_wrapped_module
-            if hasattr(wrapped_module, 'model') and hasattr(wrapped_module.model, 'embed_tokens'):
-                # For Qwen models, parameters are typically prefixed with 'model'
-                detected_prefix = "model"
-            else:
-                # Default to empty prefix if we can't determine the structure
-                detected_prefix = ""
-            
-            if verbose:
-                print(f"[ZeroGradV2] Auto-detected top-level prefix: '{detected_prefix}'")
-        else:
-            detected_prefix = top_level_prefix
-        
-        if verbose:
-            print(f"[ZeroGradV2] Analyzing top-level FSDP module directly with prefix: '{detected_prefix}'")
-        
-        try:
-            # Analyze the top-level module directly
-            stats = compute_fsdp_zero_grad_space_ratio(module, tau=tau, verbose=verbose, 
-                                                      original_shapes_map=original_shapes_map, 
-                                                      fqn_prefix=detected_prefix)
-            if stats is not None and '__global__' in stats:
-                results[detected_prefix or "top_level"] = stats
-                global_stats = stats['__global__']
-                total_zero = global_stats.get('zero', 0)
-                total_rows = global_stats.get('total', 0)
-                global_ratio = total_zero / (total_rows + 1e-8) if total_rows > 0 else 0.0
-                results['__global__'] = {'zero': total_zero, 'total': total_rows, 'ratio': global_ratio}
-                return results
-            else:
-                if verbose:
-                    print(f"[WARN] Top-level module analysis failed or returned no global stats")
-        except Exception as e:
-            if verbose:
-                print(f"[WARN] Could not analyze zero grad space for top-level module: {e}")
-                import traceback
-                traceback.print_exc()
+    ## Check if the module itself is FSDP-wrapped
+    #if hasattr(module, '_fsdp_wrapped_module'):
+    #    # Try to determine the appropriate prefix for the top-level module
+    #    if top_level_prefix is None:
+    #        # Check if this is a Qwen model by inspecting the wrapped module
+    #        wrapped_module = module._fsdp_wrapped_module
+    #        if hasattr(wrapped_module, 'model') and hasattr(wrapped_module.model, 'embed_tokens'):
+    #            # For Qwen models, parameters are typically prefixed with 'model'
+    #            detected_prefix = "model"
+    #        else:
+    #            # Default to empty prefix if we can't determine the structure
+    #            detected_prefix = ""
+    #        
+    #        if verbose:
+    #            print(f"[ZeroGradV2] Auto-detected top-level prefix: '{detected_prefix}'")
+    #    else:
+    #        detected_prefix = top_level_prefix
+    #    
+    #    if verbose:
+    #        print(f"[ZeroGradV2] Analyzing top-level FSDP module directly with prefix: '{detected_prefix}'")
+    #    
+    #    try:
+    #        # Analyze the top-level module directly
+    #        stats = compute_fsdp_zero_grad_space_ratio(module, tau=tau, verbose=verbose, 
+    #                                                  original_shapes_map=original_shapes_map, 
+    #                                                  fqn_prefix=detected_prefix)
+    #        if stats is not None and '__global__' in stats:
+    #            results[detected_prefix or "top_level"] = stats
+    #            global_stats = stats['__global__']
+    #            total_zero = global_stats.get('zero', 0)
+    #            total_rows = global_stats.get('total', 0)
+    #            global_ratio = total_zero / (total_rows + 1e-8) if total_rows > 0 else 0.0
+    #            results['__global__'] = {'zero': total_zero, 'total': total_rows, 'ratio': global_ratio}
+    #            return results
+    #        else:
+    #            if verbose:
+    #                print(f"[WARN] Top-level module analysis failed or returned no global stats")
+    #    except Exception as e:
+    #        if verbose:
+    #            print(f"[WARN] Could not analyze zero grad space for top-level module: {e}")
+    #            import traceback
+    #            traceback.print_exc()
     
-    # Fall back to per-layer analysis if top-level analysis fails or module is not FSDP-wrapped
-    if verbose:
-        print(f"[ZeroGradV2] Falling back to per-layer FSDP module analysis")
+    ## Fall back to per-layer analysis if top-level analysis fails or module is not FSDP-wrapped
+    #if verbose:
+    #    print(f"[ZeroGradV2] Falling back to per-layer FSDP module analysis")
     
     for name, submodule in iter_leaf_fsdp_modules(module):
+        if verbose:
+            print(f'169Analyzing submodule: {name}')
         try:
             stats = compute_fsdp_zero_grad_space_ratio(submodule, tau=tau, verbose=verbose, 
                                                       original_shapes_map=original_shapes_map, 

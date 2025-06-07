@@ -992,21 +992,51 @@ def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=True, origi
     # Initialize combined stats with zeros for all FQNs
     combined_stats = {fqn: {'zero': 0, 'total': 0} for fqn in all_fqns}
     
-    # For each FQN, take the maximum total across all ranks to avoid overcounting
-    # Sum the zero counts as they represent unique zero gradients
+    # For each FQN, aggregate statistics across ranks
     if all_layer_stats_gathered[0] is not None:  # Check if any stats were gathered
         for fqn in all_fqns:
-            max_total = 0
-            zero_sum = 0
+            # Check how many ranks have this parameter
+            ranks_with_param = 0
+            total_params_across_ranks = 0
             
             for stats_dict_from_rank in all_layer_stats_gathered:
                 if stats_dict_from_rank and fqn in stats_dict_from_rank:
                     data = stats_dict_from_rank[fqn]
-                    max_total = max(max_total, data['total'])
-                    zero_sum += data['zero']
+                    if data['total'] > 0:  # Only count ranks with parameters
+                        ranks_with_param += 1
+                        total_params_across_ranks += data['total']
             
-            # Ensure zero count doesn't exceed total
-            zero_sum = min(zero_sum, max_total)
+            # Determine if this parameter is sharded across ranks
+            is_sharded = ranks_with_param > 1 and total_params_across_ranks > 0
+            
+            # Initialize counters
+            total_params = 0
+            total_zeros = 0
+            
+            # Process based on whether parameter is sharded
+            for stats_dict_from_rank in all_layer_stats_gathered:
+                if stats_dict_from_rank and fqn in stats_dict_from_rank:
+                    data = stats_dict_from_rank[fqn]
+                    if data['total'] > 0:  # Only consider ranks with parameters
+                        total_zeros += data['zero']
+                        total_params += data['total'] if is_sharded else 0
+            
+            # For non-sharded parameters, use the maximum total from any rank
+            if not is_sharded:
+                for stats_dict_from_rank in all_layer_stats_gathered:
+                    if stats_dict_from_rank and fqn in stats_dict_from_rank:
+                        data = stats_dict_from_rank[fqn]
+                        total_params = max(total_params, data['total'])
+            
+            # Debug output for important layers
+            if verbose and rank == 0 and ("embed_tokens" in fqn or "mlp.up_proj" in fqn or "mlp.gate_proj" in fqn):
+                sharded_str = "sharded" if is_sharded else "non-sharded"
+                print(f"[ZeroGradV2-FIXED] {fqn} ({sharded_str}): ranks={ranks_with_param}, total_params={total_params}, total_zeros={total_zeros}")
+                print(f"[ZeroGradV2-FIXED] Zero ratio: {total_zeros/total_params if total_params > 0 else 0:.6f}")
+            
+            # Ensure zero count doesn't exceed total (shouldn't happen with correct counting)
+            zero_sum = min(total_zeros, total_params)
+            max_total = total_params
             
             combined_stats[fqn]['zero'] = zero_sum
             combined_stats[fqn]['total'] = max_total

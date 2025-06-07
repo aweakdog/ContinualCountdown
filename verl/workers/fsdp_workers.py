@@ -191,8 +191,6 @@ class ActorRolloutRefWorker(Worker):
             if self.rank == 0: # Collect only on rank 0 to avoid redundancy, will be broadcast or passed if needed by all ranks
                 print("[INFO] Collecting original parameter shapes before FSDP wrapping...")
             for fqn, param in actor_module.named_parameters():
-                if self.rank == 0:
-                    print(f"[DEBUG][OriginalShapes] Storing FQN: {fqn} with shape: {param.shape}")
                 self.original_param_shapes[fqn] = param.shape
             # Broadcast the shapes map to all ranks if necessary, or ensure it's accessible
             # For now, assuming it might be used by rank 0 primarily or passed down correctly.

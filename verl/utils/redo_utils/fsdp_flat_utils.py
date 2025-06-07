@@ -1134,8 +1134,15 @@ def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=True, origi
                     avg_zero_ratio = 0
                     total_zeros = 0
             else:
-                # For non-sharded parameters, just sum the zeros (should only be from one rank)
-                total_zeros = sum(zero_counts)
+                # For non-sharded parameters, collect and sum the zeros (should only be from one rank)
+                zero_counts = []
+                for stats_dict_from_rank in all_layer_stats_gathered:
+                    if stats_dict_from_rank and fqn in stats_dict_from_rank:
+                        data = stats_dict_from_rank[fqn]
+                        if data['total'] > 0:  # Only consider ranks with parameters
+                            zero_counts.append(data['zero'])
+                
+                total_zeros = sum(zero_counts) if zero_counts else 0
             
             # Debug output for important layers
             if verbose and rank == 0 and ("embed_tokens" in fqn or "mlp.up_proj" in fqn or "mlp.gate_proj" in fqn or "down_proj" in fqn):

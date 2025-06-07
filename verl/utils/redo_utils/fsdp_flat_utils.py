@@ -995,6 +995,16 @@ def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=True, origi
     # For each FQN, aggregate statistics across ranks
     if all_layer_stats_gathered[0] is not None:  # Check if any stats were gathered
         for fqn in all_fqns:
+            # First check if we have the original shape for this parameter
+            true_param_count = None
+            if original_shapes_map and fqn in original_shapes_map:
+                # Calculate the true parameter count from the original shape
+                shape = original_shapes_map[fqn]
+                if len(shape) >= 2:  # For 2D+ tensors, we want the first dimension (output neurons)
+                    true_param_count = shape[0]
+                elif len(shape) == 1:  # For 1D tensors (like biases)
+                    true_param_count = shape[0]
+            
             # Check how many ranks have this parameter
             ranks_with_param = 0
             max_param_count = 0
@@ -1010,7 +1020,8 @@ def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=True, origi
             is_sharded = ranks_with_param > 1 and max_param_count > 0
             
             # Initialize counters
-            total_params = max_param_count  # Always use max param count as the true parameter count
+            # Use the true parameter count from original_shapes_map if available
+            total_params = true_param_count if true_param_count is not None else max_param_count
             total_zeros = 0
             zero_counts = []
             
@@ -1024,20 +1035,44 @@ def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=True, origi
             # For sharded parameters, average the zero counts across ranks
             # For non-sharded parameters, sum the zero counts (should only be one non-zero value)
             if is_sharded and zero_counts:
-                # For sharded parameters, we need to scale the zero count appropriately
-                # Each rank reports zeros for its shard, so we need to average and scale
-                avg_zero_ratio = sum(zero_count / max_param_count for zero_count in zero_counts) / len(zero_counts)
-                total_zeros = int(avg_zero_ratio * total_params)
+                if true_param_count is not None:
+                    # If we know the true parameter count, scale the zero counts appropriately
+                    # Calculate the average ratio of zeros across all shards
+                    shard_zero_ratios = []
+                    for i, zero_count in enumerate(zero_counts):
+                        # Get the total for this shard
+                        shard_total = 0
+                        for stats_dict_from_rank in all_layer_stats_gathered:
+                            if stats_dict_from_rank and fqn in stats_dict_from_rank:
+                                data = stats_dict_from_rank[fqn]
+                                if data['total'] > 0:  # Only consider ranks with parameters
+                                    shard_total = data['total']
+                                    break
+                        if shard_total > 0:
+                            shard_zero_ratios.append(zero_count / shard_total)
+                    
+                    # Average the ratios and scale to the true parameter count
+                    if shard_zero_ratios:
+                        avg_zero_ratio = sum(shard_zero_ratios) / len(shard_zero_ratios)
+                        total_zeros = int(avg_zero_ratio * true_param_count)
+                else:
+                    # Fall back to previous method if true_param_count is not available
+                    avg_zero_ratio = sum(zero_count / max_param_count for zero_count in zero_counts) / len(zero_counts)
+                    total_zeros = int(avg_zero_ratio * total_params)
             else:
                 # For non-sharded parameters, just sum the zeros (should only be from one rank)
                 total_zeros = sum(zero_counts)
             
             # Debug output for important layers
-            if verbose and rank == 0 and ("embed_tokens" in fqn or "mlp.up_proj" in fqn or "mlp.gate_proj" in fqn):
+            if verbose and rank == 0 and ("embed_tokens" in fqn or "mlp.up_proj" in fqn or "mlp.gate_proj" in fqn or "down_proj" in fqn):
                 sharded_str = "sharded" if is_sharded else "non-sharded"
-                print(f"[ZeroGradV2-FIXED] {fqn} ({sharded_str}): ranks={ranks_with_param}, total_params={total_params}, total_zeros={total_zeros}")
+                orig_shape_str = f", orig_shape={original_shapes_map.get(fqn, 'unknown')}" if original_shapes_map else ""
+                print(f"[ZeroGradV2-FIXED] {fqn} ({sharded_str}): ranks={ranks_with_param}, total_params={total_params}, total_zeros={total_zeros}{orig_shape_str}")
                 if is_sharded and zero_counts:
-                    print(f"[ZeroGradV2-FIXED] Individual zero counts: {zero_counts}, avg_ratio: {avg_zero_ratio:.6f}")
+                    if true_param_count is not None:
+                        print(f"[ZeroGradV2-FIXED] Individual zero counts: {zero_counts}, shard_ratios: {shard_zero_ratios}, avg_ratio: {avg_zero_ratio:.6f}")
+                    else:
+                        print(f"[ZeroGradV2-FIXED] Individual zero counts: {zero_counts}, avg_ratio: {avg_zero_ratio:.6f}")
                 print(f"[ZeroGradV2-FIXED] Zero ratio: {total_zeros/total_params if total_params > 0 else 0:.6f}")
             
             # Ensure zero count doesn't exceed total (shouldn't happen with correct counting)

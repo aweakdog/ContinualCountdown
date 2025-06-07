@@ -1186,13 +1186,70 @@ def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=True, origi
             combined_stats[fqn]['zero'] = zero_sum
             combined_stats[fqn]['total'] = max_total
     
+    # Calculate global totals for all parameters
+    global_zero_count = 0
+    global_param_count = 0
+    
+    # Debug: Track parameter counts by layer type
+    if verbose and rank == 0:
+        print("\n[PARAM-DEBUG] === PARAMETER COUNT BREAKDOWN ===\n")
+        mlp_params = 0
+        attn_params = 0
+        embed_params = 0
+        norm_params = 0
+        other_params = 0
+        
+        for fqn, data in combined_stats.items():
+            param_count = data['total']
+            if "mlp" in fqn:
+                mlp_params += param_count
+                if verbose and rank == 0:
+                    print(f"[PARAM-DEBUG] MLP layer: {fqn} = {param_count} params")
+            elif "attn" in fqn:
+                attn_params += param_count
+                if verbose and rank == 0:
+                    print(f"[PARAM-DEBUG] Attention layer: {fqn} = {param_count} params")
+            elif "embed" in fqn or "lm_head" in fqn:
+                embed_params += param_count
+                if verbose and rank == 0:
+                    print(f"[PARAM-DEBUG] Embedding layer: {fqn} = {param_count} params")
+            elif "norm" in fqn:
+                norm_params += param_count
+                if verbose and rank == 0:
+                    print(f"[PARAM-DEBUG] Norm layer: {fqn} = {param_count} params")
+            else:
+                other_params += param_count
+                if verbose and rank == 0:
+                    print(f"[PARAM-DEBUG] Other layer: {fqn} = {param_count} params")
+    
     for fqn, data in combined_stats.items():
         ratio = data['zero'] / (data['total'] + 1e-8) if data['total'] > 0 else 0.0
         results[fqn] = {**data, 'ratio': ratio}
+        
+        # Add to global counts
+        global_zero_count += data['zero']
+        global_param_count += data['total']
+    
+    # Set the global stats
+    results['__global__'] = {
+        'zero': global_zero_count,
+        'total': global_param_count,
+        'ratio': global_zero_count / (global_param_count + 1e-8) if global_param_count > 0 else 0.0
+    }
     
     # Optional verbose output
     if verbose and rank == 0:
-        print(f"[ZeroGradV2] Global: {results['__global__']['zero']:.0f}/{results['__global__']['total']:.0f} "
+        print("\n[PARAM-DEBUG] === PARAMETER COUNT SUMMARY ===\n")
+        if 'mlp_params' in locals():
+            print(f"[PARAM-DEBUG] MLP layers: {mlp_params} params")
+            print(f"[PARAM-DEBUG] Attention layers: {attn_params} params")
+            print(f"[PARAM-DEBUG] Embedding layers: {embed_params} params")
+            print(f"[PARAM-DEBUG] Norm layers: {norm_params} params")
+            print(f"[PARAM-DEBUG] Other layers: {other_params} params")
+            print(f"[PARAM-DEBUG] TOTAL: {mlp_params + attn_params + embed_params + norm_params + other_params} params")
+            print(f"[PARAM-DEBUG] Global count: {global_param_count} params")
+        
+        print(f"\n[ZeroGradV2] Global: {results['__global__']['zero']:.0f}/{results['__global__']['total']:.0f} "
               f"({results['__global__']['ratio']:.4f})")
         sorted_layer_items = sorted([item for item in results.items() if item[0] != '__global__'])
         for fqn, stats in sorted_layer_items:

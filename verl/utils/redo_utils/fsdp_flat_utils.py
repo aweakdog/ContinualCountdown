@@ -187,6 +187,7 @@ def analyze_all_fsdp_zero_grad_space(module, tau=0.1, verbose=True, original_sha
             if verbose:
                 print(f"[WARN] Could not analyze zero grad space for {name}: {e}")
             results[name] = None
+        break # hacky
 
     global_ratio = total_zero / (total_rows + 1e-8) if total_rows > 0 else 0.0
     results['__global__'] = {'zero': total_zero, 'total': total_rows, 'ratio': global_ratio}

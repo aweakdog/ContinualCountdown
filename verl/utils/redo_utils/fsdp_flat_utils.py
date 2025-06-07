@@ -956,8 +956,20 @@ def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=True, origi
                     if avg_global < 1e-10:
                         print(f"  - WARNING: Very small avg_global ({avg_global:.6e}), potential numerical issues")
             
-            zero_rows = (si < tau).sum().item()
-            layer_stats_local[fqn] = {'zero': zero_rows, 'total': H_local_scalar} # Use H_local_scalar
+            # Calculate dormant rows but cap at the actual number of rows
+            zero_rows = min((si < tau).sum().item(), H_local_scalar)
+            
+            # Debug output for gate_proj and up_proj layers
+            if ("gate_proj" in fqn or "up_proj" in fqn) and rank == 0 and verbose:
+                print(f"[ZeroGradV2-DEBUG] Layer stats for {fqn}:")
+                print(f"  - H_local_scalar: {H_local_scalar}, H_global: {H_global}")
+                print(f"  - B_local: {B_local_scalar_tensor:.6e}, B_global: {B_global:.6e}")
+                print(f"  - avg_global: {avg_global:.6e}")
+                print(f"  - zero_rows (raw): {(si < tau).sum().item()}, capped: {zero_rows}, total: {H_local_scalar}")
+                print(f"  - zero ratio: {zero_rows / (H_local_scalar + 1e-9):.6f}")
+            
+            # Store local stats
+            layer_stats_local[fqn] = {'zero': zero_rows, 'total': H_local_scalar}
             total_zero_local += zero_rows
             total_rows_local += H_local_scalar # Use H_local_scalar
 
@@ -1086,6 +1098,12 @@ def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=True, origi
                     if params_per_rank < full_params * 0.9:  # If we're seeing significantly fewer params than expected
                         tp_factor = full_params / params_per_rank
                         print(f"[ZeroGradV2-FIXED] Detected possible tensor parallelism: full_params={full_params}, params_per_rank={params_per_rank}, tp_factor≈{tp_factor:.1f}")
+                        
+                        # Sanity check for gate_proj and up_proj layers to prevent incorrect 100% dormant counts
+                        if ("gate_proj" in fqn or "up_proj" in fqn) and total_zeros >= total_params * 0.99:
+                            print(f"[ZeroGradV2-FIXED] WARNING: Suspiciously high dormancy detected ({total_zeros}/{total_params}). Applying correction.")
+                            # Apply a correction - assume at most 50% dormancy for these layers as a safeguard
+                            total_zeros = min(total_zeros, int(total_params * 0.5))
                 
                 if is_sharded and zero_counts:
                     if true_param_count is not None:

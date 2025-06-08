@@ -14,12 +14,21 @@ export NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-all}
 export CHECKPOINT_BASE_DIR=${CHECKPOINT_BASE_DIR:-/cpfs04/user/liyuanhang.p/tmp/checkpoints/continual_countdown3b}
 SFT_CHECKPOINT=global_step_15
 export BASE_MODEL=${BASE_MODEL:-"/cpfs04/user/liyuanhang.p/tmp/sft_model/${SFT_CHECKPOINT}"}  # Path to mounted Qwen model
+export REFERENCE_MODEL=${REFERENCE_MODEL:-"/cpfs04/user/liyuanhang.p/model/qwen3b"}  # Path to reference model for dormant neuron reset
 export N_GPUS=${N_GPUS:-8}  # Using 4 A800 GPUs
 export ROLLOUT_TP_SIZE=${ROLLOUT_TP_SIZE:-1}  # Tensor parallel size optimized for 4 GPUs
 export WANDB_MODE=${WANDB_MODE:-offline}  # Run WandB in offline mode
 export VLLM_ATTENTION_BACKEND=${VLLM_ATTENTION_BACKEND:-XFORMERS}
 export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0,1,2,3,4,5,6,7}
 export NCCL_DEBUG=${NCCL_DEBUG:-INFO}
+
+# Dormant neuron reset configuration
+export DORMANT_NEURON_RESET_ENABLED=${DORMANT_NEURON_RESET_ENABLED:-true}
+export DORMANT_NEURON_TAU=${DORMANT_NEURON_TAU:-0.1}  # Neurons with activity below this tau are considered dormant
+export DORMANT_NEURON_PERCENTAGE=${DORMANT_NEURON_PERCENTAGE:-1.0}  # Reset all dormant neurons (100%)
+export DORMANT_NEURON_RESET_FREQ=${DORMANT_NEURON_RESET_FREQ:-2}
+export DORMANT_NEURON_HYBRID_MODE=${DORMANT_NEURON_HYBRID_MODE:-false}
+export DORMANT_NEURON_REFERENCE_MODEL=${REFERENCE_MODEL}  # Use the reference model path for dormant neuron reset
 
 
 # Set up logging with backup
@@ -149,6 +158,12 @@ for group in 1; do
     ++actor_rollout_ref.actor.redo_enabled=true \
     ++actor_rollout_ref.actor.redo_metric_freq=1 \
     ++actor_rollout_ref.actor.redo_reset_freq=1 \
+    ++actor_rollout_ref.actor.dormant_neuron_reset_enabled=$DORMANT_NEURON_RESET_ENABLED \
+    ++actor_rollout_ref.actor.dormant_neuron_tau=$DORMANT_NEURON_TAU \
+    ++actor_rollout_ref.actor.dormant_neuron_percentage=$DORMANT_NEURON_PERCENTAGE \
+    ++actor_rollout_ref.actor.dormant_neuron_reset_freq=$DORMANT_NEURON_RESET_FREQ \
+    ++actor_rollout_ref.actor.dormant_neuron_hybrid_mode=$DORMANT_NEURON_HYBRID_MODE \
+    ++actor_rollout_ref.actor.dormant_neuron_reference_model=$DORMANT_NEURON_REFERENCE_MODEL \
     ++actor_rollout_ref.actor.redo_mode=threshold \
     ++actor_rollout_ref.actor.redo_tau=0.1 \
     ++critic.redo_enabled=true \

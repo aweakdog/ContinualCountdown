@@ -33,7 +33,7 @@ from verl.single_controller.base.decorator import register, Dispatch
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from verl.utils.redo_utils.fsdp_flat_utils import analyze_all_fsdp_dormant_neurons, analyze_all_fsdp_zero_grad_space, fsdp_dormant_neuron_reset_pipeline
+from verl.utils.redo_utils.fsdp_flat_utils import analyze_all_fsdp_zero_grad_space, fsdp_dormant_neuron_reset_pipeline
 import verl.utils.torch_functional as verl_F
 
 from flash_attn.bert_padding import pad_input, unpad_input, rearrange, index_first_axis
@@ -390,7 +390,7 @@ class DataParallelPPOActor(BasePPOActor):
 
         # --- FSDP dormant neuron and zero grad space analysis/reset (do only ONCE after optimizer step, BEFORE zero_grad) ---
         from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
-        from verl.utils.redo_utils.fsdp_flat_utils import analyze_all_fsdp_dormant_neurons, analyze_all_fsdp_zero_grad_space, fsdp_dormant_neuron_mask_and_reset, fsdp_dormant_neuron_reset_pipeline
+        from verl.utils.redo_utils.fsdp_flat_utils import analyze_all_fsdp_zero_grad_space, fsdp_dormant_neuron_reset_pipeline
         import torch.distributed as dist
         rank = 0
         if dist.is_available() and dist.is_initialized():

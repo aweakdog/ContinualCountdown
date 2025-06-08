@@ -5,6 +5,9 @@ Supports extracting per-layer grad stats and applying neuron-wise resets directl
 import torch
 import math
 from torch.distributed.fsdp import FlatParameter, FullyShardedDataParallel as FSDP
+from torch import nn
+import torch.distributed as dist
+from typing import Dict, List, Tuple, Set, Optional, Any, Union, Callable
 import logging
 import time
 import math

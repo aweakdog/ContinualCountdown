@@ -1337,7 +1337,7 @@ def fsdp_dormant_neuron_reset_pipeline(module: nn.Module,
     
     # Step 2: Identify dormant neurons based on zero gradient ratios
     dormant_masks = identify_dormant_neurons(
-        zero_grad_ratios, threshold=threshold, percentage=percentage, hybrid_mode=hybrid_mode
+        zero_grad_ratios, tau=threshold, percentage=percentage, hybrid_mode=hybrid_mode
     )
     
     if verbose and rank == 0:

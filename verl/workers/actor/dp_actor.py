@@ -33,7 +33,7 @@ from verl.single_controller.base.decorator import register, Dispatch
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from verl.utils.redo_utils.fsdp_flat_utils import analyze_all_fsdp_dormant_neurons, analyze_all_fsdp_zero_grad_space
+from verl.utils.redo_utils.fsdp_flat_utils import analyze_all_fsdp_dormant_neurons, analyze_all_fsdp_zero_grad_space, fsdp_dormant_neuron_reset_pipeline
 import verl.utils.torch_functional as verl_F
 
 from flash_attn.bert_padding import pad_input, unpad_input, rearrange, index_first_axis
@@ -74,6 +74,19 @@ class DataParallelPPOActor(BasePPOActor):
         self.redo_tau = getattr(self.config, 'redo_tau', 0.3)
         print(f'[DEBUG][Actor] ReDo config: enabled={self.redo_enabled}, metric_freq={self.redo_metric_freq}, '
               f'reset_freq={self.redo_reset_freq}, mode={self.redo_mode}, tau={self.redo_tau}')
+              
+        # Initialize dormant neuron reset attributes
+        self.dormant_neuron_reset_enabled = getattr(self.config, 'dormant_neuron_reset_enabled', False)
+        self.dormant_neuron_threshold = getattr(self.config, 'dormant_neuron_threshold', 0.9)
+        self.dormant_neuron_percentage = getattr(self.config, 'dormant_neuron_percentage', None)
+        self.dormant_neuron_hybrid_mode = getattr(self.config, 'dormant_neuron_hybrid_mode', False)
+        self.dormant_neuron_reset_freq = getattr(self.config, 'dormant_neuron_reset_freq', self.redo_reset_freq)
+        self.zero_grad_ratios = None  # Will store the latest zero gradient analysis results
+        
+        if self.dormant_neuron_reset_enabled:
+            print(f'[INFO][Actor] Dormant neuron reset enabled with threshold={self.dormant_neuron_threshold}, '
+                  f'percentage={self.dormant_neuron_percentage}, hybrid_mode={self.dormant_neuron_hybrid_mode}, '
+                  f'reset_freq={self.dormant_neuron_reset_freq}')
 
         # Store initial optimizer config
         self.optim_config = None
@@ -93,6 +106,37 @@ class DataParallelPPOActor(BasePPOActor):
             )
 
         self.compute_entropy_from_logits = torch.compile(verl_F.entropy_from_logits, dynamic=True)
+        
+    def _reset_dormant_neurons(self):
+        """Reset dormant neurons to reference model weights"""
+        if not self.dormant_neuron_reset_enabled or self.zero_grad_ratios is None:
+            return
+            
+        try:
+            # Get rank for logging
+            rank = torch.distributed.get_rank() if torch.distributed.is_initialized() else 0
+            
+            if rank == 0:
+                print(f"[INFO] Resetting dormant neurons at step {self.global_steps}")
+                
+            # Call the dormant neuron reset pipeline
+            fsdp_dormant_neuron_reset_pipeline(
+                module=self.actor_module,
+                zero_grad_ratios=self.zero_grad_ratios,
+                optimizer=self.actor_optimizer,
+                threshold=self.dormant_neuron_threshold,
+                percentage=self.dormant_neuron_percentage,
+                hybrid_mode=self.dormant_neuron_hybrid_mode,
+                verbose=(rank == 0)  # Only print verbose output on rank 0
+            )
+            
+            if rank == 0:
+                print(f"[INFO] Dormant neuron reset completed at step {self.global_steps}")
+                
+        except Exception as e:
+            print(f"[ERROR] Failed to reset dormant neurons: {e}")
+            import traceback
+            traceback.print_exc()
 
     @register(dispatch_mode=Dispatch.ONE_TO_ALL)
     def reset_optimizer_learning_rate(self):
@@ -346,7 +390,7 @@ class DataParallelPPOActor(BasePPOActor):
 
         # --- FSDP dormant neuron and zero grad space analysis/reset (do only ONCE after optimizer step, BEFORE zero_grad) ---
         from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
-        from verl.utils.redo_utils.fsdp_flat_utils import analyze_all_fsdp_dormant_neurons, analyze_all_fsdp_zero_grad_space, fsdp_dormant_neuron_mask_and_reset
+        from verl.utils.redo_utils.fsdp_flat_utils import analyze_all_fsdp_dormant_neurons, analyze_all_fsdp_zero_grad_space, fsdp_dormant_neuron_mask_and_reset, fsdp_dormant_neuron_reset_pipeline
         import torch.distributed as dist
         rank = 0
         if dist.is_available() and dist.is_initialized():
@@ -429,6 +473,13 @@ class DataParallelPPOActor(BasePPOActor):
                 if rank == 0:
                     metrics['actor/zero_gradspace_ratio'] = zero_gradspace_ratio_avg
                     print(f"[ZeroGradV2-Metrics][After Optim Step][Step {self.global_steps}] Aggregated Zero Grad Space Ratio: {zero_gradspace_ratio_avg:.4f}")
+                    
+                # Store zero_grad_ratios for dormant neuron reset
+                self.zero_grad_ratios = zero_grad_stats
+                
+                # Check if we need to reset dormant neurons
+                if self.dormant_neuron_reset_enabled and (self.global_steps % self.dormant_neuron_reset_freq == 0):
+                    self._reset_dormant_neurons()
         # --- END FSDP analysis/reset ---
 
         self.actor_optimizer.zero_grad()

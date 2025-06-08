@@ -51,6 +51,54 @@ All experiments are containerized using Docker for reproducibility. The setup in
    - `curriculum-trainer-1.5b`: Runs curriculum learning experiments with Qwen 1.5B
    - `evaluator`: Evaluates training results
 
+## Dormant Neuron Reset
+
+The project implements a dormant neuron reset mechanism to address the issue of dormant neurons in continual learning. This feature identifies neurons with consistently zero gradients and resets them to their reference values.
+
+### How It Works
+
+1. **Reference Model Loading**:
+   - A reference model is loaded at the start of training
+   - The reference model is stored in CPU memory to save GPU resources
+   - By default, the reference model path is `/cpfs04/user/liyuanhang.p/model/qwen3b`
+
+2. **Dormant Neuron Identification**:
+   - Neurons are analyzed based on zero gradient ratios
+   - Analysis is performed on 2D parameters (weight matrices)
+   - Supports threshold-based, percentage-based, or hybrid identification modes
+
+3. **Reset Mechanism**:
+   - Dormant neurons' weights are reset to match the reference model
+   - Corresponding optimizer states are also reset
+   - Reset occurs at configurable intervals during training
+
+### Configuration
+
+The dormant neuron reset functionality can be configured through environment variables:
+
+```bash
+# Enable/disable dormant neuron reset
+export DORMANT_NEURON_RESET_ENABLED=true
+
+# Threshold (tau) for identifying dormant neurons (0.0-1.0)
+# Neurons with normalized activity below this tau are considered dormant
+export DORMANT_NEURON_TAU=0.1
+
+# Percentage of dormant neurons to reset (0.0-1.0, default 1.0 for all dormant neurons)
+export DORMANT_NEURON_PERCENTAGE=1.0
+
+# How often to reset dormant neurons (in steps)
+export DORMANT_NEURON_RESET_FREQ=100
+
+# Whether to use hybrid mode (combining threshold and percentage)
+export DORMANT_NEURON_HYBRID_MODE=false
+
+# Path to the reference model
+export REFERENCE_MODEL=/path/to/reference/model
+```
+
+These settings are passed to the training process and can be customized for each experiment.
+
 ## Curriculum Learning
 
 The curriculum learning approach trains the model on operator groups in a progressive manner, from simple to complex operations. This is implemented using a single training run that processes files in a specific order.
@@ -197,8 +245,10 @@ mkdir -p wandb logs metrics
 2. Configure training (optional):
 ```bash
 # Edit docker-compose.yml to set:
-- BASE_MODEL path
+- BASE_MODEL path (training model)
+- REFERENCE_MODEL path (for dormant neuron reset)
 - Number of GPUs
+- Dormant neuron reset parameters
 - Tensor parallel size
 ```
 

@@ -901,8 +901,28 @@ def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=True, origi
         total_rows_local = 0
         
         for i, (fqn, H_local_scalar, B_local_scalar_tensor, A_local_row_tensor) in enumerate(global_contributions):
-            H_global = H_global_tensor[i].item()
+            # Raw H_global from all-reduce
+            raw_H_global = H_global_tensor[i].item()
             B_global = B_global_tensor[i].item()
+            
+            # Fix H_global calculation for tensor parallelism
+            # For embedding layers, H_global should be equal to H_local because it's column-wise sharded
+            # For MLP layers, H_global should be the sum of H_local across ranks
+            if "embed_tokens" in fqn and H_local_scalar > 0:
+                # For embedding, each rank has the full vocabulary size (rows)
+                # The embedding dimension (columns) is split across ranks
+                H_global = H_local_scalar
+                if rank == 0 and verbose and raw_H_global != H_global:
+                    print(f"[ZeroGradV2-FIX] Layer {fqn}: Fixing embedding H_global from {raw_H_global} to {H_global}")
+            elif ("mlp" in fqn or "attn" in fqn) and H_local_scalar > 0 and raw_H_global > H_local_scalar * 10:
+                # For MLP/attention layers, rows are typically sharded across ranks
+                # A reasonable estimate is the sum of local rows across ranks
+                H_global = H_local_scalar * dist.get_world_size()
+                if rank == 0 and verbose:
+                    print(f"[ZeroGradV2-FIX] Layer {fqn}: Fixing MLP/attention H_global from {raw_H_global} to {H_global}")
+            else:
+                # Use the raw H_global for other layers
+                H_global = raw_H_global
             
             if H_global == 0 or B_global == 0:
                 # Entire layer has no gradient or no rows globally

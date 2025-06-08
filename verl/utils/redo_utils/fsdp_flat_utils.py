@@ -1115,6 +1115,13 @@ def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=True, origi
             total_params = true_param_count if true_param_count is not None else max_param_count
             total_zeros = 0
             
+            # Initialize these variables to avoid reference-before-assignment errors
+            zero_counts = []
+            param_counts = []
+            zero_ratios = []
+            shard_zero_ratios = []
+            avg_zero_ratio = 0.0
+            
             # For sharded parameters, we need special handling
             if is_sharded:
                 # For sharded parameters, we need to compute a weighted average of zero ratios
@@ -1234,13 +1241,16 @@ def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=True, origi
     global_param_count = 0
     
     # Debug: Track parameter counts by layer type
+    # Initialize these variables regardless of verbose setting to avoid reference errors
+    mlp_params = 0
+    attn_params = 0
+    embed_params = 0
+    norm_params = 0
+    other_params = 0
+    param_counts = {}
+    
     if verbose and rank == 0:
         print("\n[PARAM-DEBUG] === PARAMETER COUNT BREAKDOWN ===\n")
-        mlp_params = 0
-        attn_params = 0
-        embed_params = 0
-        norm_params = 0
-        other_params = 0
         
         for fqn, data in combined_stats.items():
             param_count = data['total']

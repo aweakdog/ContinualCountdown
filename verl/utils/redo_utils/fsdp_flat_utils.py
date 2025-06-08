@@ -924,10 +924,9 @@ def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=True, origi
                     if avg_global < 1e-10 and rank == 0 and verbose:
                         print(f"[ZeroGradV2-FIX] Layer {fqn}: Very small avg_global ({avg_global:.2e}), potential numerical issues")
                 
-                # Debug embedding layer specifically
-                if "embed_tokens" in fqn and rank == 0 and verbose:
-                    # Print detailed stats for embedding layer
-                    print(f"[ZeroGradV2-DEBUG] Embedding layer stats for {fqn}:")
+                # Print detailed debug info for all layers
+                if rank == 0 and verbose:
+                    print(f"[ZeroGradV2-DEBUG] Layer stats for {fqn}:")
                     print(f"  - H_local_scalar: {H_local_scalar}, H_global: {H_global}")
                     print(f"  - B_local: {B_local_scalar_tensor:.6e}, B_global: {B_global:.6e}")
                     print(f"  - avg_global: {avg_global:.6e}")
@@ -936,34 +935,37 @@ def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=True, origi
                     print(f"  - tau: {tau}")
                     print(f"  - (si < tau).sum(): {(si < tau).sum().item()}, total: {si.numel()}")
                     print(f"  - zero ratio: {(si < tau).sum().item() / (si.numel() + 1e-9):.6f}")
-                    
-                    # Check if all gradients are exactly zero
-                    if A_local_row_tensor.abs().max().item() == 0:
-                        print(f"  - WARNING: All embedding gradients are EXACTLY zero!")
-                    
-                    # Check for numerical issues
-                    if avg_global < 1e-10:
-                        print(f"  - WARNING: Very small avg_global ({avg_global:.6e}), potential numerical issues")
+                # Check if all gradients are exactly zero
+                if A_local_row_tensor.abs().max().item() == 0 and rank == 0 and verbose:
+                    print(f"  - WARNING: All gradients are EXACTLY zero!")
+                
+                # Check for numerical issues
+                if avg_global < 1e-10 and rank == 0 and verbose:
+                    print(f"  - WARNING: Very small avg_global ({avg_global:.6e}), potential numerical issues")
             
             # Calculate dormant rows but cap at the actual number of rows
             raw_zero_rows = (si < tau).sum().item()
             zero_rows = min(raw_zero_rows, H_local_scalar)
             
-            # Safety check - if we're detecting too many zeros (>95%), it might be a numerical issue
+            # Warning only - if we're detecting too many zeros (>95%), it might be a numerical issue
             if zero_rows > 0.95 * H_local_scalar and H_local_scalar > 10 and "embed_tokens" not in fqn:
                 if rank == 0 and verbose:
                     print(f"[ZeroGradV2-FIX] WARNING: Layer {fqn} has {zero_rows}/{H_local_scalar} ({zero_rows/H_local_scalar*100:.1f}%) dormant neurons")
                     print(f"[ZeroGradV2-FIX]   - This is suspiciously high and might indicate a numerical issue")
                     print(f"[ZeroGradV2-FIX]   - A_local_row_tensor stats: min={A_local_row_tensor.min().item():.2e}, max={A_local_row_tensor.max().item():.2e}, mean={A_local_row_tensor.mean().item():.2e}")
                     print(f"[ZeroGradV2-FIX]   - si stats: min={si.min().item():.2e}, max={si.max().item():.2e}, mean={si.mean().item():.2e}, tau={tau:.2e}")
+                    
+                    # Additional layer-specific warning
+                    if "mlp" in fqn:
+                        print(f"[ZeroGradV2-FIX]   - High dormancy in MLP layer: {zero_rows/H_local_scalar:.4f}")
+                    elif "attn" in fqn:
+                        print(f"[ZeroGradV2-FIX]   - High dormancy in attention layer: {zero_rows/H_local_scalar:.4f}")
+                    else:
+                        print(f"[ZeroGradV2-FIX]   - High dormancy in other layer: {zero_rows/H_local_scalar:.4f}")
             
-            # Debug output for gate_proj and up_proj layers
-            if ("gate_proj" in fqn or "up_proj" in fqn) and rank == 0 and verbose:
-                print(f"[ZeroGradV2-DEBUG] Layer stats for {fqn}:")
-                print(f"  - H_local_scalar: {H_local_scalar}, H_global: {H_global}")
-                print(f"  - B_local: {B_local_scalar_tensor:.6e}, B_global: {B_global:.6e}")
-                print(f"  - avg_global: {avg_global:.6e}")
-                print(f"  - zero_rows (raw): {(si < tau).sum().item()}, capped: {zero_rows}, total: {H_local_scalar}")
+            # Debug output for all layers - now moved to earlier in the code
+            if rank == 0 and verbose:
+                print(f"  - zero_rows (raw): {raw_zero_rows}, capped: {zero_rows}, total: {H_local_scalar}")
                 print(f"  - zero ratio: {zero_rows / (H_local_scalar + 1e-9):.6f}")
             
             # Store local stats
@@ -1066,10 +1068,14 @@ def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=True, origi
                         print(f"[ZeroGradV2-FIX]   - This might indicate a numerical issue or incorrect threshold")
                         print(f"[ZeroGradV2-FIX]   - Per-rank zero ratios: {zero_ratios}")
                         print(f"[ZeroGradV2-FIX]   - Per-rank param counts: {param_counts}")
-                        # Cap the ratio at a reasonable value to avoid extreme results
-                        if "mlp" in fqn or "attn" in fqn:
-                            weighted_avg_ratio = min(weighted_avg_ratio, 0.5)  # Cap at 50% for MLP/attention layers
-                            print(f"[ZeroGradV2-FIX]   - Capping ratio at {weighted_avg_ratio:.4f} for safety")
+                        
+                        # Keep the warning but don't cap the ratio as requested
+                        if "mlp" in fqn:
+                            print(f"[ZeroGradV2-FIX]   - High dormancy in MLP layer: {weighted_avg_ratio:.4f}")
+                        elif "attn" in fqn:
+                            print(f"[ZeroGradV2-FIX]   - High dormancy in attention layer: {weighted_avg_ratio:.4f}")
+                        else:
+                            print(f"[ZeroGradV2-FIX]   - High dormancy in other layer: {weighted_avg_ratio:.4f}")
                     
                     # Scale to the true parameter count if available, otherwise use observed total
                     if true_param_count is not None and true_param_count > 0:
@@ -1190,6 +1196,52 @@ def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=True, origi
     # Optional verbose output
     if verbose and rank == 0:
         print("\n[PARAM-DEBUG] === PARAMETER COUNT SUMMARY ===\n")
+        
+        # Print dormant neuron summary for each layer
+        print("\n[DORMANT-SUMMARY] === DORMANT NEURON SUMMARY ===\n")
+        print(f"{'Layer':<50} {'Dormant':<10} {'Total':<10} {'Ratio':<10}")
+        print("-" * 80)
+        
+        # Sort layers by type for better readability
+        layer_groups = {
+            'embed': [],
+            'attn': [],
+            'mlp': [],
+            'norm': [],
+            'other': []
+        }
+        
+        for fqn, data in results.items():
+            if fqn == '__global__':
+                continue
+                
+            if "embed" in fqn or "lm_head" in fqn:
+                layer_groups['embed'].append((fqn, data))
+            elif "attn" in fqn:
+                layer_groups['attn'].append((fqn, data))
+            elif "mlp" in fqn:
+                layer_groups['mlp'].append((fqn, data))
+            elif "norm" in fqn:
+                layer_groups['norm'].append((fqn, data))
+            else:
+                layer_groups['other'].append((fqn, data))
+        
+        # Print each group
+        for group_name, group_items in layer_groups.items():
+            if group_items:
+                print(f"\n--- {group_name.upper()} LAYERS ---")
+                for fqn, data in sorted(group_items, key=lambda x: x[0]):
+                    zero_count = data['zero']
+                    total_count = data['total']
+                    ratio = data['ratio']
+                    print(f"{fqn:<50} {zero_count:<10} {total_count:<10} {ratio:.6f}")
+        
+        # Print global summary
+        print("\n--- GLOBAL SUMMARY ---")
+        global_data = results['__global__']
+        print(f"{'TOTAL':<50} {global_data['zero']:<10} {global_data['total']:<10} {global_data['ratio']:.6f}")
+        print("\n" + "-" * 80)
+        
         if 'mlp_params' in locals():
             print(f"[PARAM-DEBUG] MLP layers: {mlp_params} params")
             print(f"[PARAM-DEBUG] Attention layers: {attn_params} params")

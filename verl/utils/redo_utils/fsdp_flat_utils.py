@@ -933,7 +933,20 @@ def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=True, origi
                 si = torch.zeros(H_local_scalar, device=device) # Use H_local_scalar for shape
             else:
                 avg_global = B_global / H_global
-                si = A_local_row_tensor / (avg_global + 1e-9)
+                
+                # Check if all gradients are very close to zero (numerical stability)
+                if A_local_row_tensor.abs().max().item() < 1e-10:
+                    # All gradients are effectively zero
+                    si = torch.zeros(H_local_scalar, device=device)
+                    if rank == 0 and verbose:
+                        print(f"[ZeroGradV2-FIX] Layer {fqn}: All gradients are effectively zero (max={A_local_row_tensor.abs().max().item():.2e})")
+                else:
+                    # Normal case - compute normalized gradient metric
+                    si = A_local_row_tensor / (avg_global + 1e-9)
+                    
+                    # Safety check for numerical issues
+                    if avg_global < 1e-10 and rank == 0 and verbose:
+                        print(f"[ZeroGradV2-FIX] Layer {fqn}: Very small avg_global ({avg_global:.2e}), potential numerical issues")
                 
                 # Debug embedding layer specifically
                 if "embed_tokens" in fqn and rank == 0 and verbose:
@@ -957,7 +970,16 @@ def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=True, origi
                         print(f"  - WARNING: Very small avg_global ({avg_global:.6e}), potential numerical issues")
             
             # Calculate dormant rows but cap at the actual number of rows
-            zero_rows = min((si < tau).sum().item(), H_local_scalar)
+            raw_zero_rows = (si < tau).sum().item()
+            zero_rows = min(raw_zero_rows, H_local_scalar)
+            
+            # Safety check - if we're detecting too many zeros (>95%), it might be a numerical issue
+            if zero_rows > 0.95 * H_local_scalar and H_local_scalar > 10 and "embed_tokens" not in fqn:
+                if rank == 0 and verbose:
+                    print(f"[ZeroGradV2-FIX] WARNING: Layer {fqn} has {zero_rows}/{H_local_scalar} ({zero_rows/H_local_scalar*100:.1f}%) dormant neurons")
+                    print(f"[ZeroGradV2-FIX]   - This is suspiciously high and might indicate a numerical issue")
+                    print(f"[ZeroGradV2-FIX]   - A_local_row_tensor stats: min={A_local_row_tensor.min().item():.2e}, max={A_local_row_tensor.max().item():.2e}, mean={A_local_row_tensor.mean().item():.2e}")
+                    print(f"[ZeroGradV2-FIX]   - si stats: min={si.min().item():.2e}, max={si.max().item():.2e}, mean={si.mean().item():.2e}, tau={tau:.2e}")
             
             # Debug output for gate_proj and up_proj layers
             if ("gate_proj" in fqn or "up_proj" in fqn) and rank == 0 and verbose:
@@ -1091,7 +1113,6 @@ def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=True, origi
             
             # Determine if this parameter is sharded across ranks
             is_sharded = ranks_with_param > 1 and max_param_count > 0
-            
             # Initialize counters
             # Use the true parameter count from original_shapes_map if available
             total_params = true_param_count if true_param_count is not None else max_param_count
@@ -1099,27 +1120,36 @@ def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=True, origi
             
             # For sharded parameters, we need special handling
             if is_sharded:
-                # Collect zero counts and totals from each rank that has the parameter
+                # For sharded parameters, we need to compute a weighted average of zero ratios
+                # across all ranks that have this parameter
                 zero_counts = []
-                shard_zero_ratios = []
-                shard_totals = []
+                param_counts = []
+                zero_ratios = []
                 
                 for stats_dict_from_rank in all_layer_stats_gathered:
                     if stats_dict_from_rank and fqn in stats_dict_from_rank:
                         data = stats_dict_from_rank[fqn]
-                        if data['total'] > 0:  # Only include ranks with parameters
-                            zero_count = data['zero']
-                            shard_total = data['total']
-                            zero_counts.append(zero_count)
-                            shard_totals.append(shard_total)
-                            shard_zero_ratios.append(zero_count / shard_total)
+                        if data['total'] > 0:  # Only consider ranks with parameters
+                            zero_counts.append(data['zero'])
+                            param_counts.append(data['total'])
+                            zero_ratios.append(data['zero'] / data['total'] if data['total'] > 0 else 0.0)
                 
-                # Calculate the weighted average zero ratio based on shard sizes
-                if shard_zero_ratios and sum(shard_totals) > 0:
-                    # Weight each shard's ratio by its relative size
-                    weighted_ratios = [ratio * (total / total_observed_params) 
-                                      for ratio, total in zip(shard_zero_ratios, shard_totals)]
-                    weighted_avg_ratio = sum(weighted_ratios)
+                if param_counts:  # Only proceed if we have valid data
+                    # Compute weighted average of zero ratios
+                    weights = [count / sum(param_counts) for count in param_counts]
+                    weighted_avg_ratio = sum(ratio * weight for ratio, weight in zip(zero_ratios, weights))
+                    
+                    # Safety check - if all ranks report very high zero ratios (>95%) for non-embedding layers,
+                    # it might be a numerical issue or incorrect threshold
+                    if weighted_avg_ratio > 0.95 and "embed_tokens" not in fqn and rank == 0 and verbose:
+                        print(f"[ZeroGradV2-FIX] WARNING: Sharded layer {fqn} has suspiciously high zero ratio ({weighted_avg_ratio:.4f})")
+                        print(f"[ZeroGradV2-FIX]   - This might indicate a numerical issue or incorrect threshold")
+                        print(f"[ZeroGradV2-FIX]   - Per-rank zero ratios: {zero_ratios}")
+                        print(f"[ZeroGradV2-FIX]   - Per-rank param counts: {param_counts}")
+                        # Cap the ratio at a reasonable value to avoid extreme results
+                        if "mlp" in fqn or "attn" in fqn:
+                            weighted_avg_ratio = min(weighted_avg_ratio, 0.5)  # Cap at 50% for MLP/attention layers
+                            print(f"[ZeroGradV2-FIX]   - Capping ratio at {weighted_avg_ratio:.4f} for safety")
                     
                     # Scale to the true parameter count if available, otherwise use observed total
                     if true_param_count is not None and true_param_count > 0:

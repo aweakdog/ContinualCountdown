@@ -99,7 +99,7 @@ def analyze_all_fsdp_dormant_neurons(module, mode='threshold', tau=0.1, verbose=
     #    print(f"[DormantNeuron][ALL] total_dormant={total_dormant}, total_params={total_count}, ratio={total_dormant/(total_count+1e-8):.6f}")
     return results
 
-def analyze_all_fsdp_zero_grad_space(module, tau=0.1, verbose=True, original_shapes_map=None, top_level_prefix=None):
+def analyze_all_fsdp_zero_grad_space(module, tau=0.1, verbose=True, original_shapes_map=None, top_level_prefix=None, skip_mlp=True):
     """
     Analyze all leaf FSDP-wrapped submodules for zero grad space ratio.
     Returns a dict mapping module names to their zero grad stats and the global aggregate.
@@ -170,7 +170,8 @@ def analyze_all_fsdp_zero_grad_space(module, tau=0.1, verbose=True, original_sha
         try:
             stats = compute_fsdp_zero_grad_space_ratio(submodule, tau=tau, verbose=verbose, 
                                                       original_shapes_map=original_shapes_map, 
-                                                      fqn_prefix=name)
+                                                      fqn_prefix=name,
+                                                      skip_mlp=skip_mlp)
             if stats is not None and '__global__' in stats:
                 submodule_global_stats = stats['__global__']
                 total_zero += submodule_global_stats.get('zero', 0)
@@ -189,8 +190,17 @@ def analyze_all_fsdp_zero_grad_space(module, tau=0.1, verbose=True, original_sha
             results[name] = None
         break # hacky
 
+    # Calculate the aggregated ratio from the total counts
     global_ratio = total_zero / (total_rows + 1e-8) if total_rows > 0 else 0.0
-    results['__global__'] = {'zero': total_zero, 'total': total_rows, 'ratio': global_ratio}
+    
+    # Create the global stats dictionary with the aggregated ratio
+    results['__global__'] = {
+        'zero': total_zero, 
+        'total': total_rows, 
+        'ratio': global_ratio,
+        'aggregated_ratio': global_ratio  # Add aggregated_ratio key explicitly for dp_actor.py
+    }
+    
     return results
 
 def redo_reset_all_fsdp_layers(module, mode='threshold', tau=0.1, verbose=True, use_lecun_init=True, original_shapes_map=None):
@@ -574,7 +584,7 @@ def get_shard_overlap_slices(entry, my_global_start, my_global_end, flat_param_n
             print(f"[ERROR] Unsupported shape {shape} for entry {entry.get('fqn', None) or entry.get('name', None)}.")
         return None
 
-def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=True, original_shapes_map=None, debug_mlp_sharding=True, fqn_prefix=""):
+def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=True, original_shapes_map=None, debug_mlp_sharding=True, fqn_prefix="", skip_mlp=True):  # Added skip_mlp parameter with default True
     """
     Computes the fraction of output neurons (rows) in each 2D param whose normalized gradient metric si = A/(B/H) is below tau,
     using GLOBAL layer statistics (B_global and H_global) for consistent metric calculation.
@@ -669,6 +679,15 @@ def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=True, origi
                 print(f"[ZeroGradV2-Debug][Rank {rank}] Param {full_fqn_for_map}: CONTRIBUTING ZEROS (not in local_params).")
         else:
             param = local_params[full_fqn_for_map]
+            
+            # Skip MLP layers if requested
+            if skip_mlp and ("mlp" in full_fqn_for_map or "mlp." in full_fqn_for_map):
+                skipped_mlp_layer = getattr(locals(), 'skipped_mlp_layer', 0) + 1
+                locals()['skipped_mlp_layer'] = skipped_mlp_layer
+                if rank == 0 and verbose and skipped_mlp_layer < 5:
+                    print(f"[ZeroGradV2-Debug][Rank {rank}] Param {full_fqn_for_map}: SKIPPING (MLP layer temporarily excluded)")
+                continue
+                
             if param.grad is None:
                 skipped_grad_none += 1
                 if rank == 0 and verbose and skipped_grad_none < 5:

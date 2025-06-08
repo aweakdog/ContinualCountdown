@@ -678,30 +678,6 @@ def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=True, origi
                 original_shape = original_shapes_map.get(full_fqn_for_map) if original_shapes_map else None
                 original_shape_str = str(original_shape) if original_shape else "N/A (no map)"
                 param_dim_to_check = len(original_shape) if original_shape else param.dim()
-                
-                # Add detailed debugging for embed_tokens parameter
-                if rank == 0 and verbose and "embed_tokens" in full_fqn_for_map:
-                    print(f"[ZeroGradV2-Debug][Rank {rank}] Param {full_fqn_for_map}: Original shape from map: {original_shape}")
-                    print(f"[ZeroGradV2-Debug][Rank {rank}] Param {full_fqn_for_map}: Grad shape: {param.grad.shape}, numel: {param.grad.numel()}")
-                    if original_shape and len(original_shape) == 2:
-                        print(f"[ZeroGradV2-Debug][Rank {rank}] Param {full_fqn_for_map}: Expected numel from original shape: {original_shape[0] * original_shape[1]}")
-                        print(f"[ZeroGradV2-Debug][Rank {rank}] Param {full_fqn_for_map}: Actual grad numel: {param.grad.numel()}, match: {param.grad.numel() == original_shape[0] * original_shape[1]}")
-                        if param.grad.numel() != original_shape[0] * original_shape[1]:
-                            print(f"[ZeroGradV2-Debug][Rank {rank}] Param {full_fqn_for_map}: MISMATCH in numel! This could be due to sharding.")
-                            if param.grad.numel() < original_shape[0] * original_shape[1]:
-                                shard_ratio = param.grad.numel() / (original_shape[0] * original_shape[1])
-                                print(f"[ZeroGradV2-Debug][Rank {rank}] Param {full_fqn_for_map}: Possible shard ratio: {shard_ratio:.4f}")
-                                possible_shard_count = 1 / shard_ratio if shard_ratio > 0 else 'unknown'
-                                print(f"[ZeroGradV2-Debug][Rank {rank}] Param {full_fqn_for_map}: Possibly sharded across {possible_shard_count} ranks")
-                        if param.grad.dim() == 1 and original_shape[1] > 0 and param.grad.numel() % original_shape[1] == 0:
-                            print(f"[ZeroGradV2-Debug][Rank {rank}] Param {full_fqn_for_map}: Can reshape to [{param.grad.numel() // original_shape[1]}, {original_shape[1]}]")
-                        else:
-                            print(f"[ZeroGradV2-Debug][Rank {rank}] Param {full_fqn_for_map}: Cannot reshape using original width {original_shape[1]}")
-                    if param.grad.numel() % 2048 == 0:  # Assuming embedding_dim is 2048 for Qwen2.5
-                        print(f"[ZeroGradV2-Debug][Rank {rank}] Param {full_fqn_for_map}: Could reshape to [{param.grad.numel() // 2048}, 2048] if embedding_dim=2048")
-                    if param.grad.numel() % 1024 == 0:  # Alternative embedding_dim
-                        print(f"[ZeroGradV2-Debug][Rank {rank}] Param {full_fqn_for_map}: Could reshape to [{param.grad.numel() // 1024}, 1024] if embedding_dim=1024")
-                
                 # Check if parameter has the right dimension
                 if param_dim_to_check != 2:
                     skipped_dim_not_2 += 1
@@ -1016,62 +992,6 @@ def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=True, origi
     # Step 5: Aggregate per-layer statistics globally
     all_layer_stats_gathered = [None] * dist.get_world_size()
     dist.all_gather_object(all_layer_stats_gathered, layer_stats_local) 
-    
-    # Debug MLP sharding if requested
-    if debug_mlp_sharding and rank == 0:
-        print("\n[SHARD-DEBUG] === MLP SHARDING ANALYSIS ===\n")
-        # Collect all MLP layers across ranks
-        mlp_layers = {}
-        for rank_id, stats_dict_from_rank in enumerate(all_layer_stats_gathered):
-            if not stats_dict_from_rank:
-                continue
-                
-            for fqn, data in stats_dict_from_rank.items():
-                if "mlp." in fqn and ("gate_proj" in fqn or "up_proj" in fqn or "down_proj" in fqn):
-                    if fqn not in mlp_layers:
-                        mlp_layers[fqn] = {}
-                    
-                    # Store this rank's view of the layer
-                    mlp_layers[fqn][rank_id] = {
-                        "total": data["total"],
-                        "zero": data["zero"]
-                    }
-        
-        # Analyze sharding for each MLP layer
-        for fqn, rank_data in mlp_layers.items():
-            print(f"[SHARD-DEBUG] Layer: {fqn}")
-            print(f"  - Present on {len(rank_data)} ranks out of {dist.get_world_size()}")
-            
-            # Get original shape if available
-            orig_shape = "unknown"
-            full_params = 0
-            if original_shapes_map and fqn in original_shapes_map:
-                orig_shape = original_shapes_map[fqn]
-                if len(orig_shape) >= 2:
-                    full_params = orig_shape[0] * orig_shape[1]
-            print(f"  - Original shape: {orig_shape}, Full params: {full_params}")
-            
-            # Analyze parameter distribution
-            total_observed = sum(data["total"] for data in rank_data.values())
-            print(f"  - Total observed parameters: {total_observed} ({total_observed/full_params*100:.2f}% of full)")
-            
-            # Show per-rank distribution
-            print(f"  - Per-rank distribution:")
-            for rank_id, data in rank_data.items():
-                print(f"    Rank {rank_id}: {data['total']} params ({data['total']/full_params*100:.2f}% of full)")
-            
-            # Calculate sharding factor
-            if full_params > 0 and total_observed > 0:
-                sharding_factor = full_params / total_observed
-                print(f"  - Effective sharding factor: {sharding_factor:.2f}x")
-                
-                # Estimate tensor parallel size
-                if sharding_factor > dist.get_world_size() * 0.9:
-                    est_tp = int(round(sharding_factor / dist.get_world_size()))
-                    print(f"  - Estimated tensor parallel size: {est_tp}")
-            
-            print("")
-    
     
     # First, collect all unique FQNs across all ranks
     all_fqns = set()

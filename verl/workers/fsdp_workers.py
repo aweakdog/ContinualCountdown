@@ -334,6 +334,22 @@ class ActorRolloutRefWorker(Worker):
         override_model_config = OmegaConf.to_container(self.config.model.get('override_config', OmegaConf.create()))
 
         use_remove_padding = self.config.model.get('use_remove_padding', False)
+        
+        # Load reference model for dormant neuron reset if enabled
+        from verl.utils.redo_utils.fsdp_flat_utils import load_reference_model
+        reference_model_enabled = self.config.actor.get('dormant_neuron_reset_enabled', False)
+        reference_model_path = self.config.actor.get('dormant_neuron_reference_model', self.config.model.path)
+        
+        if reference_model_enabled and self.rank == 0:
+            print(f"[INFO] Dormant neuron reset is enabled. Loading reference model from {reference_model_path}")
+        
+        if reference_model_enabled:
+            # Load reference model on CPU to save GPU memory
+            load_reference_model(
+                model_path=reference_model_path,
+                trust_remote_code=self.config.model.get('trust_remote_code', False),
+                device='cpu'
+            )
 
         if self._is_actor or self._is_rollout:
             # we need the model for actor and rollout
@@ -368,16 +384,20 @@ class ActorRolloutRefWorker(Worker):
             with open_dict(self.config.actor):
                 self.config.actor.use_remove_padding = use_remove_padding
             self.actor = DataParallelPPOActor(config=self.config.actor,
-                                              actor_module=self.actor_module_fsdp,
-                                              actor_optimizer=self.actor_optimizer,
-                                              original_param_shapes=self.original_param_shapes) # <<< Cascade: Pass original_param_shapes
-            # (Re-)initialize verl-compatible analyzer and redo for actor after checkpoint/model load
-            self.actor_redo_enabled = getattr(self.config, 'redo_enabled', True)
-            self.actor_redo_tau = getattr(self.config, 'redo_tau', 0.1)
-            self.actor_redo_reset_freq = getattr(self.config, 'redo_reset_freq', 1000)
-            self.actor_redo_metric_freq = getattr(self.config, 'redo_metric_freq', 1)
-            #if self.actor_redo_enabled:
-            #    self.actor_gradredo = VerlGradientReDo(self.actor_module_fsdp, tau=self.actor_redo_tau, frequency=self.actor_redo_reset_freq, optimizer=self.actor_optimizer)
+                                          actor_module=self.actor_module_fsdp,
+                                          actor_optimizer=self.actor_optimizer,
+                                          original_param_shapes=self.original_param_shapes) # <<< Cascade: Pass original_param_shapes
+        # (Re-)initialize verl-compatible analyzer and redo for actor after checkpoint/model load
+        self.actor_redo_enabled = self.config.actor.get('redo_enabled', True)
+        self.actor_redo_tau = self.config.actor.get('redo_tau', 0.1)
+        self.actor_redo_reset_freq = self.config.actor.get('redo_reset_freq', 1000)
+        self.actor_redo_metric_freq = self.config.actor.get('redo_metric_freq', 1)
+        self.actor_dormant_neuron_reset_enabled = self.config.actor.get('dormant_neuron_reset_enabled', False)
+        self.actor_dormant_neuron_threshold = self.config.actor.get('dormant_neuron_threshold', 0.9)
+        self.actor_dormant_neuron_percentage = self.config.actor.get('dormant_neuron_percentage', None)
+        self.actor_dormant_neuron_hybrid_mode = self.config.actor.get('dormant_neuron_hybrid_mode', False)
+        #if self.actor_redo_enabled:
+        #    self.actor_gradredo = VerlGradientReDo(self.actor_module_fsdp, tau=self.actor_redo_tau, frequency=self.actor_redo_reset_freq, optimizer=self.actor_optimizer)
 
         if self._is_rollout:
             self.rollout, self.rollout_sharding_manager = self._build_rollout()

@@ -1300,7 +1300,18 @@ def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=True, origi
             # all_layer_stats_gathered should contain 'row_ratios' because layer_stats_local was populated with it
             for stats_from_rank in all_layer_stats_gathered:
                 if stats_from_rank and fqn_item in stats_from_rank and 'row_ratios' in stats_from_rank[fqn_item]:
-                    retrieved_row_ratios = stats_from_rank[fqn_item]['row_ratios']
+                    current_rr_candidate = stats_from_rank[fqn_item]['row_ratios']
+                    # ---- START DEBUG PRINT (NON-SKIPPED) ----
+                    if rank == 0 and verbose and current_rr_candidate is not None:
+                        _rr_type = type(current_rr_candidate)
+                        _rr_shape = current_rr_candidate.shape if hasattr(current_rr_candidate, 'shape') else 'N/A (not a tensor or None)'
+                        _rr_device = current_rr_candidate.device if hasattr(current_rr_candidate, 'device') else 'N/A'
+                        # Check if it's a tensor and has data to avoid printing for empty tensors if they somehow appear
+                        _has_data = (isinstance(current_rr_candidate, torch.Tensor) and current_rr_candidate.numel() > 0)
+                        if _has_data:
+                             print(f"[DEBUG_RR_FOUND_NON_SKIPPED] Rank {rank}, FQN {fqn_item}: Found row_ratios in gathered stats. Type: {_rr_type}, Shape: {_rr_shape}, Device: {_rr_device}")
+                    # ---- END DEBUG PRINT (NON-SKIPPED) ----
+                    retrieved_row_ratios = current_rr_candidate
                     if retrieved_row_ratios is not None:
                         break 
             

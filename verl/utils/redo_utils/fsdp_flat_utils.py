@@ -1103,6 +1103,7 @@ def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=True, origi
                 zero_counts = []
                 param_counts = []
                 zero_ratios = []
+                shard_zero_ratios = []  # Store zero ratios per shard for debugging
                 
                 for stats_dict_from_rank in all_layer_stats_gathered:
                     if stats_dict_from_rank and fqn in stats_dict_from_rank:
@@ -1110,7 +1111,9 @@ def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=True, origi
                         if data['total'] > 0:  # Only consider ranks with parameters
                             zero_counts.append(data['zero'])
                             param_counts.append(data['total'])
-                            zero_ratios.append(data['zero'] / data['total'] if data['total'] > 0 else 0.0)
+                            zero_ratio = data['zero'] / data['total'] if data['total'] > 0 else 0.0
+                            zero_ratios.append(zero_ratio)
+                            shard_zero_ratios.append(f"{zero_ratio:.4f}")
                 
                 if param_counts:  # Only proceed if we have valid data
                     # Compute weighted average of zero ratios
@@ -1148,13 +1151,22 @@ def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=True, origi
             else:
                 # For non-sharded parameters, collect and sum the zeros (should only be from one rank)
                 zero_counts = []
+                shard_zero_ratios = []  # Initialize for non-sharded case too
                 for stats_dict_from_rank in all_layer_stats_gathered:
                     if stats_dict_from_rank and fqn in stats_dict_from_rank:
                         data = stats_dict_from_rank[fqn]
                         if data['total'] > 0:  # Only consider ranks with parameters
                             zero_counts.append(data['zero'])
+                            # Calculate ratio for this shard
+                            shard_zero_ratios.append(f"{data['zero']/data['total']:.4f}")
                 
                 total_zeros = sum(zero_counts) if zero_counts else 0
+                
+                # Define avg_zero_ratio for non-sharded case
+                if zero_counts and param_counts:
+                    avg_zero_ratio = total_zeros / sum(param_counts) if sum(param_counts) > 0 else 0.0
+                else:
+                    avg_zero_ratio = 0.0
             
             # Debug output for important layers
             if verbose and rank == 0 and ("embed_tokens" in fqn or "mlp.up_proj" in fqn or "mlp.gate_proj" in fqn or "down_proj" in fqn):
@@ -1184,11 +1196,11 @@ def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=True, origi
                             total_zeros = min(total_zeros, int(total_params * 0.5))
                 
                 if is_sharded and zero_counts:
-                    if true_param_count is not None:
+                    if true_param_count is not None and 'shard_totals' in locals() and 'total_observed_params' in locals() and 'full_params' in locals():
                         print(f"[ZeroGradV2-FIXED] Individual zero counts: {zero_counts}, shard_ratios: {shard_zero_ratios}, avg_ratio: {avg_zero_ratio:.6f}")
                         print(f"[ZeroGradV2-FIXED] Shard totals: {shard_totals}, total observed: {total_observed_params} ({total_observed_params/full_params*100:.2f}% of full)")
                     else:
-                        print(f"[ZeroGradV2-FIXED] Individual zero counts: {zero_counts}, avg_ratio: {avg_zero_ratio:.6f}")
+                        print(f"[ZeroGradV2-FIXED] Individual zero counts: {zero_counts}, shard_ratios: {shard_zero_ratios}, avg_ratio: {avg_zero_ratio:.6f}")
                 print(f"[ZeroGradV2-FIXED] Zero ratio: {total_zeros/total_params if total_params > 0 else 0:.6f}, total_zeros: {total_zeros}, total_params: {total_params}")
             
             # Ensure zero count doesn't exceed total (shouldn't happen with correct counting)

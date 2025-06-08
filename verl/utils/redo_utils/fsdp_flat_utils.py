@@ -1342,6 +1342,9 @@ def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=True, origi
             
             weighted_ratio = total_weighted_zero / (total_weighted_params + 1e-8) if total_weighted_params > 0 else 0.0
             print(f"{'WEIGHTED':<50} {total_weighted_zero:<10.0f} {total_weighted_params:<10.0f} {weighted_ratio:<10.4f}")
+            
+            # Store the aggregated ratio in the global data for consistency with dp_actor.py
+            global_data['aggregated_ratio'] = weighted_ratio
         
         if verbose:
             print("\n[DORMANT-SUMMARY] === ZERO GRADIENT SPACE ANALYSIS COMPLETE ===\n") 

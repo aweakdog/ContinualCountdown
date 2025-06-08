@@ -395,17 +395,37 @@ class DataParallelPPOActor(BasePPOActor):
                 #         else:
                 #             print(f"[FSDP-ReDo][Actor] Step {self.global_steps}: fsdp_dormant_neuron_mask_and_reset returned None, no reset performed.")
 
-                # Aggregate zero grad space ratio across all ranks
+                # Use the aggregated zero gradient ratio from fsdp_flat_utils.py
+                # This ensures consistency with the fixed method in fsdp_flat_utils.py
                 if zero_grad_stats and '__global__' in zero_grad_stats:
-                    local_zero = zero_grad_stats['__global__']['zero']
-                    local_total = zero_grad_stats['__global__']['total']
+                    # Use the ratio directly from the stats if available
+                    if 'aggregated_ratio' in zero_grad_stats['__global__']:
+                        # Use the aggregated ratio (from per-layer aggregation) as source of truth
+                        zero_gradspace_ratio_avg = zero_grad_stats['__global__']['aggregated_ratio']
+                        if rank == 0:
+                            print(f"[DEBUG] Using aggregated_ratio from zero_grad_stats: {zero_gradspace_ratio_avg:.4f}")
+                    else:
+                        # Fall back to the ratio in __global__ if aggregated_ratio is not available
+                        # (This should not happen with the updated fsdp_flat_utils.py)
+                        zero_gradspace_ratio_avg = zero_grad_stats['__global__']['ratio']
+                        if rank == 0:
+                            print(f"[DEBUG] Using ratio from zero_grad_stats: {zero_gradspace_ratio_avg:.4f} (aggregated_ratio not found)")
                 else:
+                    # Fall back to the old method if __global__ is not available
                     local_zero = 0.0
                     local_total = 0.0
-                zero_grad_tensor = torch.tensor([local_zero, local_total], dtype=torch.float32, device=next(self.actor_module.parameters()).device)
-                dist.all_reduce(zero_grad_tensor, op=dist.ReduceOp.SUM)
-                global_zero_grad, global_total_grad = zero_grad_tensor.tolist()
-                zero_gradspace_ratio_avg = global_zero_grad / (global_total_grad + 1e-8) if global_total_grad > 0 else 0.0
+                    if zero_grad_stats:
+                        for key, stats in zero_grad_stats.items():
+                            if key != '__global__' and stats and 'zero' in stats and 'total' in stats:
+                                local_zero += stats['zero']
+                                local_total += stats['total']
+                    
+                    zero_grad_tensor = torch.tensor([local_zero, local_total], dtype=torch.float32, device=next(self.actor_module.parameters()).device)
+                    dist.all_reduce(zero_grad_tensor, op=dist.ReduceOp.SUM)
+                    global_zero_grad, global_total_grad = zero_grad_tensor.tolist()
+                    zero_gradspace_ratio_avg = global_zero_grad / (global_total_grad + 1e-8) if global_total_grad > 0 else 0.0
+                    if rank == 0:
+                        print(f"[DEBUG] Calculated zero_gradspace_ratio_avg manually: {zero_gradspace_ratio_avg:.4f} (no __global__ stats found)")
                 if rank == 0:
                     metrics['actor/zero_gradspace_ratio'] = zero_gradspace_ratio_avg
                     print(f"[ZeroGradV2-Metrics][After Optim Step][Step {self.global_steps}] Aggregated Zero Grad Space Ratio: {zero_gradspace_ratio_avg:.4f}")

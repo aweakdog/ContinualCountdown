@@ -5,6 +5,65 @@ Supports extracting per-layer grad stats and applying neuron-wise resets directl
 import torch
 import math
 from torch.distributed.fsdp import FlatParameter, FullyShardedDataParallel as FSDP
+import logging
+import time
+import math
+import numpy as np
+import copy
+import warnings
+from collections import defaultdict
+import os
+from transformers import AutoModelForCausalLM, AutoConfig
+from torch.optim import Optimizer
+
+logger = logging.getLogger(__name__)
+
+# Global variable to store reference model parameters
+REFERENCE_MODEL_PARAMS = {}
+
+def load_reference_model(model_path: str, trust_remote_code: bool = False, device: str = 'cpu'):
+    """
+    Load a reference model from the given path and store its parameters in a global dictionary.
+    
+    Args:
+        model_path: Path to the reference model
+        trust_remote_code: Whether to trust remote code when loading the model
+        device: Device to load the model on (default: 'cpu' to save GPU memory)
+        
+    Returns:
+        Dictionary mapping parameter FQNs to their values
+    """
+    global REFERENCE_MODEL_PARAMS
+    
+    rank = dist.get_rank() if dist.is_initialized() else 0
+    if rank == 0:
+        print(f"[INFO] Loading reference model from {model_path} on device {device}")
+    
+    # Load model configuration
+    config = AutoConfig.from_pretrained(model_path, trust_remote_code=trust_remote_code)
+    
+    # Load model weights
+    with torch.no_grad():
+        model = AutoModelForCausalLM.from_pretrained(
+            model_path,
+            config=config,
+            torch_dtype=torch.float32,  # Load in fp32 for maximum precision
+            trust_remote_code=trust_remote_code
+        )
+        model.to(device)
+        
+        # Store parameters in dictionary
+        for name, param in model.named_parameters():
+            REFERENCE_MODEL_PARAMS[name] = param.detach().clone()
+            
+        # Free up memory
+        del model
+        torch.cuda.empty_cache()
+    
+    if rank == 0:
+        print(f"[INFO] Successfully loaded reference model with {len(REFERENCE_MODEL_PARAMS)} parameters")
+    
+    return REFERENCE_MODEL_PARAMS
 
 
 def get_flat_param_to_layer_map(fsdp_module):
@@ -1871,3 +1930,345 @@ def fsdp_dormant_neuron_mask_and_reset(fsdp_module, mode='threshold', tau=0.04, 
             import traceback
             print(f"[ERROR][DormantReset] Exception: {e}\n{traceback.format_exc()}")
         return {}
+
+def identify_dormant_neurons(zero_grad_ratios, tau=0.1, percentage=None, hybrid_mode=False):
+    """
+    Identify dormant neurons based on zero gradient ratios.
+    
+    Args:
+        zero_grad_ratios: Dictionary mapping parameter FQNs to zero gradient statistics
+        tau: Threshold for identifying dormant neurons (0.0-1.0)
+             Neurons with normalized activity below this tau are considered dormant
+        percentage: If provided, select top percentage of neurons with lowest activity
+        hybrid_mode: If True, use both tau and percentage criteria
+        
+    Returns:
+        Dictionary mapping parameter FQNs to boolean masks indicating dormant neurons
+    """
+    dormant_masks = {}
+    
+    # Skip global stats
+    zero_grad_ratios = {k: v for k, v in zero_grad_ratios.items() if k != '__global__'}
+    
+    # Process each parameter's zero gradient statistics
+    for param_name, stats in zero_grad_ratios.items():
+        # Skip parameters without proper stats
+        if not isinstance(stats, dict):
+            continue
+            
+        # Use row_ratios if available (these are the normalized gradient metrics from analyze_all_fsdp_zero_grad_space)
+        if 'row_ratios' in stats and isinstance(stats['row_ratios'], torch.Tensor):
+            # This is the same approach used in analyze_all_fsdp_zero_grad_space
+            # where neurons with normalized activity below threshold are considered dormant
+            row_metrics = stats['row_ratios']
+            # Neurons with activity below tau are dormant (need to be reset)
+            dormant_mask = row_metrics < tau
+            
+            # Apply percentage-based filtering if specified
+            if percentage is not None and 0 < percentage < 1:
+                # Sort neurons by their activity (ascending)
+                sorted_metrics, _ = torch.sort(row_metrics.flatten())
+                # Take the bottom k neurons (those with lowest activity)
+                k = max(1, int(percentage * sorted_metrics.numel()))
+                max_dormant_value = sorted_metrics[k-1]  # Highest activity among dormant neurons
+                percentage_mask = row_metrics <= max_dormant_value
+                
+                if hybrid_mode:
+                    # In hybrid mode, neurons must satisfy both criteria
+                    final_mask = dormant_mask & percentage_mask
+                else:
+                    # Otherwise, use percentage-based selection
+                    final_mask = percentage_mask
+            else:
+                # If no percentage specified, use threshold-based selection
+                final_mask = dormant_mask
+                
+            dormant_masks[param_name] = final_mask
+    
+    return dormant_masks
+
+
+def reset_dormant_neurons_to_reference(module: nn.Module, 
+                                      dormant_masks: Dict[str, torch.Tensor],
+                                      fqn_map: Dict[str, list],
+                                      original_shapes_map: Dict[str, torch.Size],
+                                      optimizer: Optional[Optimizer] = None,
+                                      verbose: bool = False):
+    """
+    Reset dormant neurons in the current model to values from the reference model.
+    
+    Args:
+        module: The FSDP-wrapped model
+        dormant_masks: Dictionary mapping parameter FQNs to boolean masks indicating dormant neurons
+        fqn_map: Mapping from flat parameter names to original FQNs
+        original_shapes_map: Mapping from FQNs to original parameter shapes
+        optimizer: Optimizer to reset states for dormant neurons
+        verbose: Whether to print verbose information
+    """
+    global REFERENCE_MODEL_PARAMS
+    
+    if not REFERENCE_MODEL_PARAMS:
+        raise ValueError("Reference model parameters not loaded. Call load_reference_model first.")
+    
+    rank = dist.get_rank() if dist.is_initialized() else 0
+    reset_count = 0
+    total_params = 0
+    
+    # Process each leaf FSDP module
+    for fsdp_name, fsdp_module in iter_leaf_fsdp_modules(module):
+        # Skip if no flat parameter
+        if not hasattr(fsdp_module, '_flat_param'):
+            continue
+            
+        flat_param = fsdp_module._flat_param
+        flat_param_name = f"{fsdp_name}._flat_param"
+        
+        # Get the mapping from flat parameter to original FQNs
+        param_fqns = fqn_map.get(flat_param_name, [])
+        if not param_fqns:
+            continue
+            
+        # Process each original parameter in this flat parameter
+        for fqn in param_fqns:
+            # Skip if no dormant mask for this parameter
+            if fqn not in dormant_masks:
+                continue
+                
+            # Get original shape and dormant mask
+            orig_shape = original_shapes_map.get(fqn)
+            if orig_shape is None or len(orig_shape) != 2:  # Only handle 2D parameters
+                continue
+                
+            dormant_mask = dormant_masks[fqn]
+            
+            # Get metadata for this parameter in the flat parameter
+            param_metadata = None
+            try:
+                for metadata in flat_param._param_infos:
+                    # Try different attribute names that might contain the parameter name
+                    param_name = None
+                    if hasattr(metadata, 'fqn'):
+                        param_name = metadata.fqn
+                    elif hasattr(metadata, 'param_name'):
+                        param_name = metadata.param_name
+                        
+                    if param_name == fqn:
+                        param_metadata = metadata
+                        break
+            except Exception as e:
+                if verbose:
+                    print(f"[WARNING] Error accessing param_infos for {fqn}: {e}")
+                continue
+                    
+            if param_metadata is None:
+                if verbose:
+                    print(f"[WARNING] Could not find metadata for parameter {fqn}")
+                continue
+                
+            # Get the slice of this parameter in the flat parameter
+            # Different versions of PyTorch FSDP might use different attribute names
+            start = getattr(param_metadata, 'start_idx', None)
+            end = getattr(param_metadata, 'end_idx', None)
+            
+            # If start_idx/end_idx are not available, try other attribute names
+            if start is None and hasattr(param_metadata, 'param_offset'):
+                start = param_metadata.param_offset
+                
+            if end is None and start is not None and hasattr(param_metadata, 'numel'):
+                end = start + param_metadata.numel
+                
+            if start is None or end is None:
+                if verbose:
+                    print(f"[WARNING] Could not determine parameter slice for {fqn}")
+                continue
+            flat_tensor = flat_param[start:end].view(orig_shape)
+            
+            # Get reference parameter
+            if fqn not in REFERENCE_MODEL_PARAMS:
+                if verbose and rank == 0:
+                    print(f"[WARNING] Parameter {fqn} not found in reference model")
+                continue
+                
+            ref_param = REFERENCE_MODEL_PARAMS[fqn]
+            
+            # Check shape compatibility
+            if flat_tensor.shape != ref_param.shape:
+                if verbose and rank == 0:
+                    print(f"[WARNING] Shape mismatch for {fqn}: {flat_tensor.shape} vs {ref_param.shape}")
+                continue
+                
+            # Apply dormant mask and reset weights
+            num_dormant = dormant_mask.sum().item()
+            if num_dormant > 0:
+                with torch.no_grad():
+                    # Expand mask to match parameter dimensions if needed
+                    if dormant_mask.dim() == 1 and flat_tensor.dim() == 2:
+                        expanded_mask = dormant_mask.unsqueeze(1).expand_as(flat_tensor)
+                    else:
+                        expanded_mask = dormant_mask
+                        
+                    # Reset dormant neurons to reference model values
+                    flat_tensor[expanded_mask] = ref_param.to(flat_tensor.device)[expanded_mask]
+                    reset_count += num_dormant
+                    total_params += flat_tensor.numel()
+                    
+                    # Reset optimizer state if provided
+                    if optimizer is not None:
+                        reset_optimizer_state_for_dormant_neurons(optimizer, flat_param, start, end, 
+                                                               orig_shape, expanded_mask, verbose)
+    
+    if verbose and rank == 0:
+        print(f"[INFO] Reset {reset_count} dormant parameters out of {total_params} total parameters")
+        print(f"[INFO] Reset percentage: {reset_count / max(1, total_params) * 100:.2f}%")
+
+
+def reset_optimizer_state_for_dormant_neurons(optimizer: Optimizer,
+                                            flat_param: torch.Tensor,
+                                            start_idx: int,
+                                            end_idx: int,
+                                            orig_shape: torch.Size,
+                                            dormant_mask: torch.Tensor,
+                                            verbose: bool = False):
+    """
+    Reset optimizer state for dormant neurons.
+    
+    Args:
+        optimizer: The optimizer
+        flat_param: The flat parameter
+        start_idx: Start index of the parameter in the flat parameter
+        end_idx: End index of the parameter in the flat parameter
+        orig_shape: Original shape of the parameter
+        dormant_mask: Boolean mask indicating dormant neurons
+        verbose: Whether to print verbose information
+    """
+    # Find the parameter in the optimizer state
+    found = False
+    for param_group in optimizer.param_groups:
+        for p in param_group['params']:
+            if id(p) == id(flat_param):
+                found = True
+                break
+        if found:
+            break
+            
+    if not found:
+        if verbose:
+            rank = dist.get_rank() if dist.is_initialized() else 0
+            if rank == 0:
+                print(f"[WARNING] Parameter not found in optimizer state")
+        return
+        
+    # Reset optimizer state for dormant neurons
+    if 'adam' in optimizer.__class__.__name__.lower() or 'adamw' in optimizer.__class__.__name__.lower():
+        # For Adam/AdamW optimizers
+        if 'state' in optimizer.state[flat_param]:
+            state = optimizer.state[flat_param]
+            
+            # Reset exp_avg (momentum) and exp_avg_sq (variance) for dormant neurons
+            for state_name in ['exp_avg', 'exp_avg_sq']:
+                if state_name in state:
+                    with torch.no_grad():
+                        state_tensor = state[state_name][start_idx:end_idx].view(orig_shape)
+                        state_tensor[dormant_mask] = 0.0
+    elif 'sgd' in optimizer.__class__.__name__.lower():
+        # For SGD optimizer
+        if 'state' in optimizer.state[flat_param]:
+            state = optimizer.state[flat_param]
+            
+            # Reset momentum for dormant neurons
+            if 'momentum_buffer' in state:
+                with torch.no_grad():
+                    momentum = state['momentum_buffer'][start_idx:end_idx].view(orig_shape)
+                    momentum[dormant_mask] = 0.0
+
+
+def fsdp_dormant_neuron_reset_pipeline(module: nn.Module, 
+                                      zero_grad_ratios: Dict[str, Dict[str, float]],
+                                      optimizer: Optional[Optimizer] = None,
+                                      threshold: float = 0.9,
+                                      percentage: Optional[float] = None,
+                                      hybrid_mode: bool = False,
+                                      verbose: bool = False,
+                                      original_param_shapes: Optional[Dict[str, torch.Size]] = None):
+    """
+    Complete pipeline for resetting dormant neurons in an FSDP-wrapped model to reference model values.
+    
+    Args:
+        module: The FSDP-wrapped model
+        zero_grad_ratios: Dictionary mapping parameter FQNs to their zero gradient statistics
+        optimizer: Optimizer to reset states for dormant neurons
+        threshold: Threshold for considering a neuron dormant based on zero gradient ratio
+        percentage: If provided, select top percentage of neurons with highest zero gradient ratios
+        hybrid_mode: If True, use both threshold and percentage criteria
+        verbose: Whether to print verbose information
+        original_param_shapes: Dictionary mapping parameter FQNs to their original shapes before FSDP wrapping
+    """
+    rank = dist.get_rank() if dist.is_initialized() else 0
+    
+    if verbose and rank == 0:
+        print(f"[INFO] Starting dormant neuron reset pipeline with threshold={threshold}, "
+              f"percentage={percentage}, hybrid_mode={hybrid_mode}")
+    
+    # Check if reference model is loaded
+    global REFERENCE_MODEL_PARAMS
+    if not REFERENCE_MODEL_PARAMS:
+        if rank == 0:
+            print("[ERROR] Reference model parameters not loaded. Call load_reference_model first.")
+        return
+    
+    # Step 1: Build FQN map for all flat parameters
+    fqn_map = {}
+    original_shapes_map = original_param_shapes or {}
+    
+    for fsdp_name, fsdp_module in iter_leaf_fsdp_modules(module):
+        if not hasattr(fsdp_module, '_flat_param'):
+            continue
+            
+        flat_param = fsdp_module._flat_param
+        flat_param_name = f"{fsdp_name}._flat_param"
+        
+        # Map flat parameter to original FQNs
+        param_fqns = []
+        
+        # Try to extract FQNs from param_infos if possible
+        try:
+            for metadata in flat_param._param_infos:
+                # Different versions of PyTorch FSDP might use different attribute names
+                if hasattr(metadata, 'fqn'):
+                    fqn = metadata.fqn
+                    param_fqns.append(fqn)
+                    
+                    # Store original shape if available
+                    if hasattr(metadata, 'shape'):
+                        original_shapes_map[fqn] = metadata.shape
+                elif hasattr(metadata, 'param_name'):
+                    fqn = metadata.param_name
+                    param_fqns.append(fqn)
+        except Exception as e:
+            if verbose:
+                print(f"[WARNING] Error accessing param_infos: {e}")
+                
+        # If we couldn't extract FQNs, use the original_param_shapes if provided
+        if not param_fqns and original_param_shapes:
+            # Try to match based on size and other heuristics
+            # This is a fallback mechanism
+            if verbose:
+                print(f"[INFO] Using original_param_shapes as fallback for {flat_param_name}")
+                
+        fqn_map[flat_param_name] = param_fqns
+    
+    # Step 2: Identify dormant neurons based on zero gradient ratios
+    dormant_masks = identify_dormant_neurons(
+        zero_grad_ratios, tau=threshold, percentage=percentage, hybrid_mode=hybrid_mode
+    )
+    
+    if verbose and rank == 0:
+        print(f"[INFO] Identified dormant neurons in {len(dormant_masks)} parameters")
+    
+    # Step 3: Reset dormant neurons to reference model values
+    reset_dormant_neurons_to_reference(
+        module, dormant_masks, fqn_map, original_shapes_map, optimizer, verbose
+    )
+    
+    if verbose and rank == 0:
+        print("[INFO] Dormant neuron reset pipeline completed")

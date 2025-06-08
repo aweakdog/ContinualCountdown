@@ -917,7 +917,7 @@ def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=True, origi
             elif ("mlp" in fqn or "attn" in fqn) and H_local_scalar > 0 and raw_H_global > H_local_scalar * 10:
                 # For MLP/attention layers, rows are typically sharded across ranks
                 # A reasonable estimate is the sum of local rows across ranks
-                H_global = H_local_scalar * dist.get_world_size()
+                H_global = H_local_scalar
                 if rank == 0 and verbose:
                     print(f"[ZeroGradV2-FIX] Layer {fqn}: Fixing MLP/attention H_global from {raw_H_global} to {H_global}")
             else:

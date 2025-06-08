@@ -609,6 +609,9 @@ def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=True, origi
     rank = dist.get_rank()
     device = fsdp_module.compute_device
     layer_stats_local = {}
+    
+    # Initialize debug counter to limit print statements
+    debug_print_count = 0
     global_contributions = []
     param_details = {} # <<< Cascade: Re-initialize param_details
 

@@ -1269,15 +1269,15 @@ def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=True, origi
             print(f"  - WARNING: Significant discrepancy between direct and aggregated ratios: {abs(global_ratio - aggregated_ratio):.6f}")
             print(f"  - This may indicate an issue with parameter counting or aggregation")
     
-    # Use the direct calculation as the source of truth, as it's based on the raw counts
-    # before any processing or potential rounding errors
+    # Use the aggregated calculation as the source of truth, as it's more accurate for parameter counting
+    # The direct calculation may be counting parameters incorrectly
     results['__global__'] = {
-        'zero': global_total_zero_val,
-        'total': global_total_rows_val,
-        'ratio': global_ratio,
-        'aggregated_zero': global_zero_count,
-        'aggregated_total': global_param_count,
-        'aggregated_ratio': aggregated_ratio
+        'zero': global_zero_count,  # Use aggregated count as primary
+        'total': global_param_count,  # Use aggregated count as primary
+        'ratio': aggregated_ratio,  # Use aggregated ratio as primary
+        'direct_zero': global_total_zero_val,  # Keep direct calculation for reference
+        'direct_total': global_total_rows_val,  # Keep direct calculation for reference
+        'direct_ratio': global_ratio  # Keep direct calculation for reference
     }
     
     # Optional verbose output
@@ -1326,11 +1326,11 @@ def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=True, origi
         # Print global summary
         global_data = results['__global__']
         print("\n--- GLOBAL SUMMARY ---")
-        print(f"{'GLOBAL':<50} {global_data['zero']:<10.0f} {global_data['total']:<10.0f} {global_data['ratio']:<10.4f}")
+        print(f"{'GLOBAL (AGGREGATED)':<50} {global_data['zero']:<10.0f} {global_data['total']:<10.0f} {global_data['ratio']:<10.4f}")
         
-        # Print aggregated summary for comparison
-        if 'aggregated_ratio' in global_data:
-            print(f"{'AGGREGATED':<50} {global_data['aggregated_zero']:<10.0f} {global_data['aggregated_total']:<10.0f} {global_data['aggregated_ratio']:<10.4f}")
+        # Print direct calculation summary for comparison
+        if 'direct_ratio' in global_data:
+            print(f"{'DIRECT (likely incorrect)':<50} {global_data['direct_zero']:<10.0f} {global_data['direct_total']:<10.0f} {global_data['direct_ratio']:<10.4f}")
             
             # Calculate weighted average as a third method for verification
             total_weighted_zero = 0

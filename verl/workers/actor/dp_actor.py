@@ -363,7 +363,7 @@ class DataParallelPPOActor(BasePPOActor):
                     # from verl.utils.redo_utils.fsdp_flat_utils import analyze_all_fsdp_zero_grad_space, analyze_all_fsdp_dormant_neurons
                     
                     if rank == 0: print(f"[INFO][Actor][Step {self.global_steps}] Analyzing FSDP gradient metrics...")
-                    zero_grad_stats = analyze_all_fsdp_zero_grad_space(self.actor_module, tau=self.redo_tau, verbose=(rank==0), original_shapes_map=self.original_param_shapes, skip_mlp=True) # <<< Cascade: Pass original_param_shapes and skip MLP layers
+                    zero_grad_stats = analyze_all_fsdp_zero_grad_space(self.actor_module, tau=self.redo_tau, verbose=(rank==0), original_shapes_map=self.original_param_shapes, skip_mlp=True, skip_embed=True) # <<< Cascade: Pass original_param_shapes and skip MLP/embedding layers
                     #dormant_stats = analyze_all_fsdp_dormant_neurons(self.actor_module, mode=self.redo_mode, tau=self.redo_tau, verbose=(rank==0))
                     
                     # if dormant_stats and '__global__' in dormant_stats: # analyze_all_fsdp_dormant_neurons also returns a __global__ key

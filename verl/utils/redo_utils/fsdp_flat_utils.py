@@ -99,7 +99,7 @@ def analyze_all_fsdp_dormant_neurons(module, mode='threshold', tau=0.1, verbose=
     #    print(f"[DormantNeuron][ALL] total_dormant={total_dormant}, total_params={total_count}, ratio={total_dormant/(total_count+1e-8):.6f}")
     return results
 
-def analyze_all_fsdp_zero_grad_space(module, tau=0.1, verbose=True, original_shapes_map=None, top_level_prefix=None, skip_mlp=True):
+def analyze_all_fsdp_zero_grad_space(module, tau=0.1, verbose=True, original_shapes_map=None, top_level_prefix=None, skip_mlp=True, skip_embed=True):
     """
     Analyze all leaf FSDP-wrapped submodules for zero grad space ratio.
     Returns a dict mapping module names to their zero grad stats and the global aggregate.
@@ -169,9 +169,10 @@ def analyze_all_fsdp_zero_grad_space(module, tau=0.1, verbose=True, original_sha
             print(f'169Analyzing submodule: {name}')
         try:
             stats = compute_fsdp_zero_grad_space_ratio(submodule, tau=tau, verbose=verbose, 
-                                                      original_shapes_map=original_shapes_map, 
-                                                      fqn_prefix=name,
-                                                      skip_mlp=skip_mlp)
+                                                       original_shapes_map=original_shapes_map, 
+                                                       fqn_prefix=name,
+                                                       skip_mlp=skip_mlp,
+                                                       skip_embed=skip_embed)
             if stats is not None and '__global__' in stats:
                 submodule_global_stats = stats['__global__']
                 total_zero += submodule_global_stats.get('zero', 0)
@@ -584,7 +585,7 @@ def get_shard_overlap_slices(entry, my_global_start, my_global_end, flat_param_n
             print(f"[ERROR] Unsupported shape {shape} for entry {entry.get('fqn', None) or entry.get('name', None)}.")
         return None
 
-def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=True, original_shapes_map=None, debug_mlp_sharding=True, fqn_prefix="", skip_mlp=True):  # Added skip_mlp parameter with default True
+def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=True, original_shapes_map=None, debug_mlp_sharding=True, fqn_prefix="", skip_mlp=True, skip_embed=True):  # Added skip_mlp parameter with default True
     """
     Computes the fraction of output neurons (rows) in each 2D param whose normalized gradient metric si = A/(B/H) is below tau,
     using GLOBAL layer statistics (B_global and H_global) for consistent metric calculation.
@@ -973,34 +974,16 @@ def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=True, origi
                     if avg_global < 1e-10 and rank == 0 and verbose:
                         print(f"[ZeroGradV2-FIX] Layer {fqn}: Very small avg_global ({avg_global:.2e}), potential numerical issues")
                         print(f"[ZeroGradV2-FIX] Layer {fqn}: Using normalized gradient values instead of raw ratio")
-                
-                # Print detailed debug info for all layers
-                if rank == 0 and verbose:
-                    print(f"[ZeroGradV2-DEBUG] Layer stats for {fqn}:")
-                    print(f"  - H_local_scalar: {H_local_scalar}, H_global: {H_global}")
-                    print(f"  - B_local: {B_local_scalar_tensor:.6e}, B_global: {B_global:.6e}")
-                    print(f"  - avg_global: {avg_global:.6e}")
-                    
-                    # Safe tensor stats calculation with empty tensor handling
-                    if A_local_row_tensor.numel() > 0:
-                        a_min = A_local_row_tensor.min().item()
-                        a_max = A_local_row_tensor.max().item()
-                        a_mean = A_local_row_tensor.mean().item()
-                        print(f"  - A_local_row_tensor min/max/mean: {a_min:.6e}/{a_max:.6e}/{a_mean:.6e}")
+            
+            # Skip MLP and embedding layers if requested
+            if (skip_mlp and "mlp" in fqn.lower()) or (skip_embed and ("embed_tokens" in fqn.lower() or "embeddings" in fqn.lower())):
+                if verbose and rank == 0 and debug_print_count < 5:
+                    if "mlp" in fqn.lower():
+                        print(f"[ZeroGradV2-SKIP] Skipping MLP layer: {fqn}")
                     else:
-                        print(f"  - A_local_row_tensor is empty")
-                    
-                    if si.numel() > 0:
-                        si_min = si.min().item()
-                        si_max = si.max().item()
-                        si_mean = si.mean().item()
-                        print(f"  - si min/max/mean: {si_min:.6e}/{si_max:.6e}/{si_mean:.6e}")
-                    else:
-                        print(f"  - si is empty")
-                        
-                    print(f"  - tau: {tau}")
-                    print(f"  - (si < tau).sum(): {(si < tau).sum().item()}, total: {si.numel()}")
-                    print(f"  - zero ratio: {(si < tau).sum().item() / (si.numel() + 1e-9):.6f}")
+                        print(f"[ZeroGradV2-SKIP] Skipping embedding layer: {fqn}")
+                    debug_print_count += 1
+                continue
                 # Check if all gradients are exactly zero - only if we have gradients
                 if A_local_row_tensor.numel() > 0 and A_local_row_tensor.abs().max().item() == 0 and rank == 0 and verbose:
                     print(f"  - WARNING: All gradients are EXACTLY zero!")

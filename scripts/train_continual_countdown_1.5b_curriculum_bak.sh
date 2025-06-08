@@ -7,7 +7,7 @@ conda activate zero
 # Configuration
 export BASE_MODEL=${BASE_MODEL:-"/app/models/qwen1.5b"}  # Qwen 1.5B model path
 export N_GPUS=8  # Using all 8 3090 GPUs
-export ROLLOUT_TP_SIZE=${ROLLOUT_TP_SIZE:-2}  # Tensor parallel size
+export ROLLOUT_TP_SIZE=${ROLLOUT_TP_SIZE:-1}  # Tensor parallel size
 export DATA_DIR="./data/continual"  # Match actual data location
 
 # Create necessary directories

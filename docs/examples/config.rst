@@ -107,7 +107,7 @@ Actor/Rollout/Reference Policy
        enforce_eager: True
        free_cache_engine: True
        load_format: dummy_dtensor # or dummy_hf or dummy_megatron
-       tensor_model_parallel_size: 2
+       tensor_model_parallel_size: 1
        max_num_batched_tokens: 8192
        max_num_seqs: 1024
        log_prob_micro_batch_size: 128

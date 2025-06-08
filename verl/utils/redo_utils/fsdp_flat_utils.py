@@ -918,11 +918,22 @@ def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=True, origi
                         print(f"[ZeroGradV2-FIX] Layer {fqn}: All gradients are effectively zero (max={A_local_row_tensor.abs().max().item():.2e})")
                 else:
                     # Normal case - compute normalized gradient metric
-                    si = A_local_row_tensor / (avg_global + 1e-9)
+                    # Original formula: si = A_local_row_tensor / (avg_global + 1e-9)
+                    # This can lead to extremely large values when avg_global is very small
+                    
+                    # First normalize A_local_row_tensor to [0,1] range within this layer
+                    if A_local_row_tensor.max().item() > 0:
+                        A_normalized = A_local_row_tensor / (A_local_row_tensor.max().item() + 1e-9)
+                    else:
+                        A_normalized = A_local_row_tensor
+                        
+                    # Then apply threshold comparison
+                    si = A_normalized
                     
                     # Safety check for numerical issues
                     if avg_global < 1e-10 and rank == 0 and verbose:
                         print(f"[ZeroGradV2-FIX] Layer {fqn}: Very small avg_global ({avg_global:.2e}), potential numerical issues")
+                        print(f"[ZeroGradV2-FIX] Layer {fqn}: Using normalized gradient values instead of raw ratio")
                 
                 # Print detailed debug info for all layers
                 if rank == 0 and verbose:
@@ -951,8 +962,8 @@ def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=True, origi
                     print(f"  - tau: {tau}")
                     print(f"  - (si < tau).sum(): {(si < tau).sum().item()}, total: {si.numel()}")
                     print(f"  - zero ratio: {(si < tau).sum().item() / (si.numel() + 1e-9):.6f}")
-                # Check if all gradients are exactly zero
-                if A_local_row_tensor.abs().max().item() == 0 and rank == 0 and verbose:
+                # Check if all gradients are exactly zero - only if we have gradients
+                if A_local_row_tensor.numel() > 0 and A_local_row_tensor.abs().max().item() == 0 and rank == 0 and verbose:
                     print(f"  - WARNING: All gradients are EXACTLY zero!")
                 
                 # Check for numerical issues
@@ -960,6 +971,8 @@ def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=True, origi
                     print(f"  - WARNING: Very small avg_global ({avg_global:.6e}), potential numerical issues")
             
             # Calculate dormant rows but cap at the actual number of rows
+            # With our new normalization, tau should be interpreted as "neurons with activity below X% of the most active neuron"
+            # This is more stable than the previous approach
             raw_zero_rows = (si < tau).sum().item()
             zero_rows = min(raw_zero_rows, H_local_scalar)
             
@@ -988,10 +1001,8 @@ def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=True, origi
                     else:
                         print(f"[ZeroGradV2-FIX]   - High dormancy in other layer: {zero_rows/H_local_scalar:.4f}")
             
-            # Debug output for all layers - now moved to earlier in the code
-            if rank == 0 and verbose:
-                print(f"  - zero_rows (raw): {raw_zero_rows}, capped: {zero_rows}, total: {H_local_scalar}")
-                print(f"  - zero ratio: {zero_rows / (H_local_scalar + 1e-9):.6f}")
+            # We've already printed most debug info earlier, just add this to the existing output
+            # No need to repeat it here
             
             # Store local stats
             layer_stats_local[fqn] = {'zero': zero_rows, 'total': H_local_scalar}

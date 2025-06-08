@@ -1221,6 +1221,29 @@ def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=True, origi
             
             combined_stats[fqn]['zero'] = zero_sum
             combined_stats[fqn]['total'] = max_total
+
+    # Populate the results dictionary with per-FQN details from combined_stats and add row_ratios
+    for fqn_item in list(all_fqns): # Iterate over a copy for stable iteration
+        if fqn_item in combined_stats:
+            agg_zero = combined_stats[fqn_item]['zero']
+            agg_total = combined_stats[fqn_item]['total']
+            agg_ratio = agg_zero / (agg_total + 1e-8) if agg_total > 0 else 0.0
+            
+            retrieved_row_ratios = None
+            for stats_from_rank in all_layer_stats_gathered:
+                if stats_from_rank and fqn_item in stats_from_rank and 'row_ratios' in stats_from_rank[fqn_item]:
+                    retrieved_row_ratios = stats_from_rank[fqn_item]['row_ratios']
+                    if retrieved_row_ratios is not None:
+                        break 
+            
+            results[fqn_item] = {
+                'zero': agg_zero,
+                'total': agg_total,
+                'ratio': agg_ratio,
+                'row_ratios': retrieved_row_ratios 
+            }
+        elif rank == 0 and verbose:
+            print(f"[WARN][ZeroGradV2] FQN {fqn_item} from all_fqns not found in combined_stats during results population.")
     
     # Calculate global totals for all parameters
     global_zero_count = 0

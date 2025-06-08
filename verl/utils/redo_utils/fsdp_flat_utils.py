@@ -930,8 +930,24 @@ def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=True, origi
                     print(f"  - H_local_scalar: {H_local_scalar}, H_global: {H_global}")
                     print(f"  - B_local: {B_local_scalar_tensor:.6e}, B_global: {B_global:.6e}")
                     print(f"  - avg_global: {avg_global:.6e}")
-                    print(f"  - A_local_row_tensor min/max/mean: {A_local_row_tensor.min().item():.6e}/{A_local_row_tensor.max().item():.6e}/{A_local_row_tensor.mean().item():.6e}")
-                    print(f"  - si min/max/mean: {si.min().item():.6e}/{si.max().item():.6e}/{si.mean().item():.6e}")
+                    
+                    # Safe tensor stats calculation with empty tensor handling
+                    if A_local_row_tensor.numel() > 0:
+                        a_min = A_local_row_tensor.min().item()
+                        a_max = A_local_row_tensor.max().item()
+                        a_mean = A_local_row_tensor.mean().item()
+                        print(f"  - A_local_row_tensor min/max/mean: {a_min:.6e}/{a_max:.6e}/{a_mean:.6e}")
+                    else:
+                        print(f"  - A_local_row_tensor is empty")
+                    
+                    if si.numel() > 0:
+                        si_min = si.min().item()
+                        si_max = si.max().item()
+                        si_mean = si.mean().item()
+                        print(f"  - si min/max/mean: {si_min:.6e}/{si_max:.6e}/{si_mean:.6e}")
+                    else:
+                        print(f"  - si is empty")
+                        
                     print(f"  - tau: {tau}")
                     print(f"  - (si < tau).sum(): {(si < tau).sum().item()}, total: {si.numel()}")
                     print(f"  - zero ratio: {(si < tau).sum().item() / (si.numel() + 1e-9):.6f}")
@@ -952,8 +968,17 @@ def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=True, origi
                 if rank == 0 and verbose:
                     print(f"[ZeroGradV2-FIX] WARNING: Layer {fqn} has {zero_rows}/{H_local_scalar} ({zero_rows/H_local_scalar*100:.1f}%) dormant neurons")
                     print(f"[ZeroGradV2-FIX]   - This is suspiciously high and might indicate a numerical issue")
-                    print(f"[ZeroGradV2-FIX]   - A_local_row_tensor stats: min={A_local_row_tensor.min().item():.2e}, max={A_local_row_tensor.max().item():.2e}, mean={A_local_row_tensor.mean().item():.2e}")
-                    print(f"[ZeroGradV2-FIX]   - si stats: min={si.min().item():.2e}, max={si.max().item():.2e}, mean={si.mean().item():.2e}, tau={tau:.2e}")
+                    
+                    # Safe tensor stats calculation
+                    if A_local_row_tensor.numel() > 0:
+                        print(f"[ZeroGradV2-FIX]   - A_local_row_tensor stats: min={A_local_row_tensor.min().item():.2e}, max={A_local_row_tensor.max().item():.2e}, mean={A_local_row_tensor.mean().item():.2e}")
+                    else:
+                        print(f"[ZeroGradV2-FIX]   - A_local_row_tensor is empty")
+                        
+                    if si.numel() > 0:
+                        print(f"[ZeroGradV2-FIX]   - si stats: min={si.min().item():.2e}, max={si.max().item():.2e}, mean={si.mean().item():.2e}, tau={tau:.2e}")
+                    else:
+                        print(f"[ZeroGradV2-FIX]   - si is empty, tau={tau:.2e}")
                     
                     # Additional layer-specific warning
                     if "mlp" in fqn:

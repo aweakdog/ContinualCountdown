@@ -1254,11 +1254,30 @@ def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=True, origi
         global_zero_count += data['zero']
         global_param_count += data['total']
     
-    # Set the global stats
+    # Set the global stats - use the directly computed global values from earlier
+    # This ensures consistency between the global ratio and the aggregated ratio
+    aggregated_ratio = global_zero_count / (global_param_count + 1e-8) if global_param_count > 0 else 0.0
+    
+    # Debug output to compare the two methods of calculating global ratio
+    if verbose and rank == 0:
+        print(f"\n[ZeroGradV2-FIXED] Global ratio comparison:")
+        print(f"  - Direct calculation (from earlier): {global_ratio:.6f} (zero: {global_total_zero_val}, total: {global_total_rows_val})")
+        print(f"  - Aggregated calculation: {aggregated_ratio:.6f} (zero: {global_zero_count}, total: {global_param_count})")
+        
+        # Check if there's a significant discrepancy
+        if abs(global_ratio - aggregated_ratio) > 0.05:
+            print(f"  - WARNING: Significant discrepancy between direct and aggregated ratios: {abs(global_ratio - aggregated_ratio):.6f}")
+            print(f"  - This may indicate an issue with parameter counting or aggregation")
+    
+    # Use the direct calculation as the source of truth, as it's based on the raw counts
+    # before any processing or potential rounding errors
     results['__global__'] = {
-        'zero': global_zero_count,
-        'total': global_param_count,
-        'ratio': global_zero_count / (global_param_count + 1e-8) if global_param_count > 0 else 0.0
+        'zero': global_total_zero_val,
+        'total': global_total_rows_val,
+        'ratio': global_ratio,
+        'aggregated_zero': global_zero_count,
+        'aggregated_total': global_param_count,
+        'aggregated_ratio': aggregated_ratio
     }
     
     # Optional verbose output
@@ -1305,17 +1324,35 @@ def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=True, origi
                     print(f"{fqn:<50} {zero_count:<10} {total_count:<10} {ratio:.6f}")
         
         # Print global summary
-        print("\n--- GLOBAL SUMMARY ---")
         global_data = results['__global__']
-        print(f"{'TOTAL':<50} {global_data['zero']:<10} {global_data['total']:<10} {global_data['ratio']:.6f}")
-        print("\n" + "-" * 80)
+        print("\n--- GLOBAL SUMMARY ---")
+        print(f"{'GLOBAL':<50} {global_data['zero']:<10.0f} {global_data['total']:<10.0f} {global_data['ratio']:<10.4f}")
         
-        if 'mlp_params' in locals():
-            print(f"[PARAM-DEBUG] MLP layers: {mlp_params} params")
-            print(f"[PARAM-DEBUG] Attention layers: {attn_params} params")
-            print(f"[PARAM-DEBUG] Embedding layers: {embed_params} params")
-            print(f"[PARAM-DEBUG] Norm layers: {norm_params} params")
-            print(f"[PARAM-DEBUG] Other layers: {other_params} params")
+        # Print aggregated summary for comparison
+        if 'aggregated_ratio' in global_data:
+            print(f"{'AGGREGATED':<50} {global_data['aggregated_zero']:<10.0f} {global_data['aggregated_total']:<10.0f} {global_data['aggregated_ratio']:<10.4f}")
+            
+            # Calculate weighted average as a third method for verification
+            total_weighted_zero = 0
+            total_weighted_params = 0
+            for fqn, data in results.items():
+                if fqn != '__global__':
+                    total_weighted_zero += data['zero']
+                    total_weighted_params += data['total']
+            
+            weighted_ratio = total_weighted_zero / (total_weighted_params + 1e-8) if total_weighted_params > 0 else 0.0
+            print(f"{'WEIGHTED':<50} {total_weighted_zero:<10.0f} {total_weighted_params:<10.0f} {weighted_ratio:<10.4f}")
+        
+        if verbose:
+            print("\n[DORMANT-SUMMARY] === ZERO GRADIENT SPACE ANALYSIS COMPLETE ===\n") 
+            if 'mlp_params' in locals():
+                print(f"[PARAM-DEBUG] MLP layers: {mlp_params} params")
+                print(f"[PARAM-DEBUG] Attention layers: {attn_params} params")
+                print(f"[PARAM-DEBUG] Embedding layers: {embed_params} params")
+                print(f"[PARAM-DEBUG] Norm layers: {norm_params} params")
+                print(f"[PARAM-DEBUG] Other layers: {other_params} params")
+                print(f"[PARAM-DEBUG] TOTAL: {mlp_params + attn_params + embed_params + norm_params + other_params} params")
+                print(f"[PARAM-DEBUG] Global count: {global_param_count} params")
             print(f"[PARAM-DEBUG] TOTAL: {mlp_params + attn_params + embed_params + norm_params + other_params} params")
             print(f"[PARAM-DEBUG] Global count: {global_param_count} params")
         

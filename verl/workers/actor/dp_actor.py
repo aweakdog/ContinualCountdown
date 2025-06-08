@@ -77,14 +77,14 @@ class DataParallelPPOActor(BasePPOActor):
               
         # Initialize dormant neuron reset attributes
         self.dormant_neuron_reset_enabled = getattr(self.config, 'dormant_neuron_reset_enabled', False)
-        self.dormant_neuron_threshold = getattr(self.config, 'dormant_neuron_threshold', 0.9)
+        self.dormant_neuron_tau = getattr(self.config, 'dormant_neuron_tau', 0.1)  # Use tau instead of threshold for consistency
         self.dormant_neuron_percentage = getattr(self.config, 'dormant_neuron_percentage', None)
         self.dormant_neuron_hybrid_mode = getattr(self.config, 'dormant_neuron_hybrid_mode', False)
         self.dormant_neuron_reset_freq = getattr(self.config, 'dormant_neuron_reset_freq', self.redo_reset_freq)
         self.zero_grad_ratios = None  # Will store the latest zero gradient analysis results
         
         if self.dormant_neuron_reset_enabled:
-            print(f'[INFO][Actor] Dormant neuron reset enabled with threshold={self.dormant_neuron_threshold}, '
+            print(f'[INFO][Actor] Dormant neuron reset enabled with tau={self.dormant_neuron_tau}, '
                   f'percentage={self.dormant_neuron_percentage}, hybrid_mode={self.dormant_neuron_hybrid_mode}, '
                   f'reset_freq={self.dormant_neuron_reset_freq}')
 
@@ -124,10 +124,11 @@ class DataParallelPPOActor(BasePPOActor):
                 module=self.actor_module,
                 zero_grad_ratios=self.zero_grad_ratios,
                 optimizer=self.actor_optimizer,
-                threshold=self.dormant_neuron_threshold,
+                threshold=self.dormant_neuron_tau,  # Use tau instead of threshold for consistency
                 percentage=self.dormant_neuron_percentage,
                 hybrid_mode=self.dormant_neuron_hybrid_mode,
-                verbose=(rank == 0)  # Only print verbose output on rank 0
+                verbose=(rank == 0),  # Only print verbose output on rank 0
+                original_param_shapes=self.original_param_shapes  # Pass original parameter shapes
             )
             
             if rank == 0:

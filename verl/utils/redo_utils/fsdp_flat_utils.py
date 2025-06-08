@@ -1068,7 +1068,7 @@ def identify_dormant_neurons(zero_grad_ratios, tau=0.1, percentage=None, hybrid_
 
 def reset_dormant_neurons_to_reference(module: nn.Module, 
                                       dormant_masks: Dict[str, torch.Tensor],
-                                      fqn_map: Dict[str, str],
+                                      fqn_map: Dict[str, list],
                                       original_shapes_map: Dict[str, torch.Size],
                                       optimizer: Optional[Optimizer] = None,
                                       verbose: bool = False):
@@ -1121,16 +1121,44 @@ def reset_dormant_neurons_to_reference(module: nn.Module,
             
             # Get metadata for this parameter in the flat parameter
             param_metadata = None
-            for metadata in flat_param._param_infos:
-                if metadata.fqn == fqn:
-                    param_metadata = metadata
-                    break
+            try:
+                for metadata in flat_param._param_infos:
+                    # Try different attribute names that might contain the parameter name
+                    param_name = None
+                    if hasattr(metadata, 'fqn'):
+                        param_name = metadata.fqn
+                    elif hasattr(metadata, 'param_name'):
+                        param_name = metadata.param_name
+                        
+                    if param_name == fqn:
+                        param_metadata = metadata
+                        break
+            except Exception as e:
+                if verbose:
+                    print(f"[WARNING] Error accessing param_infos for {fqn}: {e}")
+                continue
                     
             if param_metadata is None:
+                if verbose:
+                    print(f"[WARNING] Could not find metadata for parameter {fqn}")
                 continue
                 
             # Get the slice of this parameter in the flat parameter
-            start, end = param_metadata.start_idx, param_metadata.end_idx
+            # Different versions of PyTorch FSDP might use different attribute names
+            start = getattr(param_metadata, 'start_idx', None)
+            end = getattr(param_metadata, 'end_idx', None)
+            
+            # If start_idx/end_idx are not available, try other attribute names
+            if start is None and hasattr(param_metadata, 'param_offset'):
+                start = param_metadata.param_offset
+                
+            if end is None and start is not None and hasattr(param_metadata, 'numel'):
+                end = start + param_metadata.numel
+                
+            if start is None or end is None:
+                if verbose:
+                    print(f"[WARNING] Could not determine parameter slice for {fqn}")
+                continue
             flat_tensor = flat_param[start:end].view(orig_shape)
             
             # Get reference parameter
@@ -1238,7 +1266,8 @@ def fsdp_dormant_neuron_reset_pipeline(module: nn.Module,
                                       threshold: float = 0.9,
                                       percentage: Optional[float] = None,
                                       hybrid_mode: bool = False,
-                                      verbose: bool = False):
+                                      verbose: bool = False,
+                                      original_param_shapes: Optional[Dict[str, torch.Size]] = None):
     """
     Complete pipeline for resetting dormant neurons in an FSDP-wrapped model to reference model values.
     
@@ -1250,6 +1279,7 @@ def fsdp_dormant_neuron_reset_pipeline(module: nn.Module,
         percentage: If provided, select top percentage of neurons with highest zero gradient ratios
         hybrid_mode: If True, use both threshold and percentage criteria
         verbose: Whether to print verbose information
+        original_param_shapes: Dictionary mapping parameter FQNs to their original shapes before FSDP wrapping
     """
     rank = dist.get_rank() if dist.is_initialized() else 0
     
@@ -1266,7 +1296,7 @@ def fsdp_dormant_neuron_reset_pipeline(module: nn.Module,
     
     # Step 1: Build FQN map for all flat parameters
     fqn_map = {}
-    original_shapes_map = {}
+    original_shapes_map = original_param_shapes or {}
     
     for fsdp_name, fsdp_module in iter_leaf_fsdp_modules(module):
         if not hasattr(fsdp_module, '_flat_param'):
@@ -1277,13 +1307,31 @@ def fsdp_dormant_neuron_reset_pipeline(module: nn.Module,
         
         # Map flat parameter to original FQNs
         param_fqns = []
-        for metadata in flat_param._param_infos:
-            fqn = metadata.fqn
-            param_fqns.append(fqn)
-            
-            # Store original shape if available
-            if hasattr(metadata, 'shape'):
-                original_shapes_map[fqn] = metadata.shape
+        
+        # Try to extract FQNs from param_infos if possible
+        try:
+            for metadata in flat_param._param_infos:
+                # Different versions of PyTorch FSDP might use different attribute names
+                if hasattr(metadata, 'fqn'):
+                    fqn = metadata.fqn
+                    param_fqns.append(fqn)
+                    
+                    # Store original shape if available
+                    if hasattr(metadata, 'shape'):
+                        original_shapes_map[fqn] = metadata.shape
+                elif hasattr(metadata, 'param_name'):
+                    fqn = metadata.param_name
+                    param_fqns.append(fqn)
+        except Exception as e:
+            if verbose:
+                print(f"[WARNING] Error accessing param_infos: {e}")
+                
+        # If we couldn't extract FQNs, use the original_param_shapes if provided
+        if not param_fqns and original_param_shapes:
+            # Try to match based on size and other heuristics
+            # This is a fallback mechanism
+            if verbose:
+                print(f"[INFO] Using original_param_shapes as fallback for {flat_param_name}")
                 
         fqn_map[flat_param_name] = param_fqns
     

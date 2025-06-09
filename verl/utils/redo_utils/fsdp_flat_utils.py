@@ -180,6 +180,16 @@ def analyze_all_fsdp_zero_grad_space(module, tau=0.1, verbose=True, original_sha
     from verl.utils.redo_utils.fsdp_flat_utils import compute_fsdp_zero_grad_space_ratio
     import torch.distributed as dist # For rank-specific logging
 
+    # --- NEW SIMPLER DEBUG PRINT: Log entry --- 
+    if verbose and (not dist.is_initialized() or dist.get_rank() == 0):
+        print(f"[DEBUG_ENTRY] ENTERING analyze_all_fsdp_zero_grad_space. Step: {current_step}")
+    # --- END NEW SIMPLER DEBUG PRINT ---
+
+    # --- DEBUG PRINT: Log invocation --- 
+    if verbose and (not dist.is_initialized() or dist.get_rank() == 0):
+        print(f"[DEBUG_INVOCATION] analyze_all_fsdp_zero_grad_space called. Step: {current_step}, Module ID: {id(module)}, Module Type: {type(module)}")
+    # --- END DEBUG PRINT ---
+
     # Loop is expected to run once for the root FSDP module due to the 'break'.
     # 'name' will be the FQN prefix for the root module (e.g., '', 'model').
     for name, submodule_obj in iter_leaf_fsdp_modules(module):

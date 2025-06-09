@@ -6,7 +6,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 
 LOGS_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../logs'))
-EXPER_PATTERN = re.compile(r'continual_countdown3b_sft_global_step_(\d+)_\d+')
+EXPER_PATTERN = re.compile(r'continual_countdown3b_sft_global_step_(\d+)(_reset)?_\d+')
 GROUPS = ['Group0', 'Group1', 'Group2', 'Group3']
 
 METRICS = [
@@ -55,19 +55,27 @@ def get_experiment_folders(logs_dir):
     folders = []
     for entry in os.listdir(logs_dir):
         path = os.path.join(logs_dir, entry)
-        if os.path.isdir(path) and EXPER_PATTERN.match(entry):
-            folders.append((entry, path))
-    return sorted(folders, key=lambda x: int(EXPER_PATTERN.match(x[0]).group(1)))
+        if os.path.isdir(path):
+            match = EXPER_PATTERN.match(entry)
+            if match:
+                global_step_num = int(match.group(1))
+                is_reset = match.group(2) is not None
+                folders.append((entry, path, global_step_num, is_reset))
+    # Sort by global_step_num, then by is_reset (False before True)
+    return sorted(folders, key=lambda x: (x[2], x[3]))
 
 def main():
     experiment_folders = get_experiment_folders(LOGS_DIR)
     print(f"Found {len(experiment_folders)} experiment folders.")
 
-    # Data structure: {global_step: {group: {metric: [(step, value), ...]}}}
+    # Data structure: {experiment_label: {group: {metric: [(step, value), ...]}}}
+    # experiment_label can be e.g., "15" or "15_reset"
     all_data = {}
-    for folder_name, folder_path in experiment_folders:
-        global_step = int(EXPER_PATTERN.match(folder_name).group(1))
-        all_data[global_step] = {}
+    for folder_name, folder_path, global_step_num, is_reset in experiment_folders:
+        experiment_label = f"{global_step_num}"
+        if is_reset:
+            experiment_label += "_reset"
+        all_data[experiment_label] = {}
         for group in GROUPS:
             group_files = glob.glob(os.path.join(folder_path, f"{group}_*.log"))
             if not group_files:
@@ -75,20 +83,29 @@ def main():
             # Use the latest file if multiple
             group_file = sorted(group_files)[-1]
             metric_data = parse_log_file(group_file, METRICS)
-            all_data[global_step][group] = metric_data
+            all_data[experiment_label][group] = metric_data
 
     # --- Plotting ---
     output_dir = os.path.join('plots', 'rl_after_sft')
     os.makedirs(output_dir, exist_ok=True)
 
-    # a. For metrics critic/score/mean, plot the group0's results as known in a figure, each line is a global_step
+    # Define a sort key for experiment labels
+    def sort_key_for_labels(label):
+        parts = label.split('_')
+        num = int(parts[0])
+        is_reset_label = len(parts) > 1 and parts[1] == 'reset'
+        return (num, is_reset_label)
+
+    sorted_experiment_labels = sorted(all_data.keys(), key=sort_key_for_labels)
+
+    # a. For metrics critic/score/mean, plot the group0's results as known in a figure, each line is an experiment_label
     plt.figure(figsize=(10,6))
-    for global_step in sorted(all_data.keys()):
-        group0 = all_data[global_step].get('Group0')
+    for experiment_label in sorted_experiment_labels:
+        group0 = all_data[experiment_label].get('Group0')
         if group0 and 'critic/score/mean' in group0:
             steps, values = zip(*group0['critic/score/mean'])
             smoothed_values = smooth_data(list(values))
-            plt.plot(steps, smoothed_values, label=f'global_step_{global_step}')
+            plt.plot(steps, smoothed_values, label=f'{experiment_label}')
     plt.title('Group0 (Known) - critic/score/mean')
     plt.xlabel('Step')
     plt.ylabel('critic/score/mean')
@@ -99,10 +116,10 @@ def main():
 
     # b. For metrics critic/score/mean, plot the average of [group1,group2,group3] as unknown
     plt.figure(figsize=(10,6))
-    for global_step in sorted(all_data.keys()):
+    for experiment_label in sorted_experiment_labels:
         group_vals = []
         for group in ['Group1','Group2','Group3']:
-            g = all_data[global_step].get(group)
+            g = all_data[experiment_label].get(group)
             if g and 'critic/score/mean' in g:
                 steps, values = zip(*g['critic/score/mean'])
                 group_vals.append(values)
@@ -112,7 +129,7 @@ def main():
             vals = np.mean([v[:min_len] for v in group_vals], axis=0)
             steps = range(min_len)
             smoothed_vals = smooth_data(list(vals))
-            plt.plot(steps, smoothed_vals, label=f'global_step_{global_step}')
+            plt.plot(steps, smoothed_vals, label=f'{experiment_label}')
     plt.title('Unknown Groups (avg 1-3) - critic/score/mean')
     plt.xlabel('Step')
     plt.ylabel('critic/score/mean')
@@ -121,10 +138,10 @@ def main():
     plt.savefig(os.path.join(output_dir, 'unknown_group123_critic_score_mean.png'))
     plt.close()
 
-    # c. For metrics zero_gradspace_ratio, plot the group0's results as known in a figure, each line is a global_step
+    # c. For metrics zero_gradspace_ratio, plot the group0's results as known in a figure, each line is an experiment_label
     plt.figure(figsize=(10,6))
-    for global_step in sorted(all_data.keys()):
-        group0 = all_data[global_step].get('Group0')
+    for experiment_label in sorted_experiment_labels:
+        group0 = all_data[experiment_label].get('Group0')
         values = None
         if group0:
             if 'zero_gradspace_ratio' in group0 and group0['zero_gradspace_ratio']:
@@ -133,7 +150,7 @@ def main():
                 steps, values = zip(*group0['actor/zero_gradspace_ratio'])
         if values:
             smoothed_values = smooth_data(list(values))
-            plt.plot(steps, smoothed_values, label=f'global_step_{global_step}')
+            plt.plot(steps, smoothed_values, label=f'{experiment_label}')
     plt.title('Group0 (Known) - zero_gradspace_ratio')
     plt.xlabel('Step')
     plt.ylabel('zero_gradspace_ratio')
@@ -144,10 +161,10 @@ def main():
 
     # d. Duplicate for second plot if needed (can be customized as needed)
     plt.figure(figsize=(10,6))
-    for global_step in sorted(all_data.keys()):
+    for experiment_label in sorted_experiment_labels:
         group_vals = []
         for group in ['Group1','Group2','Group3']:
-            g = all_data[global_step].get(group)
+            g = all_data[experiment_label].get(group)
             values = None
             if g:
                 if 'zero_gradspace_ratio' in g and g['zero_gradspace_ratio']:
@@ -161,7 +178,7 @@ def main():
             vals = np.mean([v[:min_len] for v in group_vals], axis=0)
             steps = range(min_len)
             smoothed_vals = smooth_data(list(vals))
-            plt.plot(steps, smoothed_vals, label=f'global_step_{global_step}')
+            plt.plot(steps, smoothed_vals, label=f'{experiment_label}')
     plt.title('Unknown Groups (avg 1-3) - zero_gradspace_ratio')
     plt.xlabel('Step')
     plt.ylabel('zero_gradspace_ratio')

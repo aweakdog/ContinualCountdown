@@ -1568,10 +1568,10 @@ def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=True, origi
         for group_name, group_items in layer_groups.items():
             if group_items:
                 print(f"\n--- {group_name.upper()} LAYERS ---")
-                for fqn, data in sorted(group_items, key=lambda x: x[0]):
-                    zero_count = data['zero']
-                    total_count = data['total']
-                    ratio = data['ratio']
+                for fqn, stats in sorted(group_items, key=lambda x: x[0]):
+                    zero_count = stats['zero']
+                    total_count = stats['total']
+                    ratio = stats['ratio']
                     print(f"{fqn:<50} {zero_count:<10} {total_count:<10} {ratio:.6f}")
         
         # Print global summary
@@ -2173,6 +2173,8 @@ def identify_dormant_neurons(zero_grad_ratios, tau=0.1, percentage=None, hybrid_
     zero_grad_ratios = {k: v for k, v in zero_grad_ratios.items() if k != '__global__'}
     
     # Process each parameter's zero gradient statistics
+    params_with_row_ratios_count = 0
+    params_with_actual_dormancy_count = 0
     for param_name, stats in zero_grad_ratios.items():
         # Skip parameters without proper stats
         if not isinstance(stats, dict):
@@ -2206,6 +2208,27 @@ def identify_dormant_neurons(zero_grad_ratios, tau=0.1, percentage=None, hybrid_
                 final_mask = dormant_mask
                 
             dormant_masks[param_name] = final_mask
+            
+            if rank == 0 and params_with_row_ratios_count < 5: # Log details for the first 5 params with row_ratios
+                print(f"[DEBUG_IDN_DETAIL][{param_name}] Tau: {tau:.4f}, Total rows: {stats['total']}, Num dormant rows: {final_mask.sum().item()}")
+                if final_mask.sum().item() > 0:
+                    print(f"[DEBUG_IDN_DETAIL][{param_name}] Example DORMANT row_ratios: {stats['row_ratios'][final_mask][:5].tolist()}")
+                if final_mask.sum().item() < stats['total'] and stats['total'] > 0:
+                    # Get non-dormant mask by inverting final_mask, ensure it's boolean
+                    non_dormant_mask = ~(final_mask.bool()) 
+                    if non_dormant_mask.sum().item() > 0:
+                         print(f"[DEBUG_IDN_DETAIL][{param_name}] Example NON-DORMANT row_ratios: {stats['row_ratios'][non_dormant_mask][:5].tolist()}")
+                elif stats['total'] == 0:
+                    print(f"[DEBUG_IDN_DETAIL][{param_name}] No rows to analyze (total_rows_for_param is 0).")
+            
+            if final_mask.sum().item() > 0:
+                params_with_actual_dormancy_count += 1
+            
+            params_with_row_ratios_count += 1
+    
+    if rank == 0:
+        print(f"[INFO] Processed {params_with_row_ratios_count} parameters with row_ratios for dormancy.")
+        print(f"[INFO] Found {params_with_actual_dormancy_count} parameters with at least one dormant row (row_ratio <= {tau}).")
     
     return dormant_masks
 

@@ -2514,10 +2514,18 @@ def fsdp_dormant_neuron_reset_pipeline(module: nn.Module,
                 
                 if local_param_name_from_meta:
                     # Construct the full FQN
-                    # fsdp_name is like '_fsdp_wrapped_module.model.layers.0.self_attn'
-                    # local_param_name_from_meta is like 'q_proj.weight' or 'weight'
-                    cleaned_module_fqn = _get_clean_module_fqn(fsdp_name)
-                    full_fqn = f"{cleaned_module_fqn}.{local_param_name_from_meta}"
+                    # fsdp_name is like '_fsdp_wrapped_module.model.layers.0.self_attn' or '_fsdp_wrapped_module.'
+                    # local_param_name_from_meta is like 'q_proj.weight' (relative) or 'model.embed_tokens.weight' (absolute for root params)
+                    cleaned_module_fqn = _get_clean_module_fqn(fsdp_name) # e.g., 'model.layers.0.self_attn' or ''
+                    
+                    if cleaned_module_fqn: 
+                        # Example: cleaned_module_fqn = 'model.layers.0.self_attn', local_param_name_from_meta = 'q_proj.weight'
+                        # Result: 'model.layers.0.self_attn.q_proj.weight'
+                        full_fqn = f"{cleaned_module_fqn}.{local_param_name_from_meta}"
+                    else:
+                        # Example: cleaned_module_fqn = '', local_param_name_from_meta = 'model.embed_tokens.weight' (from metadata.fqn for a root FSDP param)
+                        # Result: 'model.embed_tokens.weight'
+                        full_fqn = local_param_name_from_meta
                     param_fqns.append(full_fqn)
                     
                     # original_shapes_map (passed as original_param_shapes argument)

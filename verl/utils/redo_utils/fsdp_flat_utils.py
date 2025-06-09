@@ -161,90 +161,194 @@ def analyze_all_fsdp_dormant_neurons(module, mode='threshold', tau=0.1, verbose=
     #    print(f"[DormantNeuron][ALL] total_dormant={total_dormant}, total_params={total_count}, ratio={total_dormant/(total_count+1e-8):.6f}")
     return results
 
-def analyze_all_fsdp_zero_grad_space(module, tau=0.1, verbose=True, original_shapes_map=None, top_level_prefix=None, skip_mlp=True, skip_embed=True, current_step=None):
+def analyze_all_fsdp_zero_grad_space(module, tau=0.1, verbose=True, original_shapes_map=None, top_level_prefix=None, skip_mlp=True, skip_embed=True):
     """
-    Analyze the FSDP-wrapped module for zero grad space ratio.
-    Assumes the first module from iter_leaf_fsdp_modules is the root FSDP module and
-    compute_fsdp_zero_grad_space_ratio performs a full analysis on it.
+    Analyze all leaf FSDP-wrapped submodules for zero grad space ratio.
+    Returns a dict mapping module names to their zero grad stats and the global aggregate.
     
     Args:
-        module: The FSDP-wrapped module to analyze (expected to be the root FSDP module)
+        module: The module to analyze
         tau: Threshold for considering a gradient as zero
         verbose: Whether to print verbose output
-        original_shapes_map: Map of parameter FQNs to their original shapes
-        top_level_prefix: (Largely unused if the primary logic path is taken) Prefix for FQNs
-        skip_mlp: Whether to skip MLP layers during analysis
-        skip_embed: Whether to skip embedding layers during analysis
-        current_step: Current training step, for logging purposes
+        original_shapes_map: Map of parameter FQNs to their original shapes before FSDP wrapping
+        top_level_prefix: Prefix to use for parameter FQNs when analyzing the top-level module
+                         If None, will attempt to detect the appropriate prefix
     """
     from verl.utils.redo_utils.fsdp_flat_utils import compute_fsdp_zero_grad_space_ratio
-    import torch.distributed as dist # For rank-specific logging
-
-    # --- NEW SIMPLER DEBUG PRINT: Log entry --- 
-    if verbose and (not dist.is_initialized() or dist.get_rank() == 0):
-        print(f"[DEBUG_ENTRY] ENTERING analyze_all_fsdp_zero_grad_space. Step: {current_step}")
-    # --- END NEW SIMPLER DEBUG PRINT ---
-
-    # --- DEBUG PRINT: Log invocation --- 
-    if verbose and (not dist.is_initialized() or dist.get_rank() == 0):
-        print(f"[DEBUG_INVOCATION] analyze_all_fsdp_zero_grad_space called. Step: {current_step}, Module ID: {id(module)}, Module Type: {type(module)}")
-    # --- END DEBUG PRINT ---
-
-    # Loop is expected to run once for the root FSDP module due to the 'break'.
-    # 'name' will be the FQN prefix for the root module (e.g., '', 'model').
-    for name, submodule_obj in iter_leaf_fsdp_modules(module):
-        if verbose and (not dist.is_initialized() or dist.get_rank() == 0):
-            print(f'[INFO] Analyzing FSDP module: {name if name else "<root>"}')
+    results = {}
+    total_zero = 0
+    total_rows = 0
+    
+    ## Check if the module itself is FSDP-wrapped
+    #if hasattr(module, '_fsdp_wrapped_module'):
+    #    # Try to determine the appropriate prefix for the top-level module
+    #    if top_level_prefix is None:
+    #        # Check if this is a Qwen model by inspecting the wrapped module
+    #        wrapped_module = module._fsdp_wrapped_module
+    #        if hasattr(wrapped_module, 'model') and hasattr(wrapped_module.model, 'embed_tokens'):
+    #            # For Qwen models, parameters are typically prefixed with 'model'
+    #            detected_prefix = "model"
+    #        else:
+    #            # Default to empty prefix if we can't determine the structure
+    #            detected_prefix = ""
+    #        
+    #        if verbose:
+    #            print(f"[ZeroGradV2] Auto-detected top-level prefix: '{detected_prefix}'")
+    #    else:
+    #        detected_prefix = top_level_prefix
+    #    
+    #    if verbose:
+    #        print(f"[ZeroGradV2] Analyzing top-level FSDP module directly with prefix: '{detected_prefix}'")
+    #    
+    #    try:
+    #        # Analyze the top-level module directly
+    #        stats = compute_fsdp_zero_grad_space_ratio(module, tau=tau, verbose=verbose, 
+    #                                                  original_shapes_map=original_shapes_map, 
+    #                                                  fqn_prefix=detected_prefix)
+    #        if stats is not None and '__global__' in stats:
+    #            results[detected_prefix or "top_level"] = stats
+    #            global_stats = stats['__global__']
+    #            total_zero = global_stats.get('zero', 0)
+    #            total_rows = global_stats.get('total', 0)
+    #            global_ratio = total_zero / (total_rows + 1e-8) if total_rows > 0 else 0.0
+    #            results['__global__'] = {'zero': total_zero, 'total': total_rows, 'ratio': global_ratio}
+    #            return results
+    #        else:
+    #            if verbose:
+    #                print(f"[WARN] Top-level module analysis failed or returned no global stats")
+    #    except Exception as e:
+    #        if verbose:
+    #            print(f"[WARN] Could not analyze zero grad space for top-level module: {e}")
+    #            import traceback
+    #            traceback.print_exc()
+    
+    ## Fall back to per-layer analysis if top-level analysis fails or module is not FSDP-wrapped
+    #if verbose:
+    #    print(f"[ZeroGradV2] Falling back to per-layer FSDP module analysis")
+    
+    for name, submodule in iter_leaf_fsdp_modules(module):
+        if verbose:
+            print(f'169Analyzing submodule: {name}')
         try:
-            # compute_fsdp_zero_grad_space_ratio is expected to return a flat dictionary
-            # with all parameter FQNs and their stats, including a '__global__' key.
-            stats = compute_fsdp_zero_grad_space_ratio(
-                submodule_obj, 
-                tau=tau, 
-                verbose=verbose, 
-                original_shapes_map=original_shapes_map, 
-                fqn_prefix=name, 
-                skip_mlp=skip_mlp,
-                skip_embed=skip_embed
-            )
-
-            if stats: # If stats is not None and not empty
-                if verbose and ('__global__' in stats) and \
-                   (not dist.is_initialized() or dist.get_rank() == 0):
-                    global_ratio_from_stats = stats['__global__'].get('ratio', 0.0)
-                    print(f"[ZeroGradV2-Metrics][FSDP Root Analysis][Step {current_step}] Aggregated Zero Grad Space Ratio: {global_ratio_from_stats:.4f}")
-                
-                # Ensure 'aggregated_ratio' is present in '__global__' for compatibility with dp_actor.py
-                if '__global__' in stats and 'ratio' in stats['__global__'] and 'aggregated_ratio' not in stats['__global__']:
-                    stats['__global__']['aggregated_ratio'] = stats['__global__']['ratio']
-                elif '__global__' not in stats:
-                     stats['__global__'] = {'zero': 0, 'total': 0, 'ratio': 0.0, 'aggregated_ratio': 0.0}
-
-                return stats # Return the comprehensive stats dictionary directly
+            stats = compute_fsdp_zero_grad_space_ratio(submodule, tau=tau, verbose=verbose, 
+                                                       original_shapes_map=original_shapes_map, 
+                                                       fqn_prefix=name,
+                                                       skip_mlp=skip_mlp,
+                                                       skip_embed=skip_embed)
+            if stats is not None and '__global__' in stats:
+                submodule_global_stats = stats['__global__']
+                total_zero += submodule_global_stats.get('zero', 0)
+                total_rows += submodule_global_stats.get('total', 0)
+                results[name] = stats # Store the full detailed stats for this submodule
             else:
-                if verbose and (not dist.is_initialized() or dist.get_rank() == 0):
-                    print(f"[WARN] compute_fsdp_zero_grad_space_ratio returned None or empty for FSDP module: {name if name else '<root>'}")
-                return {'__global__': {'zero': 0, 'total': 0, 'ratio': 0.0, 'aggregated_ratio': 0.0}} # Return minimal dict
+                results[name] = None
+                if verbose:
+                    if stats is None:
+                        print(f"[WARN] Zero-grad analysis returned None for submodule {name}")
+                    elif '__global__' not in stats:
+                        print(f"[WARN] '__global__' key missing in stats for submodule {name}")
         except Exception as e:
-            if verbose: # Simplified condition to always print traceback if verbose is true
-                # Determine rank for logging, even if dist might be uninitialized in some edge cases for this print
-                current_rank = -1 # Default if dist not available
-                if dist.is_available() and dist.is_initialized():
-                    current_rank = dist.get_rank()
-                
-                print(f"[ERROR][Rank {current_rank}] Exception in analyze_all_fsdp_zero_grad_space for FSDP module '{name if name else '<root>'}': {e}")
-                import traceback
-                traceback.print_exc()
-            return {'__global__': {'zero': 0, 'total': 0, 'ratio': 0.0, 'aggregated_ratio': 0.0}} # Return minimal dict on error
-        finally:
-            # This break is intentional, assuming the first 'submodule_obj' is the root FSDP
-            # and compute_fsdp_zero_grad_space_ratio handles full analysis.
-            break 
+            if verbose:
+                print(f"[WARN] Could not analyze zero grad space for {name}: {e}")
+            results[name] = None
+        break # hacky
 
-    # This part is reached if iter_leaf_fsdp_modules yields nothing.
-    if verbose and (not dist.is_initialized() or dist.get_rank() == 0):
-        print("[WARN] No FSDP modules found by iter_leaf_fsdp_modules in analyze_all_fsdp_zero_grad_space.")
-    return {'__global__': {'zero': 0, 'total': 0, 'ratio': 0.0, 'aggregated_ratio': 0.0}} # Return minimal dict
+    # Calculate the aggregated ratio from the total counts
+    global_ratio = total_zero / (total_rows + 1e-8) if total_rows > 0 else 0.0
+    
+    # Create the global stats dictionary with the aggregated ratio
+    results['__global__'] = {
+        'zero': total_zero, 
+        'total': total_rows, 
+        'ratio': global_ratio,
+        'aggregated_ratio': global_ratio  # Add aggregated_ratio key explicitly for dp_actor.py
+    }
+    
+    return results
+
+#def analyze_all_fsdp_zero_grad_space(module, tau=0.1, verbose=True, original_shapes_map=None, top_level_prefix=None, skip_mlp=True, skip_embed=True, current_step=None):
+#    """
+#    Analyze the FSDP-wrapped module for zero grad space ratio.
+#    Assumes the first module from iter_leaf_fsdp_modules is the root FSDP module and
+#    compute_fsdp_zero_grad_space_ratio performs a full analysis on it.
+#    
+#    Args:
+#        module: The FSDP-wrapped module to analyze (expected to be the root FSDP module)
+#        tau: Threshold for considering a gradient as zero
+#        verbose: Whether to print verbose output
+#        original_shapes_map: Map of parameter FQNs to their original shapes
+#        top_level_prefix: (Largely unused if the primary logic path is taken) Prefix for FQNs
+#        skip_mlp: Whether to skip MLP layers during analysis
+#        skip_embed: Whether to skip embedding layers during analysis
+#        current_step: Current training step, for logging purposes
+#    """
+#    from verl.utils.redo_utils.fsdp_flat_utils import compute_fsdp_zero_grad_space_ratio
+#    import torch.distributed as dist # For rank-specific logging
+#
+#    # --- NEW SIMPLER DEBUG PRINT: Log entry --- 
+#    if verbose and (not dist.is_initialized() or dist.get_rank() == 0):
+#        print(f"[DEBUG_ENTRY] ENTERING analyze_all_fsdp_zero_grad_space. Step: {current_step}")
+#    # --- END NEW SIMPLER DEBUG PRINT ---
+#
+#    # --- DEBUG PRINT: Log invocation --- 
+#    if verbose and (not dist.is_initialized() or dist.get_rank() == 0):
+#        print(f"[DEBUG_INVOCATION] analyze_all_fsdp_zero_grad_space called. Step: {current_step}, Module ID: {id(module)}, Module Type: {type(module)}")
+#    # --- END DEBUG PRINT ---
+#
+#    # Directly use 'module' as the FSDP module to analyze.
+#    # 'name' (fqn_prefix) will be an empty string, assuming 'module' is the root.
+#    name = "" 
+#    submodule_obj = module # In this context, module is the FSDP instance directly
+#
+#    if verbose and (not dist.is_initialized() or dist.get_rank() == 0):
+#        # Updated log message to reflect direct call
+#        print(f'[INFO][analyze_all_fsdp_zero_grad_space] Analyzing FSDP module directly. Module Type: {type(submodule_obj)}, Module ID: {id(submodule_obj)}, Step: {current_step}')
+#
+#    try:
+#        # compute_fsdp_zero_grad_space_ratio is expected to return a flat dictionary
+#        # with all parameter FQNs and their stats, including a '__global__' key.
+#        stats = compute_fsdp_zero_grad_space_ratio(
+#            submodule_obj,  # Use submodule_obj which is 'module'
+#            tau=tau, 
+#            verbose=verbose, 
+#            original_shapes_map=original_shapes_map, 
+#            fqn_prefix=name, # Use the defined 'name' (empty string)
+#            skip_mlp=skip_mlp,
+#            skip_embed=skip_embed
+#        )
+#
+#        if stats: # If stats is not None and not empty
+#            if verbose and ('__global__' in stats) and \
+#               (not dist.is_initialized() or dist.get_rank() == 0):
+#                global_ratio_from_stats = stats['__global__'].get('ratio', 0.0)
+#                # Updated log message
+#                print(f"[ZeroGradV2-Metrics][FSDP Root Analysis][Step {current_step}] Aggregated Zero Grad Space Ratio (direct call): {global_ratio_from_stats:.4f}")
+#            
+#            # Ensure 'aggregated_ratio' is present in '__global__' for compatibility with dp_actor.py
+#            if '__global__' in stats and 'ratio' in stats['__global__'] and 'aggregated_ratio' not in stats['__global__']:
+#                stats['__global__']['aggregated_ratio'] = stats['__global__']['ratio']
+#            elif '__global__' not in stats: # If __global__ key is missing entirely
+#                 stats['__global__'] = {'zero': 0, 'total': 0, 'ratio': 0.0, 'aggregated_ratio': 0.0}
+#
+#            return stats # Return the comprehensive stats dictionary directly
+#        else:
+#            # This case handles if compute_fsdp_zero_grad_space_ratio itself returns None or empty
+#            if verbose and (not dist.is_initialized() or dist.get_rank() == 0):
+#                # Updated log message
+#                print(f"[WARN][analyze_all_fsdp_zero_grad_space] compute_fsdp_zero_grad_space_ratio returned None or empty for FSDP module (direct call). Module ID: {id(submodule_obj)}")
+#            return {'__global__': {'zero': 0, 'total': 0, 'ratio': 0.0, 'aggregated_ratio': 0.0}} # Return minimal dict
+#            
+#    except Exception as e:
+#        if verbose: 
+#            current_rank = -1 
+#            if dist.is_available() and dist.is_initialized():
+#                current_rank = dist.get_rank()
+#            
+#            # Updated log message
+#            print(f"[ERROR][Rank {current_rank}][analyze_all_fsdp_zero_grad_space] Exception in direct call. Module ID: {id(submodule_obj)}. Error: {e}")
+#            import traceback
+#            traceback.print_exc()
+#        return {'__global__': {'zero': 0, 'total': 0, 'ratio': 0.0, 'aggregated_ratio': 0.0}} # Return minimal dict on error
 
 def redo_reset_all_fsdp_layers(module, mode='threshold', tau=0.1, verbose=True, use_lecun_init=True, original_shapes_map=None):
     """

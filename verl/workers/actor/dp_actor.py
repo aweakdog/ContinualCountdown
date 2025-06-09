@@ -414,8 +414,16 @@ class DataParallelPPOActor(BasePPOActor):
                     # Ensure imports are at the top of the file or within the class if not already.
                     # from verl.utils.redo_utils.fsdp_flat_utils import analyze_all_fsdp_zero_grad_space, analyze_all_fsdp_dormant_neurons
                     
-                    if rank == 0: print(f"[INFO][Actor][Step {self.global_steps}] Analyzing FSDP gradient metrics...")
+                    if rank == 0: 
+                        print(f"[INFO][Actor][Step {self.global_steps}] Analyzing FSDP gradient metrics...")
+                        print(f"[DEBUG_DP_ACTOR_CALL][Rank {rank}][Step {self.global_steps}] PRE-CALL to analyze_all_fsdp_zero_grad_space")
+                    
                     zero_grad_stats = analyze_all_fsdp_zero_grad_space(self.actor_module, tau=self.redo_tau, verbose=(rank==0), original_shapes_map=self.original_param_shapes, skip_mlp=True, skip_embed=True, current_step=self.global_steps) # <<< Cascade: Pass original_param_shapes and skip MLP/embedding layers, and current_step
+                    
+                    if rank == 0 and zero_grad_stats is not None and '__global__' in zero_grad_stats:
+                        print(f"[DEBUG_DP_ACTOR_CALL][Rank {rank}][Step {self.global_steps}] POST-CALL analyze_all_fsdp_zero_grad_space. Aggregated Ratio: {zero_grad_stats['__global__'].get('aggregated_ratio', 'N/A')}, Keys: {list(zero_grad_stats.keys())[:10]}...") # Print first 10 keys
+                    elif rank == 0:
+                        print(f"[DEBUG_DP_ACTOR_CALL][Rank {rank}][Step {self.global_steps}] POST-CALL analyze_all_fsdp_zero_grad_space. zero_grad_stats is None or missing '__global__'. zero_grad_stats: {zero_grad_stats}")
                     #dormant_stats = analyze_all_fsdp_dormant_neurons(self.actor_module, mode=self.redo_mode, tau=self.redo_tau, verbose=(rank==0))
                     
                     # if dormant_stats and '__global__' in dormant_stats: # analyze_all_fsdp_dormant_neurons also returns a __global__ key

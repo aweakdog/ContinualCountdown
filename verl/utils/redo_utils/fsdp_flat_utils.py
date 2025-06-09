@@ -2256,8 +2256,9 @@ def reset_dormant_neurons_to_reference(module: nn.Module,
         raise ValueError("Reference model parameters not loaded. Call load_reference_model first.")
     
     rank = dist.get_rank() if dist.is_initialized() else 0
-    reset_count = 0
-    total_params = 0
+    reset_count = 0  # Total number of dormant rows/neurons reset
+    total_params_elements_in_reset_layers = 0  # Total elements in parameters that had at least one neuron reset
+    params_with_resets_count = 0  # Number of parameters that had at least one neuron reset
     
     # Process each leaf FSDP module
     for fsdp_name, fsdp_module in iter_leaf_fsdp_modules(module):
@@ -2275,6 +2276,12 @@ def reset_dormant_neurons_to_reference(module: nn.Module,
             
         # Process each original parameter in this flat parameter
         for fqn in param_fqns:
+            if verbose and rank == 0:
+                # Print only a few keys from dormant_masks to avoid excessive logging
+                dm_keys_sample = list(dormant_masks.keys())[:5]
+                if len(dormant_masks.keys()) > 5:
+                    dm_keys_sample.append("...")
+                print(f"[DEBUG_RDNTR_FQN] Checking FQN: '{fqn}'. Available in dormant_masks (sample): {dm_keys_sample}")
             # Skip if no dormant mask for this parameter
             if fqn not in dormant_masks:
                 continue
@@ -2345,6 +2352,9 @@ def reset_dormant_neurons_to_reference(module: nn.Module,
             # Apply dormant mask and reset weights
             num_dormant = dormant_mask.sum().item()
             if num_dormant > 0:
+                if verbose and rank == 0:
+                    print(f"[DEBUG_RDNTR_RESETTING] FQN: {fqn} has {num_dormant} dormant rows. Proceeding with reset.")
+                params_with_resets_count += 1
                 with torch.no_grad():
                     # Expand mask to match parameter dimensions if needed
                     if dormant_mask.dim() == 1 and flat_tensor.dim() == 2:
@@ -2355,7 +2365,7 @@ def reset_dormant_neurons_to_reference(module: nn.Module,
                     # Reset dormant neurons to reference model values
                     flat_tensor[expanded_mask] = ref_param.to(flat_tensor.device)[expanded_mask]
                     reset_count += num_dormant
-                    total_params += flat_tensor.numel()
+                    total_params_elements_in_reset_layers += flat_tensor.numel()
                     
                     # Reset optimizer state if provided
                     if optimizer is not None:
@@ -2363,8 +2373,14 @@ def reset_dormant_neurons_to_reference(module: nn.Module,
                                                                orig_shape, expanded_mask, verbose)
     
     if verbose and rank == 0:
-        print(f"[INFO] Reset {reset_count} dormant parameters out of {total_params} total parameters")
-        print(f"[INFO] Reset percentage: {reset_count / max(1, total_params) * 100:.2f}%")
+        print(f"[INFO] Dormant Neuron Reset Summary:")
+        print(f"  - Parameters with at least one dormant row reset: {params_with_resets_count}")
+        print(f"  - Total individual dormant rows/neurons reset: {reset_count}")
+        print(f"  - Total elements in affected parameters: {total_params_elements_in_reset_layers}")
+        if total_params_elements_in_reset_layers > 0:
+            print(f"  - Percentage of elements reset in affected parameters: {reset_count / total_params_elements_in_reset_layers * 100:.2f}%")
+        else:
+            print(f"  - Percentage of elements reset in affected parameters: 0.00%")
 
 
 def reset_optimizer_state_for_dormant_neurons(optimizer: Optimizer,

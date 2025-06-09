@@ -1309,7 +1309,10 @@ def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=True, origi
                         # Check if it's a tensor and has data to avoid printing for empty tensors if they somehow appear
                         _has_data = (isinstance(current_rr_candidate, torch.Tensor) and current_rr_candidate.numel() > 0)
                         if _has_data:
-                             print(f"[DEBUG_RR_FOUND_NON_SKIPPED] Rank {rank}, FQN {fqn_item}: Found row_ratios in gathered stats. Type: {_rr_type}, Shape: {_rr_shape}, Device: {_rr_device}")
+                             _rr_min = torch.min(current_rr_candidate).item() if current_rr_candidate.numel() > 0 else 'N/A'
+                             _rr_max = torch.max(current_rr_candidate).item() if current_rr_candidate.numel() > 0 else 'N/A'
+                             _rr_mean = torch.mean(current_rr_candidate).item() if current_rr_candidate.numel() > 0 else 'N/A'
+                             print(f"[DEBUG_RR_FOUND_NON_SKIPPED] Rank {rank}, FQN {fqn_item}: Found row_ratios. Type: {_rr_type}, Shape: {_rr_shape}, Device: {_rr_device}, Min: {_rr_min:.4f}, Max: {_rr_max:.4f}, Mean: {_rr_mean:.4f}")
                     # ---- END DEBUG PRINT (NON-SKIPPED) ----
                     retrieved_row_ratios = current_rr_candidate
                     if retrieved_row_ratios is not None:

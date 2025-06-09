@@ -2256,6 +2256,7 @@ def reset_dormant_neurons_to_reference(module: nn.Module,
         raise ValueError("Reference model parameters not loaded. Call load_reference_model first.")
     
     rank = dist.get_rank() if dist.is_initialized() else 0
+    printed_osm_keys_once = False # Flag to print original_shapes_map keys only once
     reset_count = 0  # Total number of dormant rows/neurons reset
     total_params_elements_in_reset_layers = 0  # Total elements in parameters that had at least one neuron reset
     params_with_resets_count = 0  # Number of parameters that had at least one neuron reset
@@ -2275,6 +2276,10 @@ def reset_dormant_neurons_to_reference(module: nn.Module,
             continue
             
         # Process each original parameter in this flat parameter
+        if verbose and rank == 0 and not printed_osm_keys_once and original_shapes_map:
+            print(f"[DEBUG_RDNTR_INIT] original_shapes_map keys (sample): {list(original_shapes_map.keys())[:10]}")
+            printed_osm_keys_once = True
+
         for fqn in param_fqns:
             if verbose and rank == 0:
                 # Print only a few keys from dormant_masks to avoid excessive logging
@@ -2284,37 +2289,42 @@ def reset_dormant_neurons_to_reference(module: nn.Module,
                 print(f"[DEBUG_RDNTR_FQN] Checking FQN: '{fqn}'. Available in dormant_masks (sample): {dm_keys_sample}")
             # Skip if no dormant mask for this parameter
             if fqn not in dormant_masks:
+                if verbose and rank == 0:
+                    print(f"[DEBUG_RDNTR_SKIP] FQN '{fqn}' not found in dormant_masks. Skipping.")
                 continue
                 
             # Get original shape and dormant mask
             orig_shape = original_shapes_map.get(fqn)
             if orig_shape is None or len(orig_shape) != 2:  # Only handle 2D parameters
+                if verbose and rank == 0:
+                    print(f"[DEBUG_RDNTR_SKIP] FQN '{fqn}' skipped. orig_shape: {orig_shape}. Must be 2D and not None.")
                 continue
                 
-            dormant_mask = dormant_masks[fqn]
-            
             # Get metadata for this parameter in the flat parameter
             param_metadata = None
             try:
-                for metadata in flat_param._param_infos:
-                    # Try different attribute names that might contain the parameter name
-                    param_name = None
-                    if hasattr(metadata, 'fqn'):
-                        param_name = metadata.fqn
-                    elif hasattr(metadata, 'param_name'):
-                        param_name = metadata.param_name
-                        
-                    if param_name == fqn:
-                        param_metadata = metadata
+                # Find the metadata for the current fqn within the flat_param's original parameters
+                # This relies on fqn matching one of the original_fqns in param_metadata_list
+                for meta_idx, meta in enumerate(flat_param._param_metadata_list):
+                    current_meta_fqn = getattr(meta, 'fqn', None) # FSDP often stores full FQN here
+                    if verbose and rank == 0:
+                        # This log can be very verbose, print only if fqn might be problematic or for specific debug
+                        # For now, let's keep it to see the comparison if metadata is not found later
+                        pass # print(f"[DEBUG_RDNTR_METAMATCH_DETAIL] Comparing our fqn='{fqn}' with meta.fqn='{current_meta_fqn}' from _param_metadata_list for {flat_param_name}")
+                    if current_meta_fqn == fqn:
+                        param_metadata = meta
                         break
-            except Exception as e:
-                if verbose:
-                    print(f"[WARNING] Error accessing param_infos for {fqn}: {e}")
+                    # Sometimes metadata might only have local 'param_name'. 
+                    # Our 'fqn' is already the full FQN from fqn_map, so direct match to 'meta.fqn' is preferred.
+                    # A more robust way would be to ensure fqn_map itself is derived perfectly from these metadatas earlier.
+            except AttributeError:
+                if verbose and rank == 0:
+                    print(f"[DEBUG_RDNTR_SKIP] FQN '{fqn}' skipped due to AttributeError accessing _param_metadata_list for {flat_param_name}.")
                 continue
-                    
+            
             if param_metadata is None:
-                if verbose:
-                    print(f"[WARNING] Could not find metadata for parameter {fqn}")
+                if verbose and rank == 0:
+                    print(f"[DEBUG_RDNTR_SKIP] FQN '{fqn}' skipped. No matching metadata found in {flat_param_name}'s _param_metadata_list. Searched for FQN: '{fqn}'. Available meta.fqns (sample): {[getattr(m, 'fqn', None) for m in flat_param._param_metadata_list[:5]]}")
                 continue
                 
             # Get the slice of this parameter in the flat parameter
@@ -2330,15 +2340,16 @@ def reset_dormant_neurons_to_reference(module: nn.Module,
                 end = start + param_metadata.numel
                 
             if start is None or end is None:
-                if verbose:
-                    print(f"[WARNING] Could not determine parameter slice for {fqn}")
+                if verbose and rank == 0:
+                    print(f"[DEBUG_RDNTR_SKIP] FQN '{fqn}' skipped. Could not determine parameter slice in {flat_param_name}.")
                 continue
+                
             flat_tensor = flat_param[start:end].view(orig_shape)
             
             # Get reference parameter
             if fqn not in REFERENCE_MODEL_PARAMS:
                 if verbose and rank == 0:
-                    print(f"[WARNING] Parameter {fqn} not found in reference model")
+                    print(f"[DEBUG_RDNTR_SKIP] FQN '{fqn}' skipped. Parameter not found in reference model.")
                 continue
                 
             ref_param = REFERENCE_MODEL_PARAMS[fqn]
@@ -2346,22 +2357,48 @@ def reset_dormant_neurons_to_reference(module: nn.Module,
             # Check shape compatibility
             if flat_tensor.shape != ref_param.shape:
                 if verbose and rank == 0:
-                    print(f"[WARNING] Shape mismatch for {fqn}: {flat_tensor.shape} vs {ref_param.shape}")
+                    print(f"[DEBUG_RDNTR_SKIP] FQN '{fqn}' skipped. Shape mismatch: {flat_tensor.shape} vs {ref_param.shape}.")
                 continue
                 
             # Apply dormant mask and reset weights
-            num_dormant = dormant_mask.sum().item()
+            num_dormant = dormant_masks[fqn].sum().item()
+            if verbose and rank == 0:
+                print(f"[DEBUG_RDNTR_DORMANCY_CHECK] FQN: {fqn}, NumDormant in mask: {num_dormant}")
+
             if num_dormant > 0:
                 if verbose and rank == 0:
                     print(f"[DEBUG_RDNTR_RESETTING] FQN: {fqn} has {num_dormant} dormant rows. Proceeding with reset.")
-                params_with_resets_count += 1
-                with torch.no_grad():
-                    # Expand mask to match parameter dimensions if needed
-                    if dormant_mask.dim() == 1 and flat_tensor.dim() == 2:
-                        expanded_mask = dormant_mask.unsqueeze(1).expand_as(flat_tensor)
-                    else:
-                        expanded_mask = dormant_mask
-                        
+            else: # num_dormant == 0
+                if verbose and rank == 0:
+                    print(f"[DEBUG_RDNTR_SKIP] FQN: {fqn} skipped as num_dormant is 0.")
+                continue
+                
+            # Expand mask to match parameter dimensions if needed
+            current_dormant_mask = dormant_masks[fqn] # Use a local variable for clarity
+            if current_dormant_mask.dim() == 1 and flat_tensor.dim() == 2:
+                expanded_mask = current_dormant_mask.unsqueeze(1).expand_as(flat_tensor)
+            else:
+                expanded_mask = current_dormant_mask
+            
+            # Increment count of parameters that had resets
+            params_with_resets_count += 1
+            
+            # Reset dormant neurons to reference model values
+            with torch.no_grad():
+                flat_tensor[expanded_mask] = ref_param.to(flat_tensor.device)[expanded_mask]
+                reset_count += num_dormant # num_dormant was calculated before the 'if num_dormant > 0' block
+                total_params_elements_in_reset_layers += flat_tensor.numel()
+                
+                # Reset optimizer state if provided
+                if optimizer is not None:
+                    reset_optimizer_state_for_dormant_neurons(optimizer, flat_param, 
+                                                              start, end, # These are start_idx, end_idx for the param in flat_param
+                                                              orig_shape, expanded_mask, verbose)
+                
+                # Reset optimizer state if provided
+                if optimizer is not None:
+                    reset_optimizer_state_for_dormant_neurons(optimizer, flat_param, start, end, 
+                                                           orig_shape, expanded_mask, verbose)
                     # Reset dormant neurons to reference model values
                     flat_tensor[expanded_mask] = ref_param.to(flat_tensor.device)[expanded_mask]
                     reset_count += num_dormant

@@ -2546,7 +2546,7 @@ def fsdp_dormant_neuron_reset_pipeline(module: nn.Module,
     
     # Step 3: Reset dormant neurons to reference model values
     reset_dormant_neurons_to_reference(
-        module, dormant_masks, fqn_map, original_shapes_map, optimizer, verbose
+        module, dormant_masks, fqn_map, original_param_shapes, optimizer, verbose
     )
     
     if verbose and rank == 0:

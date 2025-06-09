@@ -2479,7 +2479,18 @@ def fsdp_dormant_neuron_reset_pipeline(module: nn.Module,
     
     # Step 1: Build FQN map for all flat parameters
     fqn_map = {}
-    original_shapes_map = original_param_shapes or {}
+    # original_shapes_map argument is already correctly keyed by full FQNs and should be read-only here.
+    # We'll use it for lookups if needed but not modify it.
+
+    def _get_clean_module_fqn(fsdp_module_fqn: str) -> str:
+        # Remove _fsdp_wrapped_module. prefix to get model-relative FQN
+        # e.g., _fsdp_wrapped_module.model.layers.0.self_attn -> model.layers.0.self_attn
+        prefix = fsdp_module_fqn
+        if prefix.startswith("_fsdp_wrapped_module."):
+            prefix = prefix[len("_fsdp_wrapped_module."):]
+        # Handle potential nested FSDP wrapping if it results in multiple prefixes, though less common for leaf FSDP names
+        # For simplicity, this handles one level. If deeper nesting prefixes occur in fsdp_name, this might need to be a loop.
+        return prefix
     
     for fsdp_name, fsdp_module in iter_leaf_fsdp_modules(module):
         if not hasattr(fsdp_module, '_flat_param'):
@@ -2495,16 +2506,23 @@ def fsdp_dormant_neuron_reset_pipeline(module: nn.Module,
         try:
             for metadata in flat_param._param_infos:
                 # Different versions of PyTorch FSDP might use different attribute names
+                local_param_name_from_meta = None
                 if hasattr(metadata, 'fqn'):
-                    fqn = metadata.fqn
-                    param_fqns.append(fqn)
-                    
-                    # Store original shape if available
-                    if hasattr(metadata, 'shape'):
-                        original_shapes_map[fqn] = metadata.shape
+                    local_param_name_from_meta = metadata.fqn
                 elif hasattr(metadata, 'param_name'):
-                    fqn = metadata.param_name
-                    param_fqns.append(fqn)
+                    local_param_name_from_meta = metadata.param_name
+                
+                if local_param_name_from_meta:
+                    # Construct the full FQN
+                    # fsdp_name is like '_fsdp_wrapped_module.model.layers.0.self_attn'
+                    # local_param_name_from_meta is like 'q_proj.weight' or 'weight'
+                    cleaned_module_fqn = _get_clean_module_fqn(fsdp_name)
+                    full_fqn = f"{cleaned_module_fqn}.{local_param_name_from_meta}"
+                    param_fqns.append(full_fqn)
+                    
+                    # original_shapes_map (passed as original_param_shapes argument)
+                    # should already contain the correct original shape keyed by full_fqn.
+                    # No need to update it here from metadata.shape.
         except Exception as e:
             if verbose:
                 print(f"[WARNING] Error accessing param_infos: {e}")

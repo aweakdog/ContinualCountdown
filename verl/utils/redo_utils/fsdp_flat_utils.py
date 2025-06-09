@@ -1071,11 +1071,14 @@ def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=True, origi
             
             # Additional layer-specific warning
             if "mlp" in fqn:
-                print(f"[ZeroGradV2-FIX]   - High dormancy in MLP layer: {zero_rows/H_local_scalar:.4f}")
+                ratio_str = f"{zero_rows/H_local_scalar:.4f}" if H_local_scalar > 0 else "N/A (H_local_scalar=0)"
+                print(f"[ZeroGradV2-FIX]   - High dormancy in MLP layer: {ratio_str}")
             elif "attn" in fqn:
-                print(f"[ZeroGradV2-FIX]   - High dormancy in attention layer: {zero_rows/H_local_scalar:.4f}")
+                ratio_str = f"{zero_rows/H_local_scalar:.4f}" if H_local_scalar > 0 else "N/A (H_local_scalar=0)"
+                print(f"[ZeroGradV2-FIX]   - High dormancy in attention layer: {ratio_str}")
             else:
-                print(f"[ZeroGradV2-FIX]   - High dormancy in other layer: {zero_rows/H_local_scalar:.4f}")
+                ratio_str = f"{zero_rows/H_local_scalar:.4f}" if H_local_scalar > 0 else "N/A (H_local_scalar=0)"
+                print(f"[ZeroGradV2-FIX]   - High dormancy in other layer: {ratio_str}")
             
             # We've already printed most debug info earlier, just add this to the existing output
             # No need to repeat it here

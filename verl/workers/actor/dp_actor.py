@@ -397,6 +397,13 @@ class DataParallelPPOActor(BasePPOActor):
         if dist.is_available() and dist.is_initialized():
             rank = dist.get_rank()
         is_fsdp = isinstance(self.actor_module, FSDP)
+
+        # === Debug prints for global_steps and actor_module type ===
+        if dist.is_available() and dist.is_initialized():
+            print(f"[DEBUG_DP_ACTOR][Rank {dist.get_rank()}] Before FSDP analysis: self.global_steps = {self.global_steps} (type: {type(self.global_steps)}), self.actor_module type = {type(self.actor_module)}, is_fsdp_instance = {is_fsdp}")
+        else:
+            print(f"[DEBUG_DP_ACTOR][Rank Non-Dist] Before FSDP analysis: self.global_steps = {self.global_steps} (type: {type(self.global_steps)}), self.actor_module type = {type(self.actor_module)}, is_fsdp_instance = {is_fsdp}")
+        # === End Debug prints ===
         with torch.no_grad():
             if is_fsdp and getattr(self, 'redo_enabled', False):
                 # Calculate metrics at the specified frequency

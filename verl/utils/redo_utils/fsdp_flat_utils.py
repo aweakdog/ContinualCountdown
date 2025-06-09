@@ -216,8 +216,13 @@ def analyze_all_fsdp_zero_grad_space(module, tau=0.1, verbose=True, original_sha
                     print(f"[WARN] compute_fsdp_zero_grad_space_ratio returned None or empty for FSDP module: {name if name else '<root>'}")
                 return {'__global__': {'zero': 0, 'total': 0, 'ratio': 0.0, 'aggregated_ratio': 0.0}} # Return minimal dict
         except Exception as e:
-            if verbose and (not dist.is_initialized() or dist.get_rank() == 0):
-                print(f"[ERROR] Exception in analyze_all_fsdp_zero_grad_space for {name if name else '<root>'}: {e}")
+            if verbose: # Simplified condition to always print traceback if verbose is true
+                # Determine rank for logging, even if dist might be uninitialized in some edge cases for this print
+                current_rank = -1 # Default if dist not available
+                if dist.is_available() and dist.is_initialized():
+                    current_rank = dist.get_rank()
+                
+                print(f"[ERROR][Rank {current_rank}] Exception in analyze_all_fsdp_zero_grad_space for FSDP module '{name if name else '<root>'}': {e}")
                 import traceback
                 traceback.print_exc()
             return {'__global__': {'zero': 0, 'total': 0, 'ratio': 0.0, 'aggregated_ratio': 0.0}} # Return minimal dict on error

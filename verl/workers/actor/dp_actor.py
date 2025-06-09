@@ -418,7 +418,7 @@ class DataParallelPPOActor(BasePPOActor):
                         print(f"[INFO][Actor][Step {self.global_steps}] Analyzing FSDP gradient metrics...")
                         print(f"[DEBUG_DP_ACTOR_CALL][Rank {rank}][Step {self.global_steps}] PRE-CALL to analyze_all_fsdp_zero_grad_space")
                     
-                    zero_grad_stats = analyze_all_fsdp_zero_grad_space(self.actor_module, tau=self.redo_tau, verbose=(rank==0), original_shapes_map=self.original_param_shapes, skip_mlp=True, skip_embed=True, current_step=self.global_steps) # <<< Cascade: Pass original_param_shapes and skip MLP/embedding layers, and current_step
+                    zero_grad_stats = analyze_all_fsdp_zero_grad_space(self.actor_module, tau=self.redo_tau, verbose=(rank==0), original_shapes_map=self.original_param_shapes, skip_mlp=True, skip_embed=True) # <<< Cascade: Pass original_param_shapes and skip MLP/embedding layers
                     
                     if rank == 0 and zero_grad_stats is not None and '__global__' in zero_grad_stats:
                         print(f"[DEBUG_DP_ACTOR_CALL][Rank {rank}][Step {self.global_steps}] POST-CALL analyze_all_fsdp_zero_grad_space. Aggregated Ratio: {zero_grad_stats['__global__'].get('aggregated_ratio', 'N/A')}, Keys: {list(zero_grad_stats.keys())[:10]}...") # Print first 10 keys

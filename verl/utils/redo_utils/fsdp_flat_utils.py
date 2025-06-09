@@ -636,6 +636,7 @@ def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=True, origi
     rank = dist.get_rank()
     device = fsdp_module.compute_device
     layer_stats_local = {}
+    results = {}  # Initialize results dictionary
     
     # Initialize debug counter to limit print statements
     debug_print_count = 0
@@ -1039,19 +1040,37 @@ def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=True, origi
                         print(f"[ZeroGradV2-FIX]   - A_local_row_tensor stats: min={A_local_row_tensor.min().item():.2e}, max={A_local_row_tensor.max().item():.2e}, mean={A_local_row_tensor.mean().item():.2e}")
                     else:
                         print(f"[ZeroGradV2-FIX]   - A_local_row_tensor is empty")
-                        
-                    if si.numel() > 0:
-                        print(f"[ZeroGradV2-FIX]   - si stats: min={si.min().item():.2e}, max={si.max().item():.2e}, mean={si.mean().item():.2e}, tau={tau:.2e}")
-                    else:
-                        print(f"[ZeroGradV2-FIX]   - si is empty, tau={tau:.2e}")
-                    
-                    # Additional layer-specific warning
-                    if "mlp" in fqn:
-                        print(f"[ZeroGradV2-FIX]   - High dormancy in MLP layer: {zero_rows/H_local_scalar:.4f}")
-                    elif "attn" in fqn:
-                        print(f"[ZeroGradV2-FIX]   - High dormancy in attention layer: {zero_rows/H_local_scalar:.4f}")
-                    else:
-                        print(f"[ZeroGradV2-FIX]   - High dormancy in other layer: {zero_rows/H_local_scalar:.4f}")
+
+            # Store the calculated metrics for this FQN in the results dictionary
+            current_ratio = zero_rows / H_local_scalar if H_local_scalar > 0 else 0.0
+            results[fqn] = {
+                'zero': zero_rows,
+                'total': H_local_scalar,
+                'ratio': current_ratio,
+                'row_ratios': si.detach(),  # Store the si tensor as row_ratios, detached and on its original device
+                'original_grad_shape': param_details.get(fqn, {}).get('grad_shape', 'N/A'), # Get from param_details if available
+                'H_global_calc': H_global, # Store for debugging
+                'B_global_calc': B_global  # Store for debugging
+            }
+
+            # Accumulate for direct global calculation (sum of local zeros and totals)
+            # This is one way to compute global stats, another is weighted average of ratios
+            total_zero_local += zero_rows
+            total_rows_local += H_local_scalar
+
+            # Debug print for si tensor stats, if it's not empty
+            if si.numel() > 0:
+                print(f"[ZeroGradV2-FIX]   - si stats: min={si.min().item():.2e}, max={si.max().item():.2e}, mean={si.mean().item():.2e}, tau={tau:.2e}")
+            else:
+                print(f"[ZeroGradV2-FIX]   - si is empty, tau={tau:.2e}")
+            
+            # Additional layer-specific warning
+            if "mlp" in fqn:
+                print(f"[ZeroGradV2-FIX]   - High dormancy in MLP layer: {zero_rows/H_local_scalar:.4f}")
+            elif "attn" in fqn:
+                print(f"[ZeroGradV2-FIX]   - High dormancy in attention layer: {zero_rows/H_local_scalar:.4f}")
+            else:
+                print(f"[ZeroGradV2-FIX]   - High dormancy in other layer: {zero_rows/H_local_scalar:.4f}")
             
             # We've already printed most debug info earlier, just add this to the existing output
             # No need to repeat it here
@@ -1449,6 +1468,30 @@ def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=True, origi
         sorted_layer_items = sorted([item for item in results.items() if item[0] != '__global__'])
         for fqn, stats in sorted_layer_items:
             print(f"[ZeroGradV2] {fqn}: {stats['zero']:.0f}/{stats['total']:.0f} ({stats['ratio']:.4f})")
+    # Debug prints before returning, only on rank 0
+    if rank == 0 and verbose: # Added verbose check as well
+        print(f"\n[DEBUG-RESULTS] Final keys in results dictionary (rank {rank}): {list(results.keys())}")
+        
+        items_to_print_count = 0
+        max_items_to_print = 3 # Print first N items plus __global__
+        
+        print(f"[DEBUG-RESULTS] Sample items from results dictionary (rank {rank}):")
+        for key, value in results.items():
+            if items_to_print_count < max_items_to_print or key == '__global__':
+                # For 'row_ratios' tensor, print shape and device to avoid large output
+                if isinstance(value, dict) and 'row_ratios' in value and isinstance(value.get('row_ratios'), torch.Tensor):
+                    value_to_print = value.copy()
+                    row_ratios_tensor = value_to_print['row_ratios']
+                    value_to_print['row_ratios'] = f"<Tensor shape={row_ratios_tensor.shape} device={row_ratios_tensor.device}>"
+                    print(f"  - {key}: {value_to_print}")
+                else:
+                    print(f"  - {key}: {value}")
+                if key != '__global__':
+                    items_to_print_count += 1
+            elif items_to_print_count >= max_items_to_print and '__global__' not in list(results.keys())[:max_items_to_print]:
+                # This case ensures __global__ is printed if it wasn't among the first N items
+                # and we have already printed N other items. This might be redundant if __global__ is always last.
+                pass # Covered by the initial loop logic for __global__
     
     return results
 

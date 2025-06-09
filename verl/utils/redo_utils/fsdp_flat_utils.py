@@ -1989,6 +1989,31 @@ def identify_dormant_neurons(zero_grad_ratios, tau=0.1, percentage=None, hybrid_
     """
     dormant_masks = {}
     
+    # ---- START DEBUG PRINT FOR identify_dormant_neurons INPUT ----
+    # Check if dist is initialized before trying to get rank for printing
+    import torch.distributed as dist
+    rank = dist.get_rank() if dist.is_initialized() else 0
+    if rank == 0: # Print only on rank 0 to avoid log spam
+        print(f"[DEBUG_IDN_INPUT] identify_dormant_neurons received zero_grad_ratios. Keys: {list(zero_grad_ratios.keys())}")
+        test_fqn = 'model.layers.33.self_attn.q_proj.weight' # An FQN we expect to see
+        if test_fqn in zero_grad_ratios:
+            stats_for_test_fqn = zero_grad_ratios[test_fqn]
+            print(f"[DEBUG_IDN_INPUT] Stats for {test_fqn}: {type(stats_for_test_fqn)}")
+            if isinstance(stats_for_test_fqn, dict):
+                print(f"[DEBUG_IDN_INPUT] Keys in stats for {test_fqn}: {list(stats_for_test_fqn.keys())}")
+                if 'row_ratios' in stats_for_test_fqn:
+                    rr_type = type(stats_for_test_fqn['row_ratios'])
+                    rr_shape = stats_for_test_fqn['row_ratios'].shape if hasattr(stats_for_test_fqn['row_ratios'], 'shape') else 'N/A'
+                    print(f"[DEBUG_IDN_INPUT] {test_fqn} has 'row_ratios'. Type: {rr_type}, Shape: {rr_shape}")
+                else:
+                    print(f"[DEBUG_IDN_INPUT] {test_fqn} does NOT have 'row_ratios' key in its stats dict.")
+            else:
+                print(f"[DEBUG_IDN_INPUT] Stats for {test_fqn} is NOT a dict.")
+        else:
+            print(f"[DEBUG_IDN_INPUT] Expected FQN {test_fqn} NOT FOUND in zero_grad_ratios keys.")
+    # ---- END DEBUG PRINT FOR identify_dormant_neurons INPUT ----
+
+    
     # Skip global stats
     zero_grad_ratios = {k: v for k, v in zero_grad_ratios.items() if k != '__global__'}
     

@@ -2549,21 +2549,29 @@ def fsdp_dormant_neuron_reset_pipeline(module: nn.Module,
                 elif hasattr(metadata, 'param_name'):
                     local_param_name_from_meta = metadata.param_name
                 
-                if local_param_name_from_meta:
-                    # Construct the full FQN
-                    # fsdp_name is like '_fsdp_wrapped_module.model.layers.0.self_attn' or '_fsdp_wrapped_module.'
-                    # local_param_name_from_meta is like 'q_proj.weight' (relative) or 'model.embed_tokens.weight' (absolute for root params)
-                    cleaned_module_fqn = _get_clean_module_fqn(fsdp_name) # e.g., 'model.layers.0.self_attn' or ''
+                # Construct FQN from metadata.module_name and metadata.param_name
+                # These attributes are standard in FSDP's FlatParameterInfo
+                constructed_fqn = None
+                if hasattr(metadata, 'module_name') and hasattr(metadata, 'param_name'):
+                    meta_module_name = metadata.module_name
+                    meta_param_name = metadata.param_name
                     
-                    if cleaned_module_fqn: 
-                        # Example: cleaned_module_fqn = 'model.layers.0.self_attn', local_param_name_from_meta = 'q_proj.weight'
-                        # Result: 'model.layers.0.self_attn.q_proj.weight'
-                        full_fqn = f"{cleaned_module_fqn}.{local_param_name_from_meta}"
-                    else:
-                        # Example: cleaned_module_fqn = '', local_param_name_from_meta = 'model.embed_tokens.weight' (from metadata.fqn for a root FSDP param)
-                        # Result: 'model.embed_tokens.weight'
-                        full_fqn = local_param_name_from_meta
-                    param_fqns.append(full_fqn)
+                    if meta_module_name: # e.g., "model.layers.0.self_attn.q_proj"
+                        constructed_fqn = f"{meta_module_name}.{meta_param_name}" # e.g., "model.layers.0.self_attn.q_proj.weight"
+                    else: # meta_module_name is empty. This can happen for parameters of the root module.
+                          # In this case, meta_param_name might be the FQN itself relative to root (e.g. "model.embed_tokens.weight")
+                          # or just a local name if the root module has direct params not in submodules.
+                          # Given original_shapes_map keys like "model.embed_tokens.weight",
+                          # meta_param_name should ideally be this full form if meta_module_name is empty.
+                        constructed_fqn = meta_param_name 
+                elif hasattr(metadata, 'fqn'): # Fallback if module_name/param_name are not available
+                    constructed_fqn = metadata.fqn
+                
+                if constructed_fqn:
+                    param_fqns.append(constructed_fqn)
+                else:
+                    if verbose and rank == 0:
+                        print(f"[WARNING_RDNRP] Could not determine FQN from metadata in {flat_param_name}. Metadata: {vars(metadata) if hasattr(metadata, '__dict__') else metadata}")
                     
                     # original_shapes_map (passed as original_param_shapes argument)
                     # should already contain the correct original shape keyed by full_fqn.

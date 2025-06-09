@@ -15,6 +15,12 @@ METRICS = [
     ('actor/zero_gradspace_ratio', r'actor/zero_gradspace_ratio:([\d.eE+-]+)'),
 ]
 
+def smooth_data(values, window_size=5):
+    """Smooths data using a rolling mean."""
+    if window_size <= 1 or len(values) < window_size:
+        return values
+    return pd.Series(values).rolling(window=window_size, center=True, min_periods=1).mean().tolist()
+
 # Helper to extract float value from log line
 
 def extract_metric(line, metric_regex):
@@ -81,7 +87,8 @@ def main():
         group0 = all_data[global_step].get('Group0')
         if group0 and 'critic/score/mean' in group0:
             steps, values = zip(*group0['critic/score/mean'])
-            plt.plot(steps, values, label=f'global_step_{global_step}')
+            smoothed_values = smooth_data(list(values))
+            plt.plot(steps, smoothed_values, label=f'global_step_{global_step}')
     plt.title('Group0 (Known) - critic/score/mean')
     plt.xlabel('Step')
     plt.ylabel('critic/score/mean')
@@ -104,7 +111,8 @@ def main():
             min_len = min(map(len, group_vals))
             vals = np.mean([v[:min_len] for v in group_vals], axis=0)
             steps = range(min_len)
-            plt.plot(steps, vals, label=f'global_step_{global_step}')
+            smoothed_vals = smooth_data(list(vals))
+            plt.plot(steps, smoothed_vals, label=f'global_step_{global_step}')
     plt.title('Unknown Groups (avg 1-3) - critic/score/mean')
     plt.xlabel('Step')
     plt.ylabel('critic/score/mean')
@@ -124,7 +132,8 @@ def main():
             elif 'actor/zero_gradspace_ratio' in group0 and group0['actor/zero_gradspace_ratio']:
                 steps, values = zip(*group0['actor/zero_gradspace_ratio'])
         if values:
-            plt.plot(steps, values, label=f'global_step_{global_step}')
+            smoothed_values = smooth_data(list(values))
+            plt.plot(steps, smoothed_values, label=f'global_step_{global_step}')
     plt.title('Group0 (Known) - zero_gradspace_ratio')
     plt.xlabel('Step')
     plt.ylabel('zero_gradspace_ratio')
@@ -151,7 +160,8 @@ def main():
             min_len = min(map(len, group_vals))
             vals = np.mean([v[:min_len] for v in group_vals], axis=0)
             steps = range(min_len)
-            plt.plot(steps, vals, label=f'global_step_{global_step}')
+            smoothed_vals = smooth_data(list(vals))
+            plt.plot(steps, smoothed_vals, label=f'global_step_{global_step}')
     plt.title('Unknown Groups (avg 1-3) - zero_gradspace_ratio')
     plt.xlabel('Step')
     plt.ylabel('zero_gradspace_ratio')

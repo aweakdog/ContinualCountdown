@@ -1351,8 +1351,37 @@ def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=True, origi
                     print(f"[PARAM-DEBUG] Other layer: {fqn} = {param_count} params")
     
     for fqn, data in combined_stats.items():
-        ratio = data['zero'] / (data['total'] + 1e-8) if data['total'] > 0 else 0.0
-        results[fqn] = {**data, 'ratio': ratio}
+        # 'data' from combined_stats contains globally summed 'zero' (S_global) and 'total' (H_global)
+        # 'results[fqn]' should already exist from the per-parameter processing loop
+        # and contain 'row_ratios', 'original_grad_shape', etc.
+        # We need to update it with the globally correct 'zero', 'total', and 'ratio'.
+        globally_corrected_zero = data['zero']
+        globally_corrected_total = data['total']
+        globally_corrected_ratio = globally_corrected_zero / (globally_corrected_total + 1e-8) if globally_corrected_total > 0 else 0.0
+
+        if fqn in results:
+            results[fqn].update({
+                'zero': globally_corrected_zero,    # Update with globally correct zero count
+                'total': globally_corrected_total,  # Update with globally correct total count
+                'ratio': globally_corrected_ratio   # Update with ratio from globally correct counts
+                # 'row_ratios' and other fields like 'original_grad_shape' from the previous step are preserved
+            })
+        else:
+            # This path indicates an FQN was in combined_stats but not processed earlier for row_ratios.
+            # This might happen if a parameter was skipped in the initial loop but still part of FSDP.
+            # Or, if fqn_prefix logic leads to mismatches.
+            results[fqn] = {
+                'zero': globally_corrected_zero,
+                'total': globally_corrected_total,
+                'ratio': globally_corrected_ratio,
+                'row_ratios': None,  # Mark as missing, as it wasn't computed for this FQN
+                'original_grad_shape': 'N/A',
+                'H_global_calc': data.get('H_global_calc', 0), # from combined_stats if available
+                'B_global_calc': data.get('B_global_calc', 0)  # from combined_stats if available
+            }
+            if rank == 0 and verbose:
+                print(f"[WARN][ZeroGradV2-FIX] FQN '{fqn}' from combined_stats was not found in results from initial per-param processing. "
+                      f"Row ratios (si values) will be missing for this parameter. This could be due to skipping logic or FQN mismatch.")
         
         # Add to global counts
         global_zero_count += data['zero']

@@ -236,35 +236,31 @@ def analyze_all_fsdp_zero_grad_space(module, tau=0.1, verbose=True, original_sha
                                                        skip_mlp=skip_mlp,
                                                        skip_embed=skip_embed)
             if stats is not None and '__global__' in stats:
-                submodule_global_stats = stats['__global__']
-                total_zero += submodule_global_stats.get('zero', 0)
-                total_rows += submodule_global_stats.get('total', 0)
-                results[name] = stats # Store the full detailed stats for this submodule
+                # Ensure 'aggregated_ratio' is present in '__global__' for compatibility with dp_actor.py
+                if 'ratio' in stats['__global__'] and 'aggregated_ratio' not in stats['__global__']:
+                    stats['__global__']['aggregated_ratio'] = stats['__global__']['ratio']
+                # If compute_fsdp_zero_grad_space_ratio was successful for this module, return its stats directly
+                return stats
             else:
-                results[name] = None
                 if verbose:
                     if stats is None:
-                        print(f"[WARN] Zero-grad analysis returned None for submodule {name}")
+                        print(f"[WARN][analyze_all_fsdp_zero_grad_space] compute_fsdp_zero_grad_space_ratio returned None for submodule {name}")
                     elif '__global__' not in stats:
-                        print(f"[WARN] '__global__' key missing in stats for submodule {name}")
+                        print(f"[WARN][analyze_all_fsdp_zero_grad_space] '__global__' key missing in stats from compute_fsdp_zero_grad_space_ratio for submodule {name}")
+                # Return a minimal dictionary if analysis of the first module failed
+                return {'__global__': {'zero': 0, 'total': 0, 'ratio': 0.0, 'aggregated_ratio': 0.0}}
         except Exception as e:
             if verbose:
-                print(f"[WARN] Could not analyze zero grad space for {name}: {e}")
-            results[name] = None
-        break # hacky
+                print(f"[WARN][analyze_all_fsdp_zero_grad_space] Exception analyzing zero grad space for {name}: {e}")
+                import traceback
+                traceback.print_exc()
+            return {'__global__': {'zero': 0, 'total': 0, 'ratio': 0.0, 'aggregated_ratio': 0.0}} # Return minimal dict on error
+        break # hacky - ensures we only process the first FSDP module and then exit the loop (and function)
 
-    # Calculate the aggregated ratio from the total counts
-    global_ratio = total_zero / (total_rows + 1e-8) if total_rows > 0 else 0.0
-    
-    # Create the global stats dictionary with the aggregated ratio
-    results['__global__'] = {
-        'zero': total_zero, 
-        'total': total_rows, 
-        'ratio': global_ratio,
-        'aggregated_ratio': global_ratio  # Add aggregated_ratio key explicitly for dp_actor.py
-    }
-    
-    return results
+    # This part is reached only if iter_leaf_fsdp_modules yields nothing.
+    if verbose:
+        print(f"[WARN][analyze_all_fsdp_zero_grad_space] iter_leaf_fsdp_modules yielded no FSDP modules for module: {type(module)}")
+    return {'__global__': {'zero': 0, 'total': 0, 'ratio': 0.0, 'aggregated_ratio': 0.0}}
 
 #def analyze_all_fsdp_zero_grad_space(module, tau=0.1, verbose=True, original_shapes_map=None, top_level_prefix=None, skip_mlp=True, skip_embed=True, current_step=None):
 #    """

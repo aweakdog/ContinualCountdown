@@ -1463,11 +1463,20 @@ def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=True, origi
                     if retrieved_row_ratios is not None:
                         break 
             
+            # Collect all row_ratios tensors for this fqn_item from all_layer_stats_gathered
+            all_si_for_fqn = []
+            for stats_dict_from_rank_for_si in all_layer_stats_gathered:
+                if stats_dict_from_rank_for_si and fqn_item in stats_dict_from_rank_for_si:
+                    si_tensor_from_rank = stats_dict_from_rank_for_si[fqn_item].get('row_ratios')
+                    if si_tensor_from_rank is not None:
+                        all_si_for_fqn.append(si_tensor_from_rank)
+
             results[fqn_item] = {
                 'zero': agg_zero,
                 'total': agg_total,
                 'ratio': agg_ratio,
-                'row_ratios': retrieved_row_ratios 
+                'rank_0_row_ratios': retrieved_row_ratios, # Keep rank 0's for potential direct inspection if needed
+                'all_row_ratios_gathered': all_si_for_fqn # This is what analyze_all_fsdp_zero_grad_space expects
             }
         elif rank == 0 and verbose:
             print(f"[WARN][ZeroGradV2] FQN {fqn_item} from all_fqns not found in combined_stats during results population.")

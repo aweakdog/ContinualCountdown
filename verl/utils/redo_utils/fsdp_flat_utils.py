@@ -259,25 +259,25 @@ def analyze_all_fsdp_zero_grad_space(module, tau=0.1, verbose=True, original_sha
                                     total_count = param_stat_entry.get('total', 'N/A')
                                     ratio = param_stat_entry['zero_grad_ratio']
 
-                                    si_stats_display = ""
-                                    all_si_tensors = param_stat_entry.get('all_row_ratios_gathered')
-                                    if all_si_tensors and isinstance(all_si_tensors, list):
-                                        valid_si_tensors = [t for t in all_si_tensors if t is not None and t.numel() > 0]
-                                        if valid_si_tensors:
-                                            concatenated_si = torch.cat(valid_si_tensors)
-                                            if concatenated_si.numel() > 0:
-                                                si_min = concatenated_si.min().item()
-                                                si_max = concatenated_si.max().item()
-                                                si_mean = concatenated_si.mean().item()
-                                                si_stats_display = f" (si_min: {si_min:.4f}, si_max: {si_max:.4f}, si_mean: {si_mean:.4f})"
+                                    A_stats_display = ""
+                                    all_A_local_rows = param_stat_entry.get('all_A_local_rows_gathered')
+                                    if all_A_local_rows and isinstance(all_A_local_rows, list):
+                                        valid_A_tensors = [t for t in all_A_local_rows if t is not None and t.numel() > 0]
+                                        if valid_A_tensors:
+                                            concatenated_A = torch.cat(valid_A_tensors)
+                                            if concatenated_A.numel() > 0:
+                                                A_min = concatenated_A.min().item()
+                                                A_max = concatenated_A.max().item()
+                                                A_mean = concatenated_A.mean().item()
+                                                A_stats_display = f" (A_min: {A_min:.4f}, A_max: {A_max:.4f}, A_mean: {A_mean:.4f})"
                                             else:
-                                                si_stats_display = " (si_stats: empty_cat)"
+                                                A_stats_display = " (A_stats: empty_cat)"
                                         else:
-                                            si_stats_display = " (si_stats: no_valid_tensors)"
+                                            A_stats_display = " (A_stats: no_valid_tensors)"
                                     else:
-                                        si_stats_display = " (si_stats: N/A)"
+                                        A_stats_display = " (A_stats: N/A)"
 
-                                    print(f"{step_prefix_inner}  [ZGR_OUTPUT] {fqn}: {zero_count}/{total_count} ({ratio:.4f}){si_stats_display}")
+                                    print(f"{step_prefix_inner}  [ZGR_OUTPUT] {fqn}: {zero_count}/{total_count} ({ratio:.4f}){A_stats_display}")
                                     output_layers_found_count += 1
                     if output_layers_found_count == 0:
                         step_prefix_inner = f"Step: {current_step} | " if current_step is not None else ""
@@ -1240,7 +1240,8 @@ def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=True, origi
             layer_stats_local[fqn] = {
                 'zero': zero_rows, 
                 'total': H_local_scalar,
-                'row_ratios': si.detach().clone()  # Store the normalized gradient activity
+                'row_ratios': si.detach().clone(),  # Store the normalized gradient activity (si values)
+                'A_local_rows': A_local_row_tensor.detach().clone() # Store the unnormalized local row grad sums
             }
             total_zero_local += zero_rows
             total_rows_local += H_local_scalar # Use H_local_scalar
@@ -1471,12 +1472,21 @@ def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=True, origi
                     if si_tensor_from_rank is not None:
                         all_si_for_fqn.append(si_tensor_from_rank)
 
+            # Collect all A_local_rows tensors for this fqn_item from all_layer_stats_gathered
+            all_A_local_rows_for_fqn = []
+            for stats_dict_from_rank_for_A in all_layer_stats_gathered:
+                if stats_dict_from_rank_for_A and fqn_item in stats_dict_from_rank_for_A:
+                    A_tensor_from_rank = stats_dict_from_rank_for_A[fqn_item].get('A_local_rows')
+                    if A_tensor_from_rank is not None:
+                        all_A_local_rows_for_fqn.append(A_tensor_from_rank)
+
             results[fqn_item] = {
                 'zero': agg_zero,
                 'total': agg_total,
                 'ratio': agg_ratio,
-                'rank_0_row_ratios': retrieved_row_ratios, # Keep rank 0's for potential direct inspection if needed
-                'all_row_ratios_gathered': all_si_for_fqn # This is what analyze_all_fsdp_zero_grad_space expects
+                'rank_0_row_ratios': retrieved_row_ratios, # Keep rank 0's si for potential direct inspection
+                'all_row_ratios_gathered': all_si_for_fqn, # Gathered si values (normalized)
+                'all_A_local_rows_gathered': all_A_local_rows_for_fqn # Gathered A_local_rows (unnormalized grad sums)
             }
         elif rank == 0 and verbose:
             print(f"[WARN][ZeroGradV2] FQN {fqn_item} from all_fqns not found in combined_stats during results population.")

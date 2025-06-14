@@ -255,7 +255,29 @@ def analyze_all_fsdp_zero_grad_space(module, tau=0.1, verbose=True, original_sha
                             if orig_shape is not None and len(orig_shape) == 2 and fqn.endswith('.weight'):
                                 if 'zero_grad_ratio' in param_stat_entry:
                                     step_prefix_inner = f"Step: {current_step} | " if current_step is not None else ""
-                                    print(f"{step_prefix_inner}  [ZGR_OUTPUT] {fqn}: {param_stat_entry['zero_grad_ratio']:.6f}")
+                                    zero_count = param_stat_entry.get('zero', 'N/A')
+                                    total_count = param_stat_entry.get('total', 'N/A')
+                                    ratio = param_stat_entry['zero_grad_ratio']
+
+                                    si_stats_display = ""
+                                    all_si_tensors = param_stat_entry.get('all_row_ratios_gathered')
+                                    if all_si_tensors and isinstance(all_si_tensors, list):
+                                        valid_si_tensors = [t for t in all_si_tensors if t is not None and t.numel() > 0]
+                                        if valid_si_tensors:
+                                            concatenated_si = torch.cat(valid_si_tensors)
+                                            if concatenated_si.numel() > 0:
+                                                si_min = concatenated_si.min().item()
+                                                si_max = concatenated_si.max().item()
+                                                si_mean = concatenated_si.mean().item()
+                                                si_stats_display = f" (si_min: {si_min:.4f}, si_max: {si_max:.4f}, si_mean: {si_mean:.4f})"
+                                            else:
+                                                si_stats_display = " (si_stats: empty_cat)"
+                                        else:
+                                            si_stats_display = " (si_stats: no_valid_tensors)"
+                                    else:
+                                        si_stats_display = " (si_stats: N/A)"
+
+                                    print(f"{step_prefix_inner}  [ZGR_OUTPUT] {fqn}: {zero_count}/{total_count} ({ratio:.4f}){si_stats_display}")
                                     output_layers_found_count += 1
                     if output_layers_found_count == 0:
                         step_prefix_inner = f"Step: {current_step} | " if current_step is not None else ""
@@ -1593,7 +1615,26 @@ def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=True, origi
                     zero_count = stats['zero']
                     total_count = stats['total']
                     ratio = stats['ratio']
-                    print(f"{fqn:<50} {zero_count:<10} {total_count:<10} {ratio:.6f}")
+
+                    si_stats_display = ""
+                    all_si_tensors = stats.get('all_row_ratios_gathered')
+                    if all_si_tensors and isinstance(all_si_tensors, list):
+                        valid_si_tensors = [t for t in all_si_tensors if t is not None and t.numel() > 0]
+                        if valid_si_tensors:
+                            concatenated_si = torch.cat(valid_si_tensors)
+                            if concatenated_si.numel() > 0:
+                                si_min = concatenated_si.min().item()
+                                si_max = concatenated_si.max().item()
+                                si_mean = concatenated_si.mean().item()
+                                si_stats_display = f" (si_min: {si_min:.4f}, si_max: {si_max:.4f}, si_mean: {si_mean:.4f})"
+                            else:
+                                si_stats_display = " (si_stats: empty_cat)"
+                        else:
+                            si_stats_display = " (si_stats: no_valid_tensors)"
+                    else:
+                        si_stats_display = " (si_stats: N/A)"
+
+                    print(f"{fqn}: {zero_count}/{total_count} ({ratio:.4f}){si_stats_display}")
         
         # Print global summary
         global_data = results['__global__']

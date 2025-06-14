@@ -277,7 +277,9 @@ def analyze_all_fsdp_zero_grad_space(module, tau=0.1, verbose=True, original_sha
                                     else:
                                         A_stats_display = " (A_stats: N/A)"
 
-                                    print(f"{step_prefix_inner}  [ZGR_OUTPUT] {fqn}: {zero_count}/{total_count} ({ratio:.4f}){A_stats_display}")
+                                    avg_global_val = param_stat_entry.get('avg_global_for_si_calc')
+                                    avg_global_str = f", avg_global: {avg_global_val:.4f}" if avg_global_val is not None else ""
+                                    print(f"{step_prefix_inner}  [ZGR_OUTPUT] {fqn}: {zero_count}/{total_count} ({ratio:.4f}){A_stats_display}{avg_global_str}")
                                     output_layers_found_count += 1
                     if output_layers_found_count == 0:
                         step_prefix_inner = f"Step: {current_step} | " if current_step is not None else ""
@@ -1480,13 +1482,39 @@ def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=True, origi
                     if A_tensor_from_rank is not None:
                         all_A_local_rows_for_fqn.append(A_tensor_from_rank)
 
+            # Retrieve B_global and H_global for this fqn_item to calculate avg_global
+            retrieved_B_global_val = None
+            retrieved_H_global_val = None
+            # Iterate through the gathered stats from all ranks to find B_global and H_global for the current fqn_item.
+            # These should be consistent across ranks that processed this FQN.
+            for stats_from_rank_for_globals in all_layer_stats_gathered:
+                if stats_from_rank_for_globals and fqn_item in stats_from_rank_for_globals:
+                    fqn_data = stats_from_rank_for_globals[fqn_item]
+                    if 'B_global' in fqn_data and 'H_global' in fqn_data:
+                        # Ensure they are not None before assigning
+                        if fqn_data['B_global'] is not None and fqn_data['H_global'] is not None:
+                            retrieved_B_global_val = fqn_data['B_global']
+                            retrieved_H_global_val = fqn_data['H_global']
+                            # Assuming B_global and H_global are scalars and consistent,
+                            # we can break after finding the first valid set.
+                            break
+            
+            avg_global_for_this_fqn_item = 0.0 # Default value
+            if retrieved_B_global_val is not None and retrieved_H_global_val is not None:
+                if retrieved_H_global_val > 1e-9: # Avoid division by zero or very small H
+                    avg_global_for_this_fqn_item = retrieved_B_global_val / retrieved_H_global_val
+                elif abs(retrieved_B_global_val) > 1e-9: # H is near zero, B is not (check absolute B)
+                    avg_global_for_this_fqn_item = float('inf') if retrieved_B_global_val > 0 else float('-inf')
+                # else: B is near zero and H is near zero, avg_global remains 0.0
+
             results[fqn_item] = {
                 'zero': agg_zero,
                 'total': agg_total,
                 'ratio': agg_ratio,
                 'rank_0_row_ratios': retrieved_row_ratios, # Keep rank 0's si for potential direct inspection
                 'all_row_ratios_gathered': all_si_for_fqn, # Gathered si values (normalized)
-                'all_A_local_rows_gathered': all_A_local_rows_for_fqn # Gathered A_local_rows (unnormalized grad sums)
+                'all_A_local_rows_gathered': all_A_local_rows_for_fqn, # Gathered A_local_rows (unnormalized grad sums)
+                'avg_global_for_si_calc': avg_global_for_this_fqn_item # Store the calculated avg_global
             }
         elif rank == 0 and verbose:
             print(f"[WARN][ZeroGradV2] FQN {fqn_item} from all_fqns not found in combined_stats during results population.")
@@ -1645,13 +1673,44 @@ def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=True, origi
                                 si_min = concatenated_si.min().item()
                                 si_max = concatenated_si.max().item()
                                 si_mean = concatenated_si.mean().item()
-                                si_stats_display = f" (si_min: {si_min:.4f}, si_max: {si_max:.4f}, si_mean: {si_mean:.4f})"
+                                si_stats = {
+                                    'min': si_min,
+                                    'max': si_max,
+                                    'mean': si_mean,
+                                    'median': concatenated_si.median().item(),
+                                    'std': concatenated_si.std().item(),
+                                    'num_valid_tensors': len(valid_si_tensors),
+                                    'avg_global_for_si_calc': avg_global
+                                }
                             else:
-                                si_stats_display = " (si_stats: empty_cat)"
+                                si_stats = {
+                                    'message': 'empty_cat',
+                                    'avg_global_for_si_calc': avg_global
+                                }
                         else:
-                            si_stats_display = " (si_stats: no_valid_tensors)"
+                            si_stats = {
+                                'message': 'no_valid_tensors_for_si_stats_on_rank0',
+                                'avg_global_for_si_calc': avg_global
+                            }
                     else:
-                        si_stats_display = " (si_stats: N/A)"
+                        si_stats = {
+                            'message': 'N/A',
+                            'avg_global_for_si_calc': avg_global
+                        }
+
+                    si_stats_display = ""
+                    if 'message' in si_stats:
+                        si_stats_display = f" ({si_stats['message']}"
+                        avg_g_to_print = stats.get('avg_global_for_si_calc')
+                        if avg_g_to_print is not None:
+                            si_stats_display += f", avg_global: {avg_g_to_print:.4f}"
+                        si_stats_display += ")"
+                    else:
+                        si_stats_display = f" (si_min: {si_stats['min']:.4f}, si_max: {si_stats['max']:.4f}, si_mean: {si_stats['mean']:.4f}"
+                        avg_g_to_print = stats.get('avg_global_for_si_calc')
+                        if avg_g_to_print is not None:
+                            si_stats_display += f", avg_global: {avg_g_to_print:.4f}"
+                        si_stats_display += ")"
 
                     print(f"{fqn}: {zero_count}/{total_count} ({ratio:.4f}){si_stats_display}")
         
@@ -1694,8 +1753,10 @@ def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=True, origi
         print(f"\n[ZeroGradV2] Global: {results['__global__']['zero']:.0f}/{results['__global__']['total']:.0f} "
               f"({results['__global__']['ratio']:.4f})")
         sorted_layer_items = sorted([item for item in results.items() if item[0] != '__global__'])
-        for fqn, stats in sorted_layer_items:
-            print(f"[ZeroGradV2] {fqn}: {stats['zero']:.0f}/{stats['total']:.0f} ({stats['ratio']:.4f})")
+        for fqn, param_stat_entry in sorted_layer_items:
+            avg_global_val = param_stat_entry.get('avg_global_for_si_calc')
+            avg_global_str = f", avg_global: {avg_global_val:.4f}" if avg_global_val is not None else ""
+            print(f"[ZeroGradV2] {fqn}: {param_stat_entry['zero']}/{param_stat_entry['total']} ({param_stat_entry['ratio']:.4f}){avg_global_str}", flush=True)
     # Debug prints before returning, only on rank 0
     if rank == 0 and verbose: # Added verbose check as well
         print(f"\n[DEBUG-RESULTS] Final keys in results dictionary (rank {rank}): {list(results.keys())}")

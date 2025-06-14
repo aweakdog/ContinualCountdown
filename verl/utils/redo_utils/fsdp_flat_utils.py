@@ -1499,6 +1499,11 @@ def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=True, origi
                             # we can break after finding the first valid set.
                             break
             
+            if rank == 0 and verbose:
+                _b_val = retrieved_B_global_val.item() if hasattr(retrieved_B_global_val, 'item') else retrieved_B_global_val
+                _h_val = retrieved_H_global_val.item() if hasattr(retrieved_H_global_val, 'item') else retrieved_H_global_val
+                print(f"[DEBUG B/H Raw] FQN: {fqn_item} | Raw B_global: {_b_val:.10e} | Raw H_global: {_h_val}")
+
             avg_global_for_this_fqn_item = 0.0 # Default value
             if retrieved_B_global_val is not None and retrieved_H_global_val is not None:
                 if retrieved_H_global_val > 1e-9: # Avoid division by zero or very small H

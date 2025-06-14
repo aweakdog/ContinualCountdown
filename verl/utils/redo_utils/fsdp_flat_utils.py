@@ -161,7 +161,7 @@ def analyze_all_fsdp_dormant_neurons(module, mode='threshold', tau=0.1, verbose=
     #    print(f"[DormantNeuron][ALL] total_dormant={total_dormant}, total_params={total_count}, ratio={total_dormant/(total_count+1e-8):.6f}")
     return results
 
-def analyze_all_fsdp_zero_grad_space(module, tau=0.1, verbose=True, original_shapes_map=None, top_level_prefix=None, skip_mlp=True, skip_embed=True):
+def analyze_all_fsdp_zero_grad_space(module, tau=0.1, verbose=True, original_shapes_map=None, top_level_prefix=None, skip_mlp=True, skip_embed=True, current_step: Optional[int] = None):
     """
     Analyze all leaf FSDP-wrapped submodules for zero grad space ratio.
     Returns a dict mapping module names to their zero grad stats and the global aggregate.
@@ -239,7 +239,28 @@ def analyze_all_fsdp_zero_grad_space(module, tau=0.1, verbose=True, original_sha
                 # Ensure 'aggregated_ratio' is present in '__global__' for compatibility with dp_actor.py
                 if 'ratio' in stats['__global__'] and 'aggregated_ratio' not in stats['__global__']:
                     stats['__global__']['aggregated_ratio'] = stats['__global__']['ratio']
-                # If compute_fsdp_zero_grad_space_ratio was successful for this module, return its stats directly
+                
+                # If compute_fsdp_zero_grad_space_ratio was successful for this module, log and return its stats directly
+                if verbose and dist.get_rank() == 0: # Assuming dist is available and initialized
+                    step_prefix = f"Step: {current_step} | " if current_step is not None else ""
+                    print(f"{step_prefix}[INFO] Zero-grad ratios for 2D weight parameters (potential output layers) in module '{name}':")
+                    output_layers_found_count = 0
+                    # Iterate over all_param_stats which is the 'stats' variable here
+                    for fqn, param_stat_entry in stats.items():
+                        if fqn == '__global__': continue # Skip the global summary entry
+                        
+                        if original_shapes_map:
+                            orig_shape = original_shapes_map.get(fqn)
+                            # Check if it's a 2D weight parameter and has zero_grad_ratio
+                            if orig_shape is not None and len(orig_shape) == 2 and fqn.endswith('.weight'):
+                                if 'zero_grad_ratio' in param_stat_entry:
+                                    step_prefix_inner = f"Step: {current_step} | " if current_step is not None else ""
+                                    print(f"{step_prefix_inner}  [ZGR_OUTPUT] {fqn}: {param_stat_entry['zero_grad_ratio']:.6f}")
+                                    output_layers_found_count += 1
+                    if output_layers_found_count == 0:
+                        step_prefix_inner = f"Step: {current_step} | " if current_step is not None else ""
+                        print(f"{step_prefix_inner}  [ZGR_OUTPUT] No 2D weight parameters with zero_grad_ratio found or original_shapes_map not provided for this module.")
+                
                 return stats
             else:
                 if verbose:

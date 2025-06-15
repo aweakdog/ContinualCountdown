@@ -1035,8 +1035,8 @@ def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=True, origi
                 'zero': zero_rows, 
                 'total': H_local_scalar, 
                 'avg_global_for_si_calc': current_avg_global_for_si,
-                'B_global_val': B_global if 'B_global' in locals() and is_eligible else 0.0, 
-                'H_global_val': H_global if 'H_global' in locals() and is_eligible else 0.0,
+                'B_global_val': B_global if 'B_global' in locals() else 0.0, 
+                'H_global_val': H_global if 'H_global' in locals() else 0.0,
                 'A_local_rows_part': grad_norm_row # grad_norm_row is A_local_row_tensor for this rank
             }
             total_zero_local += zero_rows
@@ -1152,7 +1152,7 @@ def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=True, origi
             elif isinstance(A_tensor, torch.Tensor) and A_tensor.numel() == 0:
                 A_stats_str = "A_tensor: EMPTY"
 
-            print(f"  Layer: {fqn:<80} | Zeros: {zero_count:<7} / Total: {total_count:<7} ({ratio:>7.2%}) | B_global: {B_global_print:.4e}, H_global: {H_global_print:.1f}, B/H_calc: {avg_BH_print:.4e} | {A_stats_str}")
+            print(f"  Layer: {fqn:<80} | Zeros: {zero_count:<7} / Total: {total_count:<7} ({ratio:>7.2%}) | B_global: {B_global_print:.8e}, H_global: {H_global_print:.0f}, B/H_calc: {avg_BH_print:.4e} | {A_stats_str}")
 
     # Step 7: Populate results dictionary from combined_stats (on rank 0)
     # The '__global__' entry in results is already populated with overall zero/total/ratio from Step 4.
@@ -1187,8 +1187,6 @@ def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=True, origi
     # For now, we assume results are primarily used/returned by rank 0 after this function.
     # If other ranks need it, an all_gather_object or broadcast would be needed here for `results`.
 
-            fqn_B_val = 0.0
-            fqn_H_val = 0.0
             for stats_dict_from_rank_for_bh in all_layer_stats_gathered:
                 if stats_dict_from_rank_for_bh and fqn in stats_dict_from_rank_for_bh:
                     # Initialize to ensure they are picked up if present

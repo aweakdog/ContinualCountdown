@@ -1031,7 +1031,14 @@ def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=True, origi
             
             # Store local stats
             current_avg_global_for_si = avg_global if 'avg_global' in locals() and H_global > 0 else 0.0
-            layer_stats_local[fqn] = {'zero': zero_rows, 'total': H_local_scalar, 'avg_global_for_si_calc': current_avg_global_for_si}
+            layer_stats_local[fqn] = {
+                'zero': zero_rows, 
+                'total': H_local_scalar, 
+                'avg_global_for_si_calc': current_avg_global_for_si,
+                'B_global_val': B_global if 'B_global' in locals() and is_eligible else 0.0, 
+                'H_global_val': H_global if 'H_global' in locals() and is_eligible else 0.0,
+                'A_local_rows_part': grad_norm_row # grad_norm_row is A_local_row_tensor for this rank
+            }
             total_zero_local += zero_rows
             total_rows_local += H_local_scalar # Use H_local_scalar
 
@@ -1232,6 +1239,40 @@ def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=True, origi
                     fqn_avg_B_div_H_val = stats_dict_from_rank_for_avg[fqn]['avg_global_for_si_calc']
                     break # Found it, should be consistent as B_global/H_global were global sums
             combined_stats[fqn]['avg_global_for_si_calc'] = fqn_avg_B_div_H_val
+
+            # Aggregate B_global_val and H_global_val for this fqn
+            fqn_B_val = 0.0
+            fqn_H_val = 0.0
+            for stats_dict_from_rank_for_bh in all_layer_stats_gathered:
+                if stats_dict_from_rank_for_bh and fqn in stats_dict_from_rank_for_bh:
+                    # Initialize to ensure they are picked up if present
+                    temp_B = stats_dict_from_rank_for_bh[fqn].get('B_global_val', None)
+                    temp_H = stats_dict_from_rank_for_bh[fqn].get('H_global_val', None)
+                    if temp_B is not None:
+                        fqn_B_val = temp_B
+                    if temp_H is not None:
+                        fqn_H_val = temp_H
+                    # If both found from one rank, assume consistency and break
+                    if temp_B is not None and temp_H is not None:
+                        break
+            combined_stats[fqn]['B_global_val'] = fqn_B_val
+            combined_stats[fqn]['H_global_val'] = fqn_H_val
+
+            # Aggregate A_local_rows_part for this fqn from all ranks where it was processed
+            all_A_parts_for_fqn = []
+            for rank_stats_dict in all_layer_stats_gathered:
+                if rank_stats_dict and fqn in rank_stats_dict:
+                    # Only consider A_local_rows_part if the parameter contributed rows (H_local_scalar > 0) on that rank
+                    if rank_stats_dict[fqn].get('total', 0) > 0:
+                        a_part = rank_stats_dict[fqn].get('A_local_rows_part')
+                        if isinstance(a_part, torch.Tensor) and a_part.numel() > 0:
+                            all_A_parts_for_fqn.append(a_part.to(device)) # Ensure on same device for cat
+            
+            if all_A_parts_for_fqn:
+                combined_A_tensor_for_fqn = torch.cat(all_A_parts_for_fqn)
+            else:
+                combined_A_tensor_for_fqn = torch.empty(0, device=device) 
+            combined_stats[fqn]['all_A_local_rows_gathered'] = combined_A_tensor_for_fqn
     
     # Calculate global totals for all parameters
     global_zero_count = 0
@@ -1390,8 +1431,23 @@ def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=True, origi
         sorted_layer_items = sorted([item for item in results.items() if item[0] != '__global__'])
         for fqn, stats in sorted_layer_items:
             avg_global_val = stats.get('avg_global_for_si_calc')
-            avg_global_str = f", B/H: {avg_global_val:.4e}" if avg_global_val is not None else ""
-            print(f"[ZeroGradV2] {fqn}: {stats['zero']:.0f}/{stats['total']:.0f} ({stats['ratio']:.4f}){avg_global_str}")
+            B_val = stats.get('B_global_val', 0.0)
+            H_val = stats.get('H_global_val', 0.0)
+            bh_stats_display_str = f", B/H: {avg_global_val:.4e} (B: {B_val:.4e}, H: {H_val:.1f})" if avg_global_val is not None else ""
+
+            A_stats_display_str = ""
+            # Assuming 'all_A_local_rows_gathered' is a torch.Tensor on rank 0 with all relevant values, based on memory 95a9f283.
+            all_A_tensor = stats.get('all_A_local_rows_gathered') 
+            if isinstance(all_A_tensor, torch.Tensor) and all_A_tensor.numel() > 0:
+                min_A = all_A_tensor.min().item()
+                max_A = all_A_tensor.max().item()
+                mean_A = all_A_tensor.mean().item()
+                A_stats_display_str = f", A(min/max/mean): {min_A:.2e}/{max_A:.2e}/{mean_A:.2e}"
+            elif all_A_tensor is not None: # Key exists but content is not a usable tensor
+                A_stats_display_str = ", A(stats): N/A (Err)"
+            # If all_A_tensor is None, A_stats_display_str remains empty, so nothing extra is printed for A-stats.
+
+            print(f"[ZeroGradV2] {fqn}: {stats['zero']:.0f}/{stats['total']:.0f} ({stats['ratio']:.4f}){bh_stats_display_str}{A_stats_display_str}")
     
     return results
 

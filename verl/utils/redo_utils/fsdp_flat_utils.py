@@ -842,12 +842,12 @@ def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=True, origi
             # For each parameter, calculate its contribution to H_global and B_global
             if current_grad_to_process.dim() == 2:
                 # grad_norm_row: (output_dim,)
-                grad_norm_row = torch.norm(current_grad_to_process, p=2, dim=1)  # Norm along input_dim (dim 1)
+                grad_norm_row = torch.norm(current_grad_to_process, p=1, dim=1)  # Norm along input_dim (dim 1)
                 # H_local is the number of rows (output dimension) from the (potentially reshaped) gradient tensor
                 H_local = current_grad_to_process.shape[0]
             elif current_grad_to_process.dim() == 1:
                 # Treat 1D tensor as a single row
-                grad_norm_row = torch.norm(current_grad_to_process, p=2, dim=0).unsqueeze(0) # Shape [1]
+                grad_norm_row = torch.norm(current_grad_to_process, p=1, dim=0).unsqueeze(0) # Shape [1]
                 H_local = 1
             else:
                 # Should not happen if eligibility checks are correct (param_dim_to_check == 2, or 1D fallback)

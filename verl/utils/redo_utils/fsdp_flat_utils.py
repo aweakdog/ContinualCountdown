@@ -857,7 +857,7 @@ def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=True, origi
                 grad_norm_row = torch.zeros(1, device=device)
             
             # B_local is the sum of squared norms of all rows in the current layer's gradient
-            B_local = torch.sum(grad_norm_row**2).item() 
+            B_local = torch.sum(grad_norm_row).item() 
         
             # S_local is the count of rows where the norm is below the tau-adjusted metric
             # This calculation is deferred until after B_global and H_global are known.

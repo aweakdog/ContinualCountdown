@@ -1,15 +1,18 @@
-# Continual Learning Experiments
+# Continual Learning# Experiment Log Analysis and Plotting
 
-This directory contains scripts and utilities for running continual learning experiments on the Countdown task.
+This directory contains scripts and results for analyzing experiment logs related to continual learning, specifically focusing on grama ratio and performance metrics.
 
-## Data Generation
+## `plot_grama_ratio.py`
 
-The `data_gen.py` script generates training and test data for the Countdown task with different operator groups. The data is organized to support continual learning experiments where the model progressively learns to handle more operators.
+This Python script is designed to parse experiment log files, extract relevant metrics, and generate a series of plots for analysis. 
 
-### Operator Groups
+### Functionality:
 
-The data is divided into four groups with increasing complexity:
-1. `plus`: Only addition (`+`)
+1.  **Log Parsing**:
+    *   Scans the `../logs/` directory for experiment folders matching the pattern: `continual_countdown3b_sft_global_step_{sft_step_num}_{date}_{time}`.
+    *   Within each SFT step folder, it processes log files named `Group{group_num}_{date}_{time}.log`.
+    *   `Group0` is treated as the 'Known Group'.
+    *   `Group1`, `Group2`, `Group3` are averaged to represent the 'Unknown Group'.
 2. `plus_minus`: Addition and subtraction (`+`, `-`)
 3. `plus_minus_mul`: Addition, subtraction, and multiplication (`+`, `-`, `*`)
 4. `plus_minus_mul_div`: All basic arithmetic operations (`+`, `-`, `*`, `/`)

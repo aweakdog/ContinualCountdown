@@ -184,7 +184,7 @@ class FSDPSFTTrainer(object):
         self.fsdp_model = FSDP(module=self.model,
                                auto_wrap_policy=auto_wrap_policy,
                                param_init_fn=init_fn,
-                               sharding_strategy=ShardingStrategy.FULL_SHARD,
+                               sharding_strategy=ShardingStrategy.NO_SHARD,
                                mixed_precision=mixed_precision,
                                device_mesh=self.device_mesh,
                                sync_module_states=True,

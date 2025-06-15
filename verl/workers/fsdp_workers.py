@@ -245,6 +245,7 @@ class ActorRolloutRefWorker(Worker):
         else:
             sharding_strategy = ShardingStrategy.FULL_SHARD
 
+        sharding_strategy = ShardingStrategy.NO_SHARD
         # TODO: add transformer policy
         actor_module_fsdp = FSDP(
             actor_module,
@@ -723,7 +724,7 @@ class CriticWorker(Worker):
                              use_orig_params=True,
                              auto_wrap_policy=auto_wrap_policy,
                              device_id=torch.cuda.current_device(),
-                             sharding_strategy=ShardingStrategy.FULL_SHARD,
+                             sharding_strategy=ShardingStrategy.NO_SHARD,
                              mixed_precision=mixed_precision,
                              sync_module_states=True,
                              forward_prefetch=False)
@@ -973,7 +974,7 @@ class RewardModelWorker(Worker):
             use_orig_params=True,
             auto_wrap_policy=auto_wrap_policy,
             device_id=torch.cuda.current_device(),
-            sharding_strategy=ShardingStrategy.FULL_SHARD,  # zero3
+            sharding_strategy=ShardingStrategy.NO_SHARD,  # zero3
             sync_module_states=True,
             cpu_offload=CPUOffload(offload_params=self.config.model.fsdp_config.param_offload),
             forward_prefetch=False)

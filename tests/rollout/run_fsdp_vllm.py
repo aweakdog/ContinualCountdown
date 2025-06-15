@@ -84,7 +84,7 @@ def main():
                       use_orig_params=True,
                       auto_wrap_policy=None,
                       device_id=torch.cuda.current_device(),
-                      sharding_strategy=ShardingStrategy.NO_SHARD,
+                      sharding_strategy=ShardingStrategy.FULL_SHARD,
                       mixed_precision=mixed_precision,
                       cpu_offload=CPUOffload(offload_params=False),
                       sync_module_states=False,

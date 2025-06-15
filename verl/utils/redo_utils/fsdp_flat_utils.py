@@ -1030,7 +1030,8 @@ def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=True, origi
             # No need to repeat it here
             
             # Store local stats
-            layer_stats_local[fqn] = {'zero': zero_rows, 'total': H_local_scalar}
+            current_avg_global_for_si = avg_global if 'avg_global' in locals() and H_global > 0 else 0.0
+            layer_stats_local[fqn] = {'zero': zero_rows, 'total': H_local_scalar, 'avg_global_for_si_calc': current_avg_global_for_si}
             total_zero_local += zero_rows
             total_rows_local += H_local_scalar # Use H_local_scalar
 
@@ -1221,6 +1222,16 @@ def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=True, origi
             
             combined_stats[fqn]['zero'] = zero_sum
             combined_stats[fqn]['total'] = max_total
+
+            # Aggregate avg_global_for_si_calc for this fqn
+            fqn_avg_B_div_H_val = 0.0
+            # Try to get it from the first rank that has this fqn and its avg_global_for_si_calc
+            # all_layer_stats_gathered contains dicts from each rank like: {fqn: {'zero': ..., 'total': ..., 'avg_global_for_si_calc': ...}}
+            for stats_dict_from_rank_for_avg in all_layer_stats_gathered:
+                if stats_dict_from_rank_for_avg and fqn in stats_dict_from_rank_for_avg and 'avg_global_for_si_calc' in stats_dict_from_rank_for_avg[fqn]:
+                    fqn_avg_B_div_H_val = stats_dict_from_rank_for_avg[fqn]['avg_global_for_si_calc']
+                    break # Found it, should be consistent as B_global/H_global were global sums
+            combined_stats[fqn]['avg_global_for_si_calc'] = fqn_avg_B_div_H_val
     
     # Calculate global totals for all parameters
     global_zero_count = 0
@@ -1261,22 +1272,9 @@ def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=True, origi
                 if verbose and rank == 0:
                     print(f"[PARAM-DEBUG] Other layer: {fqn} = {param_count} params")
     
-    fqn_B_sums = {}
-    if rank == 0: # Should already be in rank 0 block, but for clarity
-        # all_param_details_gathered is a list of dicts, one from each rank
-        # Each dict maps fqn to {'B_local': ..., 'H_local': ...}
-        for param_details_from_rank in all_param_details_gathered:
-            for fqn_key, details in param_details_from_rank.items(): # Renamed fqn to fqn_key to avoid conflict
-                if fqn_key not in fqn_B_sums:
-                    fqn_B_sums[fqn_key] = 0.0
-                fqn_B_sums[fqn_key] += details.get('B_local', 0.0)
-
     for fqn, data in combined_stats.items():
         ratio = data['zero'] / (data['total'] + 1e-8) if data['total'] > 0 else 0.0
-        B_sum_for_fqn = fqn_B_sums.get(fqn, 0.0)
-        H_total_for_fqn = data['total'] # This is H_global_for_fqn, correctly aggregated
-        avg_global_for_this_fqn = B_sum_for_fqn / (H_total_for_fqn + 1e-9) if H_total_for_fqn > 0 else 0.0
-        results[fqn] = {**data, 'ratio': ratio, 'avg_global_for_si_calc': avg_global_for_this_fqn}
+        results[fqn] = {**data, 'ratio': ratio}
         
         # Add to global counts
         global_zero_count += data['zero']

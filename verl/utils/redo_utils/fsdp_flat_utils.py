@@ -1128,7 +1128,7 @@ def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=True, origi
 
     # Step 6: Verbose per-parameter printing on rank 0 using combined_stats
     if rank == 0 and verbose:
-        print(f"\n[ZeroGradV2-FINAL-STATS][Rank {rank}] Per-parameter zero gradient statistics (Threshold: {threshold}):")
+        print(f"\n[ZeroGradV2-FINAL-STATS][Rank {rank}] Per-parameter zero gradient statistics (Tau: {tau}):")
         sorted_fqns = sorted(combined_stats.keys())
         for fqn in sorted_fqns:
             stats = combined_stats[fqn]

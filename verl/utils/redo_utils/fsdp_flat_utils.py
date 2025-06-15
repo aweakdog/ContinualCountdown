@@ -1261,9 +1261,22 @@ def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=True, origi
                 if verbose and rank == 0:
                     print(f"[PARAM-DEBUG] Other layer: {fqn} = {param_count} params")
     
+    fqn_B_sums = {}
+    if rank == 0: # Should already be in rank 0 block, but for clarity
+        # all_param_details_gathered is a list of dicts, one from each rank
+        # Each dict maps fqn to {'B_local': ..., 'H_local': ...}
+        for param_details_from_rank in all_param_details_gathered:
+            for fqn_key, details in param_details_from_rank.items(): # Renamed fqn to fqn_key to avoid conflict
+                if fqn_key not in fqn_B_sums:
+                    fqn_B_sums[fqn_key] = 0.0
+                fqn_B_sums[fqn_key] += details.get('B_local', 0.0)
+
     for fqn, data in combined_stats.items():
         ratio = data['zero'] / (data['total'] + 1e-8) if data['total'] > 0 else 0.0
-        results[fqn] = {**data, 'ratio': ratio}
+        B_sum_for_fqn = fqn_B_sums.get(fqn, 0.0)
+        H_total_for_fqn = data['total'] # This is H_global_for_fqn, correctly aggregated
+        avg_global_for_this_fqn = B_sum_for_fqn / (H_total_for_fqn + 1e-9) if H_total_for_fqn > 0 else 0.0
+        results[fqn] = {**data, 'ratio': ratio, 'avg_global_for_si_calc': avg_global_for_this_fqn}
         
         # Add to global counts
         global_zero_count += data['zero']
@@ -1378,7 +1391,9 @@ def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=True, origi
               f"({results['__global__']['ratio']:.4f})")
         sorted_layer_items = sorted([item for item in results.items() if item[0] != '__global__'])
         for fqn, stats in sorted_layer_items:
-            print(f"[ZeroGradV2] {fqn}: {stats['zero']:.0f}/{stats['total']:.0f} ({stats['ratio']:.4f})")
+            avg_global_val = stats.get('avg_global_for_si_calc')
+            avg_global_str = f", B/H: {avg_global_val:.4e}" if avg_global_val is not None else ""
+            print(f"[ZeroGradV2] {fqn}: {stats['zero']:.0f}/{stats['total']:.0f} ({stats['ratio']:.4f}){avg_global_str}")
     
     return results
 

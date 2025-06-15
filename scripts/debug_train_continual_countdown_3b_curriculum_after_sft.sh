@@ -111,8 +111,8 @@ for group in 1; do
     fsdp_grad_metric_enabled=$FSDP_GRAD_METRIC_ENABLED \
     data.train_files="$TRAIN_FILES_STR" \
     data.val_files="$VAL_FILES_STR" \
-    data.train_batch_size=32 \
-    data.val_batch_size=32 \
+    data.train_batch_size=256 \
+    data.val_batch_size=256 \
     data.max_response_length=1024 \
     ++data.curriculum_learning=true \
     ++data.epochs_per_group=30 \

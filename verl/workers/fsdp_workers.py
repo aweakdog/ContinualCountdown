@@ -245,8 +245,6 @@ class ActorRolloutRefWorker(Worker):
         else:
             sharding_strategy = ShardingStrategy.FULL_SHARD
 
-        print(f'248 sharding_strategy: {sharding_strategy}')
-        sharding_strategy = ShardingStrategy.NO_SHARD
         # TODO: add transformer policy
         actor_module_fsdp = FSDP(
             actor_module,

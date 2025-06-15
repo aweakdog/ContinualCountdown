@@ -97,7 +97,7 @@ if [ -f "$MASTER_LOG_FILE" ]; then
 fi
 
 # Loop over each group and record logs in the experiment log directory
-for group in 1; do
+for group in 0 1; do
   TRAIN_FILES_STR="[\"./data/continual/${group}/train.parquet\"]"
   VAL_FILES_STR="[\"./data/continual/${group}/test.parquet\"]"
   TRAIN_SAMPLE_SIZE="[2560]"

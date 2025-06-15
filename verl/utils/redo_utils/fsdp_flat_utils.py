@@ -1074,173 +1074,119 @@ def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=True, origi
     combined_stats = {fqn: {'zero': 0, 'total': 0} for fqn in all_fqns}
     
     # For each FQN, aggregate statistics across ranks
-    if all_layer_stats_gathered[0] is not None:  # Check if any stats were gathered
+    # Process gathered stats on rank 0 to fill combined_stats
+    if rank == 0:
         for fqn in all_fqns:
-            # First check if we have the original shape for this parameter
-            true_param_count = None
-            original_shape = None
-            if original_shapes_map and fqn in original_shapes_map:
-                # Get the original shape
-                original_shape = original_shapes_map[fqn]
-                
-                # Calculate the true parameter count from the original shape
-                if len(original_shape) >= 2:  # For 2D+ tensors, we want the first dimension (output neurons)
-                    true_param_count = original_shape[0]
-                elif len(original_shape) == 1:  # For 1D tensors (like biases)
-                    true_param_count = original_shape[0]
+            # Initialize sums for zero and total counts for this FQN
+            current_fqn_zero_sum = 0
+            current_fqn_total_sum = 0
             
-            # Check how many ranks have this parameter and collect their stats
-            ranks_with_param = 0
-            max_param_count = 0
-            total_observed_params = 0
-            
-            for stats_dict_from_rank in all_layer_stats_gathered:
-                if stats_dict_from_rank and fqn in stats_dict_from_rank:
-                    data = stats_dict_from_rank[fqn]
-                    if data['total'] > 0:  # Only count ranks with parameters
-                        ranks_with_param += 1
-                        max_param_count = max(max_param_count, data['total'])
-                        total_observed_params += data['total']
-            
-            # Determine if this parameter is sharded across ranks
-            is_sharded = ranks_with_param > 1 and max_param_count > 0
-            # Initialize counters
-            # Use the true parameter count from original_shapes_map if available
-            total_params = true_param_count if true_param_count is not None else max_param_count
-            total_zeros = 0
-            
-            # Initialize these variables to avoid reference-before-assignment errors
-            zero_counts = []
-            param_counts = []
-            zero_ratios = []
-            shard_zero_ratios = []
-            avg_zero_ratio = 0.0
-            
-            # For sharded parameters, we need special handling
-            if is_sharded:
-                # For sharded parameters, we need to compute a weighted average of zero ratios
-                # across all ranks that have this parameter
-                zero_counts = []
-                param_counts = []
-                zero_ratios = []
-                shard_zero_ratios = []  # Store zero ratios per shard for debugging
-                
-                for stats_dict_from_rank in all_layer_stats_gathered:
-                    if stats_dict_from_rank and fqn in stats_dict_from_rank:
-                        data = stats_dict_from_rank[fqn]
-                        if data['total'] > 0:  # Only consider ranks with parameters
-                            zero_counts.append(data['zero'])
-                            param_counts.append(data['total'])
-                            zero_ratio = data['zero'] / data['total'] if data['total'] > 0 else 0.0
-                            zero_ratios.append(zero_ratio)
-                            shard_zero_ratios.append(f"{zero_ratio:.4f}")
-                
-                if param_counts:  # Only proceed if we have valid data
-                    # Compute weighted average of zero ratios
-                    weights = [count / sum(param_counts) for count in param_counts]
-                    weighted_avg_ratio = sum(ratio * weight for ratio, weight in zip(zero_ratios, weights))
+            # Initialize B, H, B/H and A_parts for this fqn
+            fqn_B_global_val = 0.0
+            fqn_H_global_val = 0.0
+            fqn_avg_global_for_si_calc = 0.0
+            found_global_BH_stats_for_fqn = False
+            all_A_parts_for_fqn = []
+
+            for rank_idx, rank_specific_stats_dict in enumerate(all_layer_stats_gathered):
+                if rank_specific_stats_dict and fqn in rank_specific_stats_dict:
+                    data_for_fqn_from_rank = rank_specific_stats_dict[fqn]
                     
-                    # Safety check - if all ranks report very high zero ratios (>95%) for non-embedding layers,
-                    # it might be a numerical issue or incorrect threshold
-                    if weighted_avg_ratio > 0.95 and "embed_tokens" not in fqn and rank == 0 and verbose:
-                        print(f"[ZeroGradV2-FIX] WARNING: Sharded layer {fqn} has suspiciously high zero ratio ({weighted_avg_ratio:.4f})")
-                        print(f"[ZeroGradV2-FIX]   - This might indicate a numerical issue or incorrect threshold")
-                        print(f"[ZeroGradV2-FIX]   - Per-rank zero ratios: {zero_ratios}")
-                        print(f"[ZeroGradV2-FIX]   - Per-rank param counts: {param_counts}")
-                        
-                        # Keep the warning but don't cap the ratio as requested
-                        if "mlp" in fqn:
-                            print(f"[ZeroGradV2-FIX]   - High dormancy in MLP layer: {weighted_avg_ratio:.4f}")
-                        elif "attn" in fqn:
-                            print(f"[ZeroGradV2-FIX]   - High dormancy in attention layer: {weighted_avg_ratio:.4f}")
-                        else:
-                            print(f"[ZeroGradV2-FIX]   - High dormancy in other layer: {weighted_avg_ratio:.4f}")
+                    current_fqn_zero_sum += data_for_fqn_from_rank.get('zero', 0)
+                    current_fqn_total_sum += data_for_fqn_from_rank.get('total', 0) # 'total' is H_local_scalar_for_si from that rank
                     
-                    # Scale to the true parameter count if available, otherwise use observed total
-                    if true_param_count is not None and true_param_count > 0:
-                        total_zeros = int(weighted_avg_ratio * true_param_count)
-                    else:
-                        total_zeros = int(weighted_avg_ratio * total_params)
-                        
-                    # Store for debugging
-                    avg_zero_ratio = weighted_avg_ratio
-                else:
-                    # Fall back if no valid shards
-                    avg_zero_ratio = 0
-                    total_zeros = 0
+                    # Retrieve the globally consistent B, H, B/H. 
+                    # These were stored in layer_stats_local from the global maps earlier.
+                    # We only need to get them once from any rank that processed this FQN.
+                    if not found_global_BH_stats_for_fqn and ('total' in data_for_fqn_from_rank and data_for_fqn_from_rank['total'] > 0): 
+                        fqn_B_global_val = data_for_fqn_from_rank.get('B_global_val', 0.0)
+                        fqn_H_global_val = data_for_fqn_from_rank.get('H_global_val', 0.0)
+                        fqn_avg_global_for_si_calc = data_for_fqn_from_rank.get('avg_global_for_si_calc', 0.0)
+                        found_global_BH_stats_for_fqn = True
+
+                    # Collect A_local_rows_part if the parameter contributed rows on that rank
+                    if data_for_fqn_from_rank.get('total', 0) > 0: # 'total' here is H_local_scalar_for_si for that rank
+                        a_part = data_for_fqn_from_rank.get('A_local_rows_part')
+                        if isinstance(a_part, torch.Tensor) and a_part.numel() > 0:
+                            all_A_parts_for_fqn.append(a_part.to(device)) # Ensure on same device for cat
+            
+            combined_stats[fqn]['zero'] = current_fqn_zero_sum
+            # The 'total' in combined_stats should be the true global H for this parameter, 
+            # which is fqn_H_global_val if found, otherwise sum of local H contributions.
+            combined_stats[fqn]['total'] = fqn_H_global_val if found_global_BH_stats_for_fqn and fqn_H_global_val > 0 else current_fqn_total_sum
+            combined_stats[fqn]['B_global_val'] = fqn_B_global_val
+            combined_stats[fqn]['H_global_val'] = fqn_H_global_val # This is the definitive H_global for this fqn
+            combined_stats[fqn]['avg_global_for_si_calc'] = fqn_avg_global_for_si_calc
+
+            if all_A_parts_for_fqn:
+                # Concatenate all A_local_rows_part tensors for this FQN from all ranks
+                combined_A_tensor_for_fqn = torch.cat(all_A_parts_for_fqn)
             else:
-                # For non-sharded parameters, collect and sum the zeros (should only be from one rank)
-                zero_counts = []
-                shard_zero_ratios = []  # Initialize for non-sharded case too
-                for stats_dict_from_rank in all_layer_stats_gathered:
-                    if stats_dict_from_rank and fqn in stats_dict_from_rank:
-                        data = stats_dict_from_rank[fqn]
-                        if data['total'] > 0:  # Only consider ranks with parameters
-                            zero_counts.append(data['zero'])
-                            # Calculate ratio for this shard
-                            shard_zero_ratios.append(f"{data['zero']/data['total']:.4f}")
-                
-                total_zeros = sum(zero_counts) if zero_counts else 0
-                
-                # Define avg_zero_ratio for non-sharded case
-                if zero_counts and param_counts:
-                    avg_zero_ratio = total_zeros / sum(param_counts) if sum(param_counts) > 0 else 0.0
-                else:
-                    avg_zero_ratio = 0.0
-            
-            # Debug output for important layers
-            if verbose and rank == 0 and ("embed_tokens" in fqn or "mlp.up_proj" in fqn or "mlp.gate_proj" in fqn or "down_proj" in fqn):
-                sharded_str = "sharded" if is_sharded else "non-sharded"
-                
-                # Calculate expected parameters per rank if using tensor parallelism
-                expected_per_rank = ""
-                if original_shape and len(original_shape) >= 2:
-                    full_params = original_shape[0] * original_shape[1]
-                    expected_per_rank = f", expected_per_rank={full_params/dist.get_world_size():.0f}"
-                
-                orig_shape_str = f", orig_shape={original_shape}" if original_shape else ""
-                print(f"[ZeroGradV2-FIXED] {fqn} ({sharded_str}): ranks={ranks_with_param}, total_params={total_params}, total_zeros={total_zeros}{orig_shape_str}{expected_per_rank}")
-                
-                # For MLP layers, check if tensor parallelism might be in use
-                if ("mlp." in fqn or "attn." in fqn) and original_shape and len(original_shape) >= 2:
-                    full_params = original_shape[0] * original_shape[1]
-                    params_per_rank = max_param_count * ranks_with_param
-                    if params_per_rank < full_params * 0.9:  # If we're seeing significantly fewer params than expected
-                        tp_factor = full_params / params_per_rank
-                        print(f"[ZeroGradV2-FIXED] Detected possible tensor parallelism: full_params={full_params}, params_per_rank={params_per_rank}, tp_factor≈{tp_factor:.1f}")
-                        
-                        # Sanity check for gate_proj and up_proj layers to prevent incorrect 100% dormant counts
-                        if ("gate_proj" in fqn or "up_proj" in fqn) and total_zeros >= total_params * 0.99:
-                            print(f"[ZeroGradV2-FIXED] WARNING: Suspiciously high dormancy detected ({total_zeros}/{total_params}). Applying correction.")
-                            # Apply a correction - assume at most 50% dormancy for these layers as a safeguard
-                            total_zeros = min(total_zeros, int(total_params * 0.5))
-                
-                if is_sharded and zero_counts:
-                    if true_param_count is not None and 'shard_totals' in locals() and 'total_observed_params' in locals() and 'full_params' in locals():
-                        print(f"[ZeroGradV2-FIXED] Individual zero counts: {zero_counts}, shard_ratios: {shard_zero_ratios}, avg_ratio: {avg_zero_ratio:.6f}")
-                        print(f"[ZeroGradV2-FIXED] Shard totals: {shard_totals}, total observed: {total_observed_params} ({total_observed_params/full_params*100:.2f}% of full)")
-                    else:
-                        print(f"[ZeroGradV2-FIXED] Individual zero counts: {zero_counts}, shard_ratios: {shard_zero_ratios}, avg_ratio: {avg_zero_ratio:.6f}")
-                print(f"[ZeroGradV2-FIXED] Zero ratio: {total_zeros/total_params if total_params > 0 else 0:.6f}, total_zeros: {total_zeros}, total_params: {total_params}")
-            
-            # Ensure zero count doesn't exceed total (shouldn't happen with correct counting)
-            zero_sum = min(total_zeros, total_params)
-            max_total = total_params
-            
-            combined_stats[fqn]['zero'] = zero_sum
-            combined_stats[fqn]['total'] = max_total
+                # Ensure it's an empty tensor on the correct device if no parts were found
+                combined_A_tensor_for_fqn = torch.empty(0, device=device) 
+            combined_stats[fqn]['all_A_local_rows_gathered'] = combined_A_tensor_for_fqn
 
-            # Aggregate avg_global_for_si_calc for this fqn
-            fqn_avg_B_div_H_val = 0.0
-            # Try to get it from the first rank that has this fqn and its avg_global_for_si_calc
-            # all_layer_stats_gathered contains dicts from each rank like: {fqn: {'zero': ..., 'total': ..., 'avg_global_for_si_calc': ...}}
-            for stats_dict_from_rank_for_avg in all_layer_stats_gathered:
-                if stats_dict_from_rank_for_avg and fqn in stats_dict_from_rank_for_avg and 'avg_global_for_si_calc' in stats_dict_from_rank_for_avg[fqn]:
-                    fqn_avg_B_div_H_val = stats_dict_from_rank_for_avg[fqn]['avg_global_for_si_calc']
-                    break # Found it, should be consistent as B_global/H_global were global sums
-            combined_stats[fqn]['avg_global_for_si_calc'] = fqn_avg_B_div_H_val
+    # Step 6: Verbose per-parameter printing on rank 0 using combined_stats
+    if rank == 0 and verbose:
+        print(f"\n[ZeroGradV2-FINAL-STATS][Rank {rank}] Per-parameter zero gradient statistics (Threshold: {threshold}):")
+        sorted_fqns = sorted(combined_stats.keys())
+        for fqn in sorted_fqns:
+            stats = combined_stats[fqn]
+            zero_count = stats.get('zero', 0)
+            total_count = stats.get('total', 0) # This should be H_global for the parameter
+            ratio = zero_count / (total_count + 1e-8) if total_count > 0 else 0.0
+            
+            # Get B, H, and B/H from combined_stats (which should hold the true global values)
+            B_global_print = stats.get('B_global_val', 0.0)
+            H_global_print = stats.get('H_global_val', 0.0)
+            avg_BH_print = stats.get('avg_global_for_si_calc', 0.0)
 
-            # Aggregate B_global_val and H_global_val for this fqn
+            # Get A stats (min, max, mean of per-neuron gradient magnitudes)
+            A_tensor = stats.get('all_A_local_rows_gathered')
+            A_stats_str = "A_tensor: N/A"
+            if isinstance(A_tensor, torch.Tensor) and A_tensor.numel() > 0:
+                A_min = A_tensor.min().item()
+                A_max = A_tensor.max().item()
+                A_mean = A_tensor.mean().item()
+                A_stats_str = f"A_min: {A_min:.4e}, A_max: {A_max:.4e}, A_mean: {A_mean:.4e} (Size: {A_tensor.numel()})"
+            elif isinstance(A_tensor, torch.Tensor) and A_tensor.numel() == 0:
+                A_stats_str = "A_tensor: EMPTY"
+
+            print(f"  Layer: {fqn:<80} | Zeros: {zero_count:<7} / Total: {total_count:<7} ({ratio:>7.2%}) | B_global: {B_global_print:.4e}, H_global: {H_global_print:.1f}, B/H_calc: {avg_BH_print:.4e} | {A_stats_str}")
+
+    # Step 7: Populate results dictionary from combined_stats (on rank 0)
+    # The '__global__' entry in results is already populated with overall zero/total/ratio from Step 4.
+    # Here, we add per-parameter details.
+    if rank == 0:
+        for fqn, stats in combined_stats.items():
+            # Ensure fqn entry exists
+            if fqn not in results:
+                results[fqn] = {}
+            
+            results[fqn]['zero'] = stats.get('zero',0)
+            results[fqn]['total'] = stats.get('total',0) # This is H_global for the parameter
+            results[fqn]['ratio'] = stats.get('zero',0) / (stats.get('total',0) + 1e-8) if stats.get('total',0) > 0 else 0.0
+            results[fqn]['avg_global_for_si_calc'] = stats.get('avg_global_for_si_calc', 0.0)
+            results[fqn]['B_global_val'] = stats.get('B_global_val', 0.0)
+            results[fqn]['H_global_val'] = stats.get('H_global_val', 0.0)
+            
+            # Add A stats to results if you want them stored
+            A_tensor_res = stats.get('all_A_local_rows_gathered')
+            if isinstance(A_tensor_res, torch.Tensor) and A_tensor_res.numel() > 0:
+                results[fqn]['A_min'] = A_tensor_res.min().item()
+                results[fqn]['A_max'] = A_tensor_res.max().item()
+                results[fqn]['A_mean'] = A_tensor_res.mean().item()
+                results[fqn]['A_numel'] = A_tensor_res.numel()
+            elif isinstance(A_tensor_res, torch.Tensor) and A_tensor_res.numel() == 0:
+                results[fqn]['A_min'] = 0.0
+                results[fqn]['A_max'] = 0.0
+                results[fqn]['A_mean'] = 0.0
+                results[fqn]['A_numel'] = 0
+
+    # Ensure all ranks have the full results dictionary if needed elsewhere, or just return from rank 0
+    # For now, we assume results are primarily used/returned by rank 0 after this function.
+    # If other ranks need it, an all_gather_object or broadcast would be needed here for `results`.
+
             fqn_B_val = 0.0
             fqn_H_val = 0.0
             for stats_dict_from_rank_for_bh in all_layer_stats_gathered:

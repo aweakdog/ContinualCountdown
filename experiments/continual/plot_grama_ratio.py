@@ -23,14 +23,13 @@ def smooth_curve(y_values, window_size=SMOOTHING_WINDOW_SIZE, polyorder=SMOOTHIN
 
 import matplotlib.colors as mcolors
 from collections import defaultdict
-from scipy.signal import savgol_filter # Ensure import is at the top if not already there due to other chunks
 
 # Configure Matplotlib to use 'Agg' backend for non-GUI environments
 plt.switch_backend('Agg')
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 LOG_DIR = BASE_DIR / "logs"
-PLOT_OUTPUT_DIR = BASE_DIR / "experiments" / "continual" / "plots"
+PLOT_OUTPUT_DIR = BASE_DIR / "plots" / "plot_grama_ratio"
 
 # Constants
 TARGET_PARAMS = [
@@ -317,8 +316,8 @@ def main():
         sft_step_num_str = sft_match.group(1)
         print(f"\nProcessing SFT Step: {sft_step_num_str} (from {sft_dir_path.name})")
 
-        sft_plot_output_dir = PLOT_OUTPUT_DIR / sft_step_num_str
-        sft_plot_output_dir.mkdir(parents=True, exist_ok=True)
+        # sft_plot_output_dir is now PLOT_OUTPUT_DIR itself
+        # PLOT_OUTPUT_DIR.mkdir(parents=True, exist_ok=True) # Main dir is created at the start
 
         group_log_files = list(sft_dir_path.glob("Group*.log"))
         known_group_files = [f for f in group_log_files if GROUP_LOG_PATTERN.match(f.name) and GROUP_LOG_PATTERN.match(f.name).group(1) == '0']
@@ -330,14 +329,14 @@ def main():
             # For simplicity, assuming one Group0 log file. If multiple, this would need averaging or selection.
             known_data, _, _, _ = parse_general_metrics(known_group_files[0]) 
             if known_data:
-                plot_performance_curves(sft_step_num_str, known_data, "Known Group", 'score', "Score (critic/score/mean)", sft_plot_output_dir)
-                plot_performance_curves(sft_step_num_str, known_data, "Known Group", 'grama', "Grama (actor/zero_gradspace_ratio)", sft_plot_output_dir)
+                plot_performance_curves(sft_step_num_str, known_data, "Known Group", 'score', "Score (critic/score/mean)", PLOT_OUTPUT_DIR)
+                plot_performance_curves(sft_step_num_str, known_data, "Known Group", 'grama', "Grama (actor/zero_gradspace_ratio)", PLOT_OUTPUT_DIR)
         
         if unknown_group_files:
             avg_unknown_data_general = aggregate_unknown_group_data(unknown_group_files, parse_general_metrics)
             if avg_unknown_data_general:
-                plot_performance_curves(sft_step_num_str, avg_unknown_data_general, "Unknown Group Avg", 'score', "Score (critic/score/mean)", sft_plot_output_dir)
-                plot_performance_curves(sft_step_num_str, avg_unknown_data_general, "Unknown Group Avg", 'grama', "Grama (actor/zero_gradspace_ratio)", sft_plot_output_dir)
+                plot_performance_curves(sft_step_num_str, avg_unknown_data_general, "Unknown Group Avg", 'score', "Score (critic/score/mean)", PLOT_OUTPUT_DIR)
+                plot_performance_curves(sft_step_num_str, avg_unknown_data_general, "Unknown Group Avg", 'grama', "Grama (actor/zero_gradspace_ratio)", PLOT_OUTPUT_DIR)
 
         # --- 2. Case Study --- 
         print("  Processing case study data...")
@@ -354,9 +353,9 @@ def main():
         for group_data, group_label_prefix in [(known_layer_data, "Known_Group"), (avg_unknown_layer_data, "Unknown_Group_Avg")]:
             if not group_data: continue
 
-            # Heatmaps
-            heatmap_dir = sft_plot_output_dir / f"{group_label_prefix}_heatmaps"
-            heatmap_dir.mkdir(exist_ok=True)
+            # Heatmaps will be saved directly into PLOT_OUTPUT_DIR
+            # heatmap_dir = PLOT_OUTPUT_DIR / f"{group_label_prefix}_heatmaps" # No longer a separate subdir for heatmaps
+            # heatmap_dir.mkdir(exist_ok=True)
             
             bh_calc_for_curves = defaultdict(lambda: defaultdict(float)) # {param_name: {ppo_step: avg_bh_calc}}
 
@@ -385,10 +384,10 @@ def main():
                     
                     heatmap_title = f"{group_label_prefix} - {param_name} (PPO Step {ppo_step})"
                     heatmap_filename = f"{sft_step_num_str}_{group_label_prefix}_{param_name.replace('.', '_')}_step{ppo_step}_heatmap.png"
-                    plot_heatmap(heatmap_matrix, heatmap_title, heatmap_dir / heatmap_filename, avg_bh_calc_for_step_param)
+                    plot_heatmap(heatmap_matrix, heatmap_title, PLOT_OUTPUT_DIR / heatmap_filename, avg_bh_calc_for_step_param)
             
             # B/H_calc Curves
-            plot_bh_calc_curves(sft_step_num_str, group_label_prefix, bh_calc_for_curves, sft_plot_output_dir)
+            plot_bh_calc_curves(sft_step_num_str, group_label_prefix, bh_calc_for_curves, PLOT_OUTPUT_DIR)
 
     print("\nAll processing complete.")
 

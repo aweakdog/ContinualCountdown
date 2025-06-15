@@ -12,7 +12,7 @@ fi
 # Configuration - Set environment variables from docker-compose.yml if not already set
 export NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-all}
 export CHECKPOINT_BASE_DIR=${CHECKPOINT_BASE_DIR:-/cpfs04/user/liyuanhang.p/tmp/checkpoints/continual_countdown3b}
-SFT_CHECKPOINT=global_step_2
+SFT_CHECKPOINT=global_step_15
 export BASE_MODEL=${BASE_MODEL:-"/cpfs04/user/liyuanhang.p/tmp/sft_model/${SFT_CHECKPOINT}"}  # Path to mounted Qwen model
 export N_GPUS=${N_GPUS:-8}  # Using 4 A800 GPUs
 export ROLLOUT_TP_SIZE=${ROLLOUT_TP_SIZE:-1}  # Tensor parallel size optimized for 4 GPUs

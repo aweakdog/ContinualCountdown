@@ -128,14 +128,14 @@ for group in 1; do
     +actor_rollout_ref.model.attn_implementation=flash_attention_2 \
     +actor_rollout_ref.model.use_cache=false \
     actor_rollout_ref.actor.optim.lr=1e-6 \
-    actor_rollout_ref.actor.ppo_mini_batch_size=16 \
-    actor_rollout_ref.actor.ppo_micro_batch_size=4 \
-    actor_rollout_ref.rollout.log_prob_micro_batch_size=4 \
+    actor_rollout_ref.actor.ppo_mini_batch_size=32 \
+    actor_rollout_ref.actor.ppo_micro_batch_size=8 \
+    actor_rollout_ref.rollout.log_prob_micro_batch_size=8 \
     actor_rollout_ref.rollout.tensor_model_parallel_size=$ROLLOUT_TP_SIZE \
     actor_rollout_ref.rollout.gpu_memory_utilization=0.6 \
     actor_rollout_ref.rollout.enforce_eager=true \
     actor_rollout_ref.rollout.free_cache_engine=false \
-    actor_rollout_ref.ref.log_prob_micro_batch_size=4 \
+    actor_rollout_ref.ref.log_prob_micro_batch_size=8 \
     actor_rollout_ref.model.enable_gradient_checkpointing=True \
     critic.model.enable_gradient_checkpointing=True \
     critic.optim.lr=1e-5 \
@@ -145,7 +145,7 @@ for group in 1; do
     +critic.model.device_map=auto \
     +critic.model.attn_implementation=flash_attention_2 \
     +critic.model.use_cache=false \
-    critic.ppo_micro_batch_size=4 \
+    critic.ppo_micro_batch_size=8 \
     ++actor_rollout_ref.actor.redo_enabled=true \
     ++actor_rollout_ref.actor.redo_metric_freq=1 \
     ++actor_rollout_ref.actor.redo_reset_freq=1 \

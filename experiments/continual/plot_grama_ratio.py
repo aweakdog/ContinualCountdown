@@ -97,14 +97,14 @@ def parse_layer_wise_metrics(log_file_path, target_ppo_steps):
     LAYER_WISE_DETAIL_PATTERN_V2 = re.compile(
         r"\[ZeroGradV2\] model\.layers\.(\d+)\.self_attn\.({params_regex}):"
         r"\s*\d+/\d+\s*\(([\d\.]+)\),"  # Group 3: grama_ratio (decimal)
-        r"\s*B/H:\s*([\d\.eE]+)".format(params_regex=target_params_str)
+        r"\s*B/H:\s*([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)".format(params_regex=target_params_str) # Group 4: B/H_calc
     )
 
     # Pattern for the older format
     LAYER_WISE_DETAIL_PATTERN_OLD = re.compile(
         r"Layer: model\.layers\.(\d+)\.self_attn\.({params_regex})\s*\|"
         r".*?\(\s*([\d\.]+)%\s*\)"  # Group 3: grama_ratio (percentage)
-        r".*?B/H_calc:\s*([\d\.eE]+)".format(params_regex=target_params_str)
+        r".*?B/H_calc:\s*([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)".format(params_regex=target_params_str) # Group 4: B/H_calc
     )
 
     try:

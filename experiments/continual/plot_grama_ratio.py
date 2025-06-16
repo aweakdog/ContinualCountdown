@@ -4,11 +4,25 @@ import glob
 from pathlib import Path
 import shutil
 import numpy as np
+import pandas as pd
 import matplotlib.pyplot as plt
+import seaborn as sns
 from scipy.signal import savgol_filter # For Savitzky-Golay smoothing, often better than simple moving average
 
-SMOOTHING_WINDOW_SIZE = 5
+SMOOTHING_WINDOW_SIZE = 23
 SMOOTHING_POLYORDER = 2 # Relevant for Savitzky-Golay
+
+# Helper function to transform parsed general metrics to step-centric format
+def transform_to_step_centric(general_metrics_dict):
+    step_centric_data = defaultdict(dict)
+    if not general_metrics_dict or not general_metrics_dict.get('ppo_steps'):
+        return step_centric_data
+    for i, step in enumerate(general_metrics_dict['ppo_steps']):
+        if general_metrics_dict.get('scores') and i < len(general_metrics_dict['scores']):
+            step_centric_data[step]['scores'] = general_metrics_dict['scores'][i]
+        if general_metrics_dict.get('grama_ratios') and i < len(general_metrics_dict['grama_ratios']):
+            step_centric_data[step]['grama_ratios'] = general_metrics_dict['grama_ratios'][i]
+    return step_centric_data
 
 def smooth_curve(y_values, window_size=SMOOTHING_WINDOW_SIZE, polyorder=SMOOTHING_POLYORDER):
     """Smooths a curve using Savitzky-Golay filter."""
@@ -38,7 +52,8 @@ TARGET_PARAMS = [
     "o_proj.weight",
     "v_proj.weight"
 ]
-CASE_STUDY_PPO_STEPS = [1, 25, 50, 100, 200, 300]
+CASE_STUDY_PPO_STEPS = [1, 25, 50, 100, 200, 300] # PPO steps for detailed layer-wise case study (e.g., heatmaps)
+BH_CALC_PPO_STEPS_RANGE = list(range(1, 301)) # PPO steps for bh_calc line plots
 NUM_LAYERS = 28  # 0 to 27
 
 # Regex patterns
@@ -47,7 +62,7 @@ SFT_DIR_PATTERN = re.compile(r"continual_countdown3b_sft_global_step_(\d+)_\d{8}
 GROUP_LOG_PATTERN = re.compile(r"Group(\d+)_\d{8}_\d{6}\.log")
 
 GENERAL_METRICS_PATTERN = re.compile(
-    r"step:(\d+) .* critic/score/mean:([-\d.]+) .* actor/zero_gradspace_ratio:([-\d.]+)"
+    r"step:(\d+) .*? actor/zero_gradspace_ratio:([-\d.]+) .*? critic/score/mean:([-\d.]+)"
 )
 # LAYER_WISE_DETAIL_PATTERN is now defined locally in parse_layer_wise_metrics
 # to handle multiple formats.
@@ -63,11 +78,12 @@ def parse_general_metrics(log_file_path):
     try:
         with open(log_file_path, 'r', encoding='utf-8') as f:
             for line in f:
-                match = GENERAL_METRICS_PATTERN.search(line)
+                cleaned_line = clean_ansi_codes(line)
+                match = GENERAL_METRICS_PATTERN.search(cleaned_line)
                 if match:
                     ppo_step = int(match.group(1))
-                    score_mean = float(match.group(2))
-                    grama_ratio = float(match.group(3))
+                    grama_ratio = float(match.group(2))  # Group 2 is now actor/zero_gradspace_ratio
+                    score_mean = float(match.group(3))   # Group 3 is now critic/score/mean
                     general_metrics['ppo_steps'].append(ppo_step)
                     general_metrics['scores'].append(score_mean)
                     general_metrics['grama_ratios'].append(grama_ratio)
@@ -157,19 +173,49 @@ def parse_layer_wise_metrics(log_file_path, target_ppo_steps):
 
 def plot_performance_curves(sft_step_num_str, group_data, group_label, metric_key, y_label, output_dir):
     plt.figure(figsize=(10, 6))
-    steps = sorted(group_data.keys())
-    values = [np.mean(group_data[step][metric_key]) for step in steps]
-    if len(values) > 1: # Only smooth if there's more than one point
-        smoothed_values = smooth_curve(values)
-    else:
-        smoothed_values = values
-    
-    if not steps or not values:
-        print(f"No data for {group_label} - {y_label} in SFT step {sft_step_num_str}")
+    steps_from_data = sorted(group_data.keys())
+    values = []
+    valid_steps_for_plot = []
+
+    for step_val in steps_from_data:
+        step_metrics = group_data.get(step_val)
+        if not isinstance(step_metrics, dict):
+            # print(f"Warning: Data for PPO step {step_val} in {group_label} is not a dictionary. Skipping.")
+            continue
+
+        metric_val = step_metrics.get(metric_key)
+        if metric_val is None:
+            # print(f"Warning: Metric '{metric_key}' not found for PPO step {step_val} in {group_label}. Skipping.")
+            continue
+        
+        current_val_to_plot = None
+        if isinstance(metric_val, list):
+            if not metric_val: 
+                # print(f"Warning: Metric '{metric_key}' for PPO step {step_val} in {group_label} is an empty list. Skipping.")
+                continue
+            current_val_to_plot = np.mean(metric_val)
+        elif isinstance(metric_val, (int, float)):
+            current_val_to_plot = metric_val # Use directly if already a number
+        else:
+            # print(f"Warning: Metric '{metric_key}' for PPO step {step_val} in {group_label} is of unexpected type: {type(metric_val)}. Skipping.")
+            continue
+        
+        values.append(current_val_to_plot)
+        valid_steps_for_plot.append(step_val)
+
+    if not values:
+        print(f"No valid data points to plot for {group_label} - {y_label} in SFT step {sft_step_num_str}")
         plt.close()
         return
 
-    plt.plot(steps, smoothed_values, marker='o', linestyle='-', label=f"{group_label} - {y_label} (Smoothed)")
+    steps_to_plot = valid_steps_for_plot
+    
+    if len(values) > SMOOTHING_WINDOW_SIZE:
+        smoothed_values = smooth_curve(values)
+        plt.plot(steps_to_plot, smoothed_values, linestyle='-', label=f"{group_label} - {y_label} (Smoothed)") # No marker for smoothed
+    else:
+        # Plot raw data if not enough points to smooth or if smoothing is not desired for short series
+        plt.plot(steps_to_plot, values, marker='o', markersize=0.1, linestyle='-', label=f"{group_label} - {y_label}")
     # Optionally, plot original data lightly
     # plt.plot(steps, values, marker='.', linestyle='--', alpha=0.4, label=f"{group_label} - {y_label} (Raw)")
     plt.xlabel("PPO Step")
@@ -182,27 +228,94 @@ def plot_performance_curves(sft_step_num_str, group_data, group_label, metric_ke
     plt.close()
     print(f"Saved plot: {plot_path}")
 
-def plot_heatmap(data_matrix, title, output_path, avg_bh_calc):
+def plot_heatmaps(sft_step_num_str, group_label_prefix, heatmap_data_group, output_dir, ppo_steps_for_heatmap):
+    # heatmap_data_group is: {param_name: {(ppo_step, layer_id): grama_ratio}}
+    # ppo_steps_for_heatmap is CASE_STUDY_PPO_STEPS (a list of PPO step numbers)
+
+    for param_name in TARGET_PARAMS: # Iterate through TARGET_PARAMS to ensure consistent order and inclusion
+        if param_name not in heatmap_data_group:
+            # This check is useful if heatmap_data_group might not contain all TARGET_PARAMS
+            # print(f"    Skipping heatmap for {param_name} in {group_label_prefix} (SFT {sft_step_num_str}): Param not in collected heatmap data.")
+            continue
+
+        param_specific_data = heatmap_data_group[param_name] # This is {(ppo_step, layer_id): grama_ratio}
+        
+        num_ppo_steps = len(ppo_steps_for_heatmap)
+        data_matrix = np.full((num_ppo_steps, NUM_LAYERS), np.nan)
+
+        for i, ppo_step in enumerate(ppo_steps_for_heatmap):
+            for j in range(NUM_LAYERS): # layer_id
+                if (ppo_step, j) in param_specific_data:
+                    data_matrix[i, j] = param_specific_data[(ppo_step, j)]
+        
+        if np.all(np.isnan(data_matrix)):
+            print(f"    Skipping heatmap for {param_name} in {group_label_prefix} (SFT {sft_step_num_str}): All NaN data matrix.")
+            continue
+
+        heatmap_title = f"Grama Ratio Heatmap: {group_label_prefix} - {param_name}\n(SFT {sft_step_num_str})"
+        heatmap_filename = f"{sft_step_num_str}_{group_label_prefix.lower().replace(' ', '_')}_{param_name.replace('.', '_')}_grama_heatmap.png"
+        heatmap_path = output_dir / heatmap_filename
+        
+        # Call the singular plot_heatmap function, passing the PPO step labels for the y-axis
+        ytick_labels_to_use = ppo_steps_for_heatmap if ppo_steps_for_heatmap is not None else True
+        xtick_labels_to_use = [str(i) for i in range(NUM_LAYERS)] if NUM_LAYERS <= 10 else (True if NUM_LAYERS <=28 else False) # Auto if too many, or show some
+        if NUM_LAYERS > 10 and NUM_LAYERS <=28:
+            # Show every few layers if there are many, e.g., 0, 4, 8 ...
+            xtick_positions = np.arange(0, NUM_LAYERS, 4)
+            xtick_labels_actual = [str(pos) for pos in xtick_positions]
+        elif NUM_LAYERS <= 10:
+            xtick_positions = np.arange(NUM_LAYERS)
+            xtick_labels_actual = [str(i) for i in range(NUM_LAYERS)]
+        else: # Too many layers, let heatmap decide or hide
+            xtick_positions = None 
+            xtick_labels_actual = True # let heatmap decide
+
+        plot_heatmap(data_matrix, heatmap_title, heatmap_path, None, ppo_steps_for_heatmap_labels=ytick_labels_to_use, xtick_labels=xtick_labels_actual, xtick_positions=xtick_positions)
+
+def plot_heatmap(data_matrix, title, output_path, avg_bh_calc, ppo_steps_for_heatmap_labels=None, xtick_labels=True, xtick_positions=None):
     if data_matrix.size == 0:
         print(f"Skipping heatmap due to empty data: {title}")
         return
-    plt.figure(figsize=(12, 8))
-    # Use a sequential colormap (e.g., 'viridis', 'plasma', 'magma', 'cividis')
-    # Or a diverging one if data can be positive/negative around a central point
-    # For 0-1 ratio, 'viridis' or 'YlGnBu' are good choices.
-    cmap = plt.cm.get_cmap('YlGnBu').copy() # Or 'viridis', 'plasma'
-    cmap.set_bad(color='lightgrey') # Color for NaN values
     
-    plt.imshow(data_matrix, aspect='auto', cmap=cmap, vmin=0, vmax=1, interpolation='nearest')
-    plt.colorbar(label="Grama Ratio")
-    plt.xlabel("Layer ID (0-27)")
-    plt.ylabel("Parameter (Implicit Index)") # This needs adjustment if plotting single param
-    # If data_matrix is (1, NUM_LAYERS) for a single parameter:
-    plt.yticks([]) # No y-ticks if it's just one row for one parameter
-    plt.ylabel(title.split(' - ')[1].split(' (')[0]) # Extract param name for y-label
+    fig, ax = plt.subplots(figsize=(12, 8))
+    cmap = plt.cm.get_cmap('Blues') # White for low values, dark blue for high values
+    cmap.set_bad(color='lightgrey') # Color for NaN values
 
-    plt.xticks(np.arange(NUM_LAYERS))
-    plt.title(f"{title}\nAvg B/H_calc: {avg_bh_calc:.4e}")
+    # Determine y-tick labels for PPO steps
+    yticklabels_to_use = ppo_steps_for_heatmap_labels if ppo_steps_for_heatmap_labels is not None else True
+
+    # Determine x-tick labels for Layers
+    if xtick_positions is not None and xtick_labels is not None:
+        # Use provided positions and labels
+        actual_xticklabels = xtick_labels
+        actual_xticks = xtick_positions
+    elif isinstance(xtick_labels, list):
+        # Use provided list of labels, assume positions are range(len(xtick_labels))
+        actual_xticklabels = xtick_labels
+        actual_xticks = np.arange(len(xtick_labels))
+    else: # Default behavior or True
+        actual_xticklabels = True # Let seaborn decide default layer ticks
+        actual_xticks = np.arange(NUM_LAYERS) # Default positions
+
+    sns.heatmap(data_matrix, annot=True, fmt=".2f", cmap=cmap, ax=ax,
+                cbar_kws={'label': 'Grama Ratio'}, 
+                yticklabels=yticklabels_to_use, 
+                xticklabels=actual_xticklabels,
+                vmin=0, vmax=1) # Explicitly set vmin/vmax for grama ratio
+    
+    ax.set_xlabel(f"Layer ID (0 to {NUM_LAYERS-1})")
+    ax.set_ylabel("PPO Step")
+    ax.set_title(title)
+
+    # Adjust x-ticks if custom positions were used to center them
+    if xtick_positions is not None:
+        ax.set_xticks([pos + 0.5 for pos in actual_xticks]) # Center custom ticks
+        ax.set_xticklabels(actual_xticklabels) # Ensure custom labels are applied
+    elif isinstance(xtick_labels, list) and len(xtick_labels) < NUM_LAYERS: # e.g. showing every Nth layer
+        ax.set_xticks([pos + 0.5 for pos in actual_xticks])
+        ax.set_xticklabels(actual_xticklabels)
+    # Else, seaborn's default tick handling for xticklabels=True should be fine
+
     plt.tight_layout()
     plt.savefig(output_path)
     plt.close()
@@ -223,29 +336,23 @@ def plot_grama_vs_layer_curves(sft_step_num_str, group_label_prefix, ppo_step, p
             
             # Only plot if there's some non-NaN data for this parameter
             if not np.all(np.isnan(grama_ratios_for_layers)):
-                # Apply smoothing if desired, similar to other curves
-                smoothed_grama_ratios = smooth_curve(grama_ratios_for_layers[~np.isnan(grama_ratios_for_layers)])
-                valid_layer_ids = layer_ids[~np.isnan(grama_ratios_for_layers)]
-                
-                # Need to handle cases where smoothing reduces points if too many NaNs at ends
-                # For simplicity, plot smoothed valid points. If all points are valid, it's fine.
-                # If there are NaNs, Savitzky-Golay on the non-NaN part might shift indices if not careful.
-                # A simpler approach for now: plot raw data or ensure smooth_curve handles NaNs gracefully by returning original if too short.
-                # Current smooth_curve returns original if too short, which is good.
-                # Let's plot the original points if smoothing is problematic with NaNs, or smooth only non-NaN segments.
-
-                # For now, let's plot the raw data for these lines to avoid complexity with partial NaNs and smoothing.
-                # Or, we can smooth the series if it has enough points after dropping NaNs.
-                
-                # Re-evaluate smoothing for this specific plot type:
-                # If we smooth, we should smooth the grama_ratios_for_layers directly if it has enough points.
-                # However, savgol_filter doesn't like NaNs. So, we'd interpolate or plot segments.
-                # Let's plot without smoothing for these specific lines for now for clarity across layers.
-                plt.plot(layer_ids, grama_ratios_for_layers, marker='o', linestyle='-', markersize=4, label=param_name)
+                if len(grama_ratios_for_layers[~np.isnan(grama_ratios_for_layers)]) > SMOOTHING_WINDOW_SIZE:
+                    # Smooth only non-NaN parts if possible, or handle NaNs carefully
+                    # For simplicity, if NaNs are present, we might plot raw or skip smoothing for that line
+                    # This example assumes smooth_curve can handle NaNs or we filter them before
+                    # A more robust approach would be to smooth contiguous non-NaN segments
+                    valid_indices = ~np.isnan(grama_ratios_for_layers)
+                    if np.any(valid_indices):
+                        smoothed_segment = smooth_curve(grama_ratios_for_layers[valid_indices])
+                        plt.plot(layer_ids[valid_indices], smoothed_segment, linestyle='-', label=f"{param_name} (s)") # No marker for smoothed
+                    else: # All NaNs, plot nothing or raw (which will be nothing)
+                        plt.plot(layer_ids, grama_ratios_for_layers, marker='o', markersize=0.2, linestyle='-', label=param_name)
+                else:
+                    plt.plot(layer_ids, grama_ratios_for_layers, marker='o', markersize=0.2, linestyle='-', label=param_name)
                 plotted_anything = True
 
     if not plotted_anything:
-        print(f"No grama ratio vs layer data to plot for {group_label_prefix}, PPO step {ppo_step} in SFT step {sft_step_num_str}")
+        print(f"    No grama ratio vs layer data to plot for {group_label_prefix}, PPO step {ppo_step} in SFT step {sft_step_num_str}")
         plt.close()
         return
 
@@ -256,47 +363,130 @@ def plot_grama_vs_layer_curves(sft_step_num_str, group_label_prefix, ppo_step, p
     plt.ylim(0, 1.05) # Grama ratio is 0-1
     plt.legend(loc='best')
     plt.grid(True)
-    plot_filename = f"{sft_step_num_str}_{group_label_prefix}_ppo_step_{ppo_step}_grama_vs_layer.png"
+    plot_filename = f"{sft_step_num_str}_{group_label_prefix.lower().replace(' ', '_')}_ppo_step_{ppo_step}_grama_vs_layer.png"
     plot_path = output_dir / plot_filename
     plt.savefig(plot_path)
     plt.close()
-    print(f"Saved plot: {plot_path}")
+    print(f"    Saved grama_vs_layer plot: {plot_path}")
+def plot_bh_calc_curves(sft_step_num_str, group_label_prefix, bh_calc_data_step_centric, output_dir):
+    # bh_calc_data_step_centric is {param_name: {layer_id: {ppo_step: bh_calc_value}}}
+    # Creates one plot per SFT_STEP & GROUP, showing all TARGET_PARAMS, with lines for each layer.
+    plt.figure(figsize=(14, 8))
+    plotted_anything_on_this_figure = False
 
-def plot_bh_calc_curves(sft_step_num_str, group_label, data_dict, output_dir):
-    # data_dict: {param_name: {ppo_step: avg_bh_calc_for_param_over_layers}}
-    plt.figure(figsize=(12, 7))
-    
-    plotted_anything = False
-    for param_name in TARGET_PARAMS:
-        if param_name in data_dict:
-            param_data = data_dict[param_name]
-            steps = sorted(param_data.keys())
-            avg_bh_calcs = [param_data[step] for step in steps]
-            if len(avg_bh_calcs) > 1:
-                smoothed_avg_bh_calcs = smooth_curve(avg_bh_calcs)
+    for param_name in TARGET_PARAMS: # Iterate through defined TARGET_PARAMS to maintain order if possible
+        if param_name not in bh_calc_data_step_centric:
+            continue
+        
+        layers_data = bh_calc_data_step_centric[param_name]
+        if not layers_data:
+            continue
+
+        for layer_id, ppo_step_bh_values in sorted(layers_data.items()): # Sort by layer_id for consistent legend order
+            if not ppo_step_bh_values:
+                continue
+
+            # Filter for steps within BH_CALC_PPO_STEPS_RANGE, though parsing should already handle this
+            sorted_ppo_steps = sorted([step for step in ppo_step_bh_values.keys() if step in BH_CALC_PPO_STEPS_RANGE])
+            if not sorted_ppo_steps:
+                continue
+            
+            bh_values_for_plot = [ppo_step_bh_values[step] for step in sorted_ppo_steps]
+            
+            if not bh_values_for_plot or len(bh_values_for_plot) < 1:
+                continue
+
+            if len(bh_values_for_plot) > SMOOTHING_WINDOW_SIZE:
+                smoothed_bh_values = smooth_curve(bh_values_for_plot)
+                plt.plot(sorted_ppo_steps, smoothed_bh_values, linestyle='-', label=f"{param_name} L{layer_id} (s)") # No marker for smoothed
             else:
-                smoothed_avg_bh_calcs = avg_bh_calcs
-            if steps and avg_bh_calcs:
-                plt.plot(steps, smoothed_avg_bh_calcs, marker='o', linestyle='-', label=f"{param_name} (Smoothed)")
-                # Optionally, plot original data lightly
-                # plt.plot(steps, avg_bh_calcs, marker='.', linestyle='--', alpha=0.4, label=f"{param_name} (Raw)")
-                plotted_anything = True
-    
-    if not plotted_anything:
-        print(f"No B/H_calc data to plot for {group_label} in SFT step {sft_step_num_str}")
+                plt.plot(sorted_ppo_steps, bh_values_for_plot, marker='o', markersize=0.2, linestyle='-', label=f"{param_name} L{layer_id}")
+            plotted_anything_on_this_figure = True
+
+    if not plotted_anything_on_this_figure:
+        print(f"    No B/H_calc data to plot for {group_label_prefix} in SFT step {sft_step_num_str} (PPO Steps 1-{BH_CALC_PPO_STEPS_RANGE[-1] if BH_CALC_PPO_STEPS_RANGE else 'N/A'})")
         plt.close()
         return
 
     plt.xlabel("PPO Step")
-    plt.ylabel("Average B/H_calc (across layers 0-27)")
-    plt.title(f"Avg B/H_calc vs. PPO Step for {group_label} (SFT Step {sft_step_num_str})")
-    plt.legend(loc='best')
+    plt.ylabel("B/H_calc (Log Scale)")
+    plt.title(f"B/H_calc vs. PPO Step for {group_label_prefix} (SFT {sft_step_num_str})")
+    plt.legend(title="Param & Layer", bbox_to_anchor=(1.05, 1), loc='upper left', fontsize='small')
     plt.grid(True)
-    plt.yscale('log') # B/H_calc can vary a lot, log scale might be useful
-    plot_path = output_dir / f"{sft_step_num_str}_{group_label.lower().replace(' ', '_')}_avg_bh_calc_vs_step.png"
+    plt.yscale('log')
+    plt.tight_layout(rect=[0, 0, 0.80, 1]) # Adjust for wider legend
+    plot_filename = f"{sft_step_num_str}_{group_label_prefix.lower().replace(' ', '_')}_all_params_layers_bh_calc_vs_step.png"
+    plot_path = output_dir / plot_filename
     plt.savefig(plot_path)
     plt.close()
-    print(f"Saved plot: {plot_path}")
+    print(f"    Saved B/H_calc plot: {plot_path}")
+
+def plot_sft_comparison_curves(all_sfts_data, group_key_in_sft_data, metric_key, plot_title, y_axis_label, output_dir):
+    plt.figure(figsize=(12, 7))
+    sft_steps_plotted = 0
+    sorted_sft_keys = sorted(all_sfts_data.keys(), key=lambda x: int(x) if x.isdigit() else x)
+
+    for sft_step_num in sorted_sft_keys:
+        sft_data = all_sfts_data.get(sft_step_num)
+        if not sft_data:
+            continue
+        group_specific_data = sft_data.get(group_key_in_sft_data)
+        if not group_specific_data:
+            continue
+
+        steps_from_data = sorted(group_specific_data.keys())
+        values = []
+        valid_steps_for_plot = []
+
+        for ppo_step_val in steps_from_data:
+            step_metrics = group_specific_data.get(ppo_step_val)
+            if not isinstance(step_metrics, dict):
+                continue
+            metric_val = step_metrics.get(metric_key)
+            if metric_val is None:
+                continue
+            
+            current_val_to_plot = None
+            if isinstance(metric_val, list):
+                if not metric_val: continue
+                current_val_to_plot = np.mean(metric_val)
+            elif isinstance(metric_val, (int, float)):
+                current_val_to_plot = metric_val
+            else:
+                continue
+            
+            values.append(current_val_to_plot)
+            valid_steps_for_plot.append(ppo_step_val)
+
+        if not values:
+            continue
+
+        if len(values) > 1:
+            smoothed_values = smooth_curve(values)
+        else:
+            smoothed_values = values
+        
+        plt.plot(valid_steps_for_plot, smoothed_values, marker='o', markersize=0.1, linestyle='-', label=f"SFT {sft_step_num}")
+        sft_steps_plotted += 1
+
+    if sft_steps_plotted == 0:
+        print(f"No data found to plot for: {plot_title}")
+        plt.close()
+        return
+
+    plt.xlabel("PPO Step")
+    plt.ylabel(y_axis_label)
+    plt.title(plot_title)
+    plt.legend(title="SFT Step", bbox_to_anchor=(1.05, 1), loc='upper left')
+    plt.grid(True)
+    plt.tight_layout(rect=[0, 0, 0.85, 1]) 
+
+    filename_metric = metric_key.replace('/', '_').replace(' ', '_').lower()
+    filename_group = group_key_in_sft_data.replace(' ', '_').lower()
+    plot_path = output_dir / f"comparison_{filename_group}_{filename_metric}.png"
+    plt.savefig(plot_path)
+    plt.close()
+    print(f"Saved SFT comparison plot: {plot_path}")
 
 def aggregate_unknown_group_data(log_files, parse_func, *args):
     all_group_data = []
@@ -338,16 +528,20 @@ def aggregate_unknown_group_data(log_files, parse_func, *args):
 
         avg_df = df.groupby('ppo_step').mean().reset_index()
         
-        return {
-            'ppo_steps': avg_df['ppo_step'].tolist(),
-            'scores': avg_df['score'].tolist(),
-            'grama_ratios': avg_df['grama_ratio'].tolist()
-        }
+        # Transform averaged data to step-centric format
+        aggregated_step_centric = defaultdict(dict)
+        for _idx, row in avg_df.iterrows():
+            step = row['ppo_step']
+            if 'score' in avg_df.columns:
+                aggregated_step_centric[step]['scores'] = row['score']
+            if 'grama_ratio' in avg_df.columns:
+                aggregated_step_centric[step]['grama_ratios'] = row['grama_ratio']
+        return aggregated_step_centric
 
     # For layer-wise metrics (dict of dicts: {ppo_step: {param: {layer: {'grama_ratio', 'bh_calc'}}}})
     elif parse_func == parse_layer_wise_metrics:
         # all_group_data is a list of dicts like: [ {ppo_step: {param: {layer: data}}} , ... ]
-        aggregated_layer_data = defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: defaultdict(float)))))
+        aggregated_layer_data = defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: defaultdict(list))))
         # aggregated_layer_data[ppo_step][param_name][layer_id] = {'grama_ratio': val, 'bh_calc': val}
         
         all_ppo_steps = set()
@@ -377,6 +571,63 @@ def aggregate_unknown_group_data(log_files, parse_func, *args):
         return final_avg_layer_data
     return None
 
+def generate_case_study_plots(sft_step_num_str, group_label_prefix, group_layer_data, output_dir):
+    print(f"  Generating case study plots for SFT {sft_step_num_str}, Group: {group_label_prefix}")
+    if not group_layer_data:
+        print(f"    DEBUG: No layer data provided for {group_label_prefix}. Skipping case study plots.")
+        return
+
+    # bh_calc_for_curves is used here to collect avg B/H for heatmap annotation, specific to these case study steps
+    bh_calc_for_heatmap_annotation = defaultdict(lambda: defaultdict(float)) # {param_name: {ppo_step: avg_bh_calc}}
+
+    for ppo_step in CASE_STUDY_PPO_STEPS:
+        if ppo_step not in group_layer_data:
+            # print(f"    DEBUG: PPO step {ppo_step} not in group_layer_data for {group_label_prefix}. Skipping this step.")
+            continue
+        
+        # Ensure data for this PPO step is not empty
+        if not group_layer_data[ppo_step]:
+            # print(f"    DEBUG: Data for PPO step {ppo_step} is empty for {group_label_prefix}. Skipping this step.")
+            continue
+
+        # Generate individual heatmaps (one per param, per PPO step)
+        for param_name in TARGET_PARAMS:
+            if param_name not in group_layer_data[ppo_step]:
+                # print(f"      DEBUG: Param {param_name} not in PPO step {ppo_step} data for {group_label_prefix}. Skipping this param.")
+                continue
+            
+            grama_ratios_for_heatmap = np.full(NUM_LAYERS, np.nan)
+            bh_calcs_for_avg = []
+
+            for layer_id in range(NUM_LAYERS):
+                if layer_id in group_layer_data[ppo_step][param_name]:
+                    layer_metrics = group_layer_data[ppo_step][param_name][layer_id]
+                    if 'grama_ratio' in layer_metrics:
+                        grama_ratios_for_heatmap[layer_id] = layer_metrics['grama_ratio']
+                    if 'bh_calc' in layer_metrics:
+                        bh_calcs_for_avg.append(layer_metrics['bh_calc'])
+            
+            avg_bh_calc_for_step_param = np.mean(bh_calcs_for_avg) if bh_calcs_for_avg else 0.0
+            bh_calc_for_heatmap_annotation[param_name][ppo_step] = avg_bh_calc_for_step_param
+            
+            heatmap_matrix = grama_ratios_for_heatmap.reshape(1, NUM_LAYERS)
+            heatmap_title = f"{group_label_prefix} - {param_name} (PPO Step {ppo_step})"
+            heatmap_filename = f"{sft_step_num_str}_{group_label_prefix.replace(' ', '_')}_{param_name.replace('.', '_')}_step{ppo_step}_heatmap.png"
+            
+            # print(f"      DEBUG: Plotting heatmap for SFT {sft_step_num_str}, Group {group_label_prefix}, PPO {ppo_step}, Param {param_name}. Matrix shape: {heatmap_matrix.shape}, Avg B/H: {avg_bh_calc_for_step_param}")
+            if not np.isnan(heatmap_matrix).all():
+                plot_heatmap(heatmap_matrix, heatmap_title, output_dir / heatmap_filename, avg_bh_calc_for_step_param)
+            # else:
+                # print(f"        DEBUG: Heatmap data for {param_name} at PPO {ppo_step} is all NaN. Skipping plot.")
+
+        # Plot grama ratio vs layer for q,k,v,o for this PPO step (after all params for this step's heatmaps)
+        params_data_for_this_step = group_layer_data[ppo_step]
+        # print(f"      DEBUG: Plotting grama_vs_layer for SFT {sft_step_num_str}, Group {group_label_prefix}, PPO {ppo_step}. Data keys: {list(params_data_for_this_step.keys()) if params_data_for_this_step else 'No data'}")
+        if params_data_for_this_step:
+             plot_grama_vs_layer_curves(sft_step_num_str, group_label_prefix, ppo_step, params_data_for_this_step, output_dir)
+        # else:
+            # print(f"      DEBUG: No param data for PPO step {ppo_step} in {group_label_prefix} for grama_vs_layer plot. Skipping.")
+
 def main():
     if not LOG_DIR.exists():
         print(f"Log directory not found: {LOG_DIR}")
@@ -388,17 +639,16 @@ def main():
     PLOT_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     print(f"DEBUG: Output directory set to: {PLOT_OUTPUT_DIR}")
 
-    sft_step_dirs = [d for d in LOG_DIR.iterdir() if d.is_dir() and SFT_DIR_PATTERN.match(d.name)]
+    all_sfts_performance_data = defaultdict(lambda: defaultdict(dict))
 
-    for sft_dir_path in sft_step_dirs:
+    sft_dirs = [d for d in LOG_DIR.iterdir() if d.is_dir() and SFT_DIR_PATTERN.match(d.name)]
+
+    for sft_dir_path in sft_dirs:
         sft_match = SFT_DIR_PATTERN.match(sft_dir_path.name)
         if not sft_match:
             continue
         sft_step_num_str = sft_match.group(1)
         print(f"\nProcessing SFT Step: {sft_step_num_str} (from {sft_dir_path.name})")
-
-        # sft_plot_output_dir is now PLOT_OUTPUT_DIR itself
-        # PLOT_OUTPUT_DIR.mkdir(parents=True, exist_ok=True) # Main dir is created at the start
 
         group_log_files = list(sft_dir_path.glob("Group*.log"))
         known_group_files = [f for f in group_log_files if GROUP_LOG_PATTERN.match(f.name) and GROUP_LOG_PATTERN.match(f.name).group(1) == '0']
@@ -407,22 +657,71 @@ def main():
         # --- 1. Performance Curves ---
         print("  Plotting performance curves...")
         if known_group_files:
-            # For simplicity, assuming one Group0 log file. If multiple, this would need averaging or selection.
-            # parse_general_metrics now returns a single dictionary
-            known_data_dict = parse_general_metrics(known_group_files[0]) 
-            if known_data_dict and known_data_dict.get('ppo_steps'): # Check if data and ppo_steps exist
-                print(f"    DEBUG: Known Group general metrics (SFT {sft_step_num_str}): PPO steps count: {len(known_data_dict['ppo_steps'])}, Scores count: {len(known_data_dict['scores'])}, Grama Ratios count: {len(known_data_dict['grama_ratios'])}")
-                plot_performance_curves(sft_step_num_str, known_data_dict, "Known Group", 'score', "Score (critic/score/mean)", PLOT_OUTPUT_DIR)
-                plot_performance_curves(sft_step_num_str, known_data_dict, "Known Group", 'grama', "Grama (actor/zero_gradspace_ratio)", PLOT_OUTPUT_DIR)
+            print(f"    Processing Known Group (Group0) from: {known_group_files[0].name}")
+            # Parse general metrics for performance curves
+            parsed_known_data = parse_general_metrics(known_group_files[0])
+            known_data_step_centric = transform_to_step_centric(parsed_known_data)
+            
+            if known_data_step_centric:
+                plot_performance_curves(sft_step_num_str, known_data_step_centric, "Known Group", 'scores', "Critic Score (Mean)", PLOT_OUTPUT_DIR)
+                plot_performance_curves(sft_step_num_str, known_data_step_centric, "Known Group", 'grama_ratios', "Grama Ratio (actor/zero_gradspace_ratio)", PLOT_OUTPUT_DIR)
+                all_sfts_performance_data[sft_step_num_str]['known_group'] = known_data_step_centric # Store for SFT comparison
+                print(f"      DEBUG: Known Group general metrics (SFT {sft_step_num_str}) parsed. PPO steps: {len(known_data_step_centric)}")
             else:
-                print(f"    DEBUG: Known Group general metrics (SFT {sft_step_num_str}): No data or no PPO steps parsed.")
+                print(f"      DEBUG: Known Group general metrics (SFT {sft_step_num_str}): No data or no PPO steps parsed.")
+
+            # Parse layer-wise metrics for heatmaps and case study plots
+            known_layer_data = parse_layer_wise_metrics(known_group_files[0], CASE_STUDY_PPO_STEPS + BH_CALC_PPO_STEPS_RANGE)
+            if known_layer_data:
+                # Prepare data for consolidated heatmap (PPO steps on y-axis)
+                heatmap_data_known = defaultdict(dict) # {(ppo_step, layer_id): grama_ratio}
+                for ppo_step_cs in CASE_STUDY_PPO_STEPS:
+                    if ppo_step_cs in known_layer_data:
+                        for param_name in TARGET_PARAMS:
+                            if param_name in known_layer_data[ppo_step_cs]:
+                                for layer_id, values in known_layer_data[ppo_step_cs][param_name].items():
+                                    if 'grama_ratio' in values:
+                                        heatmap_data_known[param_name][(ppo_step_cs, layer_id)] = values['grama_ratio']
+                
+                if heatmap_data_known:
+                    plot_heatmaps(sft_step_num_str, "Known Group", heatmap_data_known, PLOT_OUTPUT_DIR, CASE_STUDY_PPO_STEPS)
+                else:
+                    print(f"      DEBUG: No data prepared for consolidated heatmap for Known Group (SFT {sft_step_num_str}).")
+
+                # Generate individual PPO step heatmaps and grama_vs_layer plots for Known Group case studies
+                generate_case_study_plots(sft_step_num_str, "Known Group", known_layer_data, PLOT_OUTPUT_DIR)
+                
+                # Prepare and plot B/H Calc curves for Known Group
+                bh_calc_data_known_step_centric = defaultdict(lambda: defaultdict(lambda: defaultdict(list)))
+                for ppo_step, params_data in known_layer_data.items():
+                    if ppo_step in BH_CALC_PPO_STEPS_RANGE:
+                        for param_name, layers_data in params_data.items():
+                            for layer_id, metrics in layers_data.items():
+                                if 'bh_calc' in metrics:
+                                    bh_calc_data_known_step_centric[param_name][layer_id][ppo_step].append(metrics['bh_calc'])
+                # Average B/H calc if multiple values exist (should not happen with current parsing, but good practice)
+                for param_name in bh_calc_data_known_step_centric:
+                    for layer_id in bh_calc_data_known_step_centric[param_name]:
+                        for ppo_step in bh_calc_data_known_step_centric[param_name][layer_id]:
+                            bh_calc_data_known_step_centric[param_name][layer_id][ppo_step] = np.mean(bh_calc_data_known_step_centric[param_name][layer_id][ppo_step])
+                
+                if bh_calc_data_known_step_centric:
+                    plot_bh_calc_curves(sft_step_num_str, "Known Group", bh_calc_data_known_step_centric, PLOT_OUTPUT_DIR)
+                else:
+                    print(f"      DEBUG: No B/H calc data for Known Group (SFT {sft_step_num_str}).")
+            else:
+                print(f"      DEBUG: Known Group layer-wise data (SFT {sft_step_num_str}): No data parsed for heatmaps/case studies/B_H calc.")
+        else:
+            print(f"    No Known Group (Group0) log file found for SFT step {sft_step_num_str}.")
         
         if unknown_group_files:
-            avg_unknown_data_general = aggregate_unknown_group_data(unknown_group_files, parse_general_metrics)
-            if avg_unknown_data_general and avg_unknown_data_general.get('ppo_steps'): # Check if data and ppo_steps exist
-                print(f"    DEBUG: Avg Unknown Group general metrics (SFT {sft_step_num_str}): PPO steps count: {len(avg_unknown_data_general['ppo_steps'])}, Scores count: {len(avg_unknown_data_general['scores'])}, Grama Ratios count: {len(avg_unknown_data_general['grama_ratios'])}")
-                plot_performance_curves(sft_step_num_str, avg_unknown_data_general, "Unknown Group Avg", 'score', "Score (critic/score/mean)", PLOT_OUTPUT_DIR)
-                plot_performance_curves(sft_step_num_str, avg_unknown_data_general, "Unknown Group Avg", 'grama', "Grama (actor/zero_gradspace_ratio)", PLOT_OUTPUT_DIR)
+            avg_unknown_data_step_centric = aggregate_unknown_group_data(unknown_group_files, parse_general_metrics)
+            if avg_unknown_data_step_centric: # Check if data exists
+                num_steps = len(avg_unknown_data_step_centric)
+                num_scores = sum(1 for step_data in avg_unknown_data_step_centric.values() if 'scores' in step_data)
+                num_gramas = sum(1 for step_data in avg_unknown_data_step_centric.values() if 'grama_ratios' in step_data)
+                print(f"    DEBUG: Avg Unknown Group general metrics (SFT {sft_step_num_str}): PPO steps count: {num_steps}, Scores count: {num_scores}, Grama Ratios count: {num_gramas}")
+                all_sfts_performance_data[sft_step_num_str]['unknown_group_avg'] = avg_unknown_data_step_centric
             else:
                 print(f"    DEBUG: Avg Unknown Group general metrics (SFT {sft_step_num_str}): No data or no PPO steps parsed.")
 
@@ -445,75 +744,64 @@ def main():
         # Unknown Group Average Case Study
         avg_unknown_layer_data = None
         if unknown_group_files:
+            group_label_prefix = "Unknown Group Avg" # Define for all unknown group processing
             avg_unknown_layer_data = aggregate_unknown_group_data(unknown_group_files, parse_layer_wise_metrics, CASE_STUDY_PPO_STEPS)
             if avg_unknown_layer_data:
                 print(f"    DEBUG: Avg Unknown Group layer data (SFT {sft_step_num_str}): Parsed for PPO steps: {sorted(list(avg_unknown_layer_data.keys()))}")
-                for p_step_debug in CASE_STUDY_PPO_STEPS:
-                    if p_step_debug in avg_unknown_layer_data:
-                        print(f"      DEBUG: PPO {p_step_debug} (Avg Unknown): Params found: {list(avg_unknown_layer_data[p_step_debug].keys())}")
-                        # for param_k_debug in avg_unknown_layer_data[p_step_debug]:
-                        #      print(f"        DEBUG: Param {param_k_debug}: Layers found: {list(avg_unknown_layer_data[p_step_debug][param_k_debug].keys())}")
-            else:
-                print(f"    DEBUG: Avg Unknown Group layer data (SFT {sft_step_num_str}): No data parsed.")
+                # Heatmap for Avg Unknown Group
+                heatmap_data_unknown_avg = defaultdict(lambda: defaultdict(lambda: np.nan))
+                for ppo_step_cs in CASE_STUDY_PPO_STEPS:
+                    if ppo_step_cs in avg_unknown_layer_data:
+                        for param_name, layers in avg_unknown_layer_data[ppo_step_cs].items():
+                            for layer_id, values in layers.items():
+                                if 'grama_ratio' in values:
+                                    heatmap_data_unknown_avg[param_name][(ppo_step_cs, layer_id)] = values['grama_ratio']
+                plot_heatmaps(sft_step_num_str, group_label_prefix, heatmap_data_unknown_avg, PLOT_OUTPUT_DIR, CASE_STUDY_PPO_STEPS)
+                # Generate individual PPO step heatmaps and grama_vs_layer plots for Unknown Group Avg
+                generate_case_study_plots(sft_step_num_str, group_label_prefix, avg_unknown_layer_data, PLOT_OUTPUT_DIR)
 
-        for group_data, group_label_prefix in [(known_layer_data, "Known_Group"), (avg_unknown_layer_data, "Unknown_Group_Avg")]:
-            if not group_data: continue
-
-            # Heatmaps will be saved directly into PLOT_OUTPUT_DIR
-            # heatmap_dir = PLOT_OUTPUT_DIR / f"{group_label_prefix}_heatmaps" # No longer a separate subdir for heatmaps
-            # heatmap_dir.mkdir(exist_ok=True)
-            
-            bh_calc_for_curves = defaultdict(lambda: defaultdict(float)) # {param_name: {ppo_step: avg_bh_calc}}
-
-            for ppo_step in CASE_STUDY_PPO_STEPS:
-                if ppo_step not in group_data: continue
+                # Prepare and plot B/H Calc curves for Unknown Group Avg
+                bh_calc_data_unknown_avg_step_centric = defaultdict(lambda: defaultdict(lambda: defaultdict(list)))
+                if avg_unknown_layer_data: # Ensure there is data to process
+                    for ppo_step, params_data in avg_unknown_layer_data.items():
+                        if ppo_step in BH_CALC_PPO_STEPS_RANGE:
+                            for param_name, layers_data in params_data.items():
+                                for layer_id, metrics in layers_data.items():
+                                    if 'bh_calc' in metrics:
+                                        # avg_unknown_layer_data already contains averaged values, so just assign
+                                        bh_calc_data_unknown_avg_step_centric[param_name][layer_id][ppo_step] = metrics['bh_calc'] 
                 
-                for param_name in TARGET_PARAMS:
-                    if param_name not in group_data[ppo_step]: continue
+                if bh_calc_data_unknown_avg_step_centric:
+                    print(f"      DEBUG: For {group_label_prefix} (SFT {sft_step_num_str}), B/H Calc data points per param before plotting:")
+                    for param_name_dbg, layer_data_dbg in bh_calc_data_unknown_avg_step_centric.items():
+                        # Count PPO steps that have data for this param (across any layer)
+                        ppo_steps_with_data_count = set()
+                        for layer_id_dbg, step_data_dbg in layer_data_dbg.items():
+                            ppo_steps_with_data_count.update(step_data_dbg.keys()) # .keys() are PPO steps
+                        print(f"        Param {param_name_dbg}: {len(ppo_steps_with_data_count)} PPO steps with B/H data (out of potential {len(BH_CALC_PPO_STEPS_RANGE)}). Example steps: {sorted(list(ppo_steps_with_data_count))[:5]}...")
                     
-                    grama_ratios_for_heatmap = np.full(NUM_LAYERS, np.nan) # Initialize with NaN
-                    bh_calcs_for_avg = []
-
-                    for layer_id in range(NUM_LAYERS):
-                        if layer_id in group_data[ppo_step][param_name]:
-                            layer_metrics = group_data[ppo_step][param_name][layer_id]
-                            if 'grama_ratio' in layer_metrics:
-                                grama_ratios_for_heatmap[layer_id] = layer_metrics['grama_ratio']
-                            if 'bh_calc' in layer_metrics:
-                                bh_calcs_for_avg.append(layer_metrics['bh_calc'])
-                    
-                    avg_bh_calc_for_step_param = np.mean(bh_calcs_for_avg) if bh_calcs_for_avg else 0.0
-                    bh_calc_for_curves[param_name][ppo_step] = avg_bh_calc_for_step_param
-                    
-                    # Reshape for single-parameter heatmap (1 row, NUM_LAYERS columns)
-                    heatmap_matrix = grama_ratios_for_heatmap.reshape(1, NUM_LAYERS)
-                    
-                    heatmap_title = f"{group_label_prefix} - {param_name} (PPO Step {ppo_step})"
-                    heatmap_filename = f"{sft_step_num_str}_{group_label_prefix}_{param_name.replace('.', '_')}_step{ppo_step}_heatmap.png"
-                    print(f"      DEBUG: Plotting heatmap for SFT {sft_step_num_str}, Group {group_label_prefix}, PPO {ppo_step}, Param {param_name}. Matrix shape: {heatmap_matrix.shape}, Avg B/H: {avg_bh_calc_for_step_param}. Matrix data sum: {np.nansum(heatmap_matrix)}")
-                    if np.isnan(heatmap_matrix).all():
-                        print(f"        DEBUG: Heatmap data for {param_name} at PPO {ppo_step} is all NaN. Skipping plot.")
-                    else:
-                        plot_heatmap(heatmap_matrix, heatmap_title, PLOT_OUTPUT_DIR / heatmap_filename, avg_bh_calc_for_step_param)
-                
-                # New: Plot grama ratio vs layer for q,k,v,o for this PPO step
-                if ppo_step in group_data: # Ensure data exists for this ppo_step
-                    print(f"      DEBUG: Plotting grama_vs_layer for SFT {sft_step_num_str}, Group {group_label_prefix}, PPO {ppo_step}. Data keys for this step: {list(group_data[ppo_step].keys()) if ppo_step in group_data and group_data[ppo_step] else 'No data for PPO step or param keys'}")
-                    params_present_for_plot = [p for p in TARGET_PARAMS if p in group_data[ppo_step]]
-                    print(f"        DEBUG: Target params present in group_data[{ppo_step}] for grama_vs_layer plot: {params_present_for_plot}")
-                    if not params_present_for_plot:
-                        print(f"        DEBUG: No target parameters found in group_data for PPO step {ppo_step}. Skipping grama_vs_layer plot.")
-                    else:
-                        plot_grama_vs_layer_curves(sft_step_num_str, group_label_prefix, ppo_step, group_data[ppo_step], PLOT_OUTPUT_DIR)
+                    plot_bh_calc_curves(sft_step_num_str, group_label_prefix, bh_calc_data_unknown_avg_step_centric, PLOT_OUTPUT_DIR)
                 else:
-                    print(f"      DEBUG: No data in group_data for PPO step {ppo_step} (key missing). Skipping grama_vs_layer plot.")
-            
-            # B/H_calc Curves (plotted once per group, after iterating all PPO steps for heatmaps)
-            print(f"    DEBUG: Plotting B/H calc curves for SFT {sft_step_num_str}, Group {group_label_prefix}. Data: {dict(bh_calc_for_curves)}") # Convert defaultdict to dict for cleaner print
-            if not bh_calc_for_curves:
-                 print(f"      DEBUG: No data in bh_calc_for_curves for SFT {sft_step_num_str}, Group {group_label_prefix}. Skipping B/H plot.")
-            else:
-                plot_bh_calc_curves(sft_step_num_str, group_label_prefix, bh_calc_for_curves, PLOT_OUTPUT_DIR)
+                    print(f"      DEBUG: No B/H calc data for {group_label_prefix} (SFT {sft_step_num_str}).")
+
+
+    # --- Plot SFT Comparison Curves ---
+    if all_sfts_performance_data:
+        print("\nPlotting SFT comparison curves...")
+        plot_sft_comparison_curves(all_sfts_performance_data, 'known_group', 'scores', 
+                                   'Known Group Scores vs PPO Step (Across SFTs)', 
+                                   'Score (critic/score/mean)', PLOT_OUTPUT_DIR)
+        plot_sft_comparison_curves(all_sfts_performance_data, 'known_group', 'grama_ratios', 
+                                   'Known Group Grama Ratios vs PPO Step (Across SFTs)', 
+                                   'Grama Ratio (actor/zero_gradspace_ratio)', PLOT_OUTPUT_DIR)
+        plot_sft_comparison_curves(all_sfts_performance_data, 'unknown_group_avg', 'scores', 
+                                   'Avg Unknown Group Scores vs PPO Step (Across SFTs)', 
+                                   'Score (critic/score/mean)', PLOT_OUTPUT_DIR)
+        plot_sft_comparison_curves(all_sfts_performance_data, 'unknown_group_avg', 'grama_ratios', 
+                                   'Avg Unknown Group Grama Ratios vs PPO Step (Across SFTs)', 
+                                   'Grama Ratio (actor/zero_gradspace_ratio)', PLOT_OUTPUT_DIR)
+    else:
+        print("\nNo data collected across SFT steps to plot comparison curves.")
 
     print("\nAll processing complete.")
 

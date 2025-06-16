@@ -49,13 +49,8 @@ GROUP_LOG_PATTERN = re.compile(r"Group(\d+)_\d{8}_\d{6}\.log")
 GENERAL_METRICS_PATTERN = re.compile(
     r"step:(\d+) .* critic/score/mean:([-\d.]+) .* actor/zero_gradspace_ratio:([-\d.]+)"
 )
-LAYER_WISE_DETAIL_PATTERN = re.compile(
-    r"Layer: model\.layers\.(\d+)\.self_attn\.({target_params_regex})\s*\|"
-    r".*?\(\s*([\d\.]+)%\s*\)"
-    r".*?B/H_calc:\s*([-\d\.eE]+)".format(
-        target_params_regex="|".join(p.replace('.', '\\.') for p in TARGET_PARAMS)
-    )
-)
+# LAYER_WISE_DETAIL_PATTERN is now defined locally in parse_layer_wise_metrics
+# to handle multiple formats.
 
 
 def clean_ansi_codes(text):
@@ -95,43 +90,65 @@ def parse_layer_wise_metrics(log_file_path, target_ppo_steps):
     layer_data = defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: defaultdict(float))))
     # Structure: layer_data[ppo_step][param_name][layer_id] = {'grama_ratio': val, 'bh_calc': val}
     
-    current_ppo_step = -1
-    collected_for_current_step = []
+    temp_layer_details_buffer = []
+    target_params_str = "|".join(p.replace('.', '\\.') for p in TARGET_PARAMS)
+
+    # Pattern for [ZeroGradV2] format
+    LAYER_WISE_DETAIL_PATTERN_V2 = re.compile(
+        r"\[ZeroGradV2\] model\.layers\.(\d+)\.self_attn\.({params_regex}):"
+        r"\s*\d+/\d+\s*\(([\d\.]+)\),"  # Group 3: grama_ratio (decimal)
+        r"\s*B/H:\s*([\d\.eE]+)".format(params_regex=target_params_str)
+    )
+
+    # Pattern for the older format
+    LAYER_WISE_DETAIL_PATTERN_OLD = re.compile(
+        r"Layer: model\.layers\.(\d+)\.self_attn\.({params_regex})\s*\|"
+        r".*?\(\s*([\d\.]+)%\s*\)"  # Group 3: grama_ratio (percentage)
+        r".*?B/H_calc:\s*([\d\.eE]+)".format(params_regex=target_params_str)
+    )
 
     try:
         with open(log_file_path, 'r', encoding='utf-8') as f:
             for line in f:
                 cleaned_line = clean_ansi_codes(line)
                 
-                # Check for general step line first to associate buffered layer lines
+                layer_id, param_name, grama_ratio, bh_calc = None, None, None, None
+
+                # Try matching [ZeroGradV2] format first
+                match_v2 = LAYER_WISE_DETAIL_PATTERN_V2.search(cleaned_line)
+                if match_v2:
+                    layer_id = int(match_v2.group(1))
+                    param_name = match_v2.group(2)
+                    grama_ratio = float(match_v2.group(3))  # Already decimal
+                    bh_calc = float(match_v2.group(4))
+                else:
+                    # Try matching the older format
+                    match_old = LAYER_WISE_DETAIL_PATTERN_OLD.search(cleaned_line)
+                    if match_old:
+                        layer_id = int(match_old.group(1))
+                        param_name = match_old.group(2)
+                        grama_ratio = float(match_old.group(3)) / 100.0  # Convert percentage
+                        bh_calc = float(match_old.group(4))
+                
+                if param_name is not None: # If either pattern matched
+                    temp_layer_details_buffer.append({
+                        'layer_id': layer_id, 'param_name': param_name,
+                        'grama_ratio': grama_ratio, 'bh_calc': bh_calc
+                    })
+                    continue # Successfully processed as a layer line, move to next line
+
+                # If not a layer detail line, check if it's a general step summary line
                 step_match = GENERAL_METRICS_PATTERN.search(cleaned_line)
                 if step_match:
-                    new_ppo_step = int(step_match.group(1))
-                    if current_ppo_step != -1 and current_ppo_step in target_ppo_steps:
-                        for entry in collected_for_current_step:
-                            param, layer_id, grama_r, bh_c = entry
-                            layer_data[current_ppo_step][param][layer_id]['grama_ratio'] = grama_r
-                            layer_data[current_ppo_step][param][layer_id]['bh_calc'] = bh_c
+                    current_ppo_step = int(step_match.group(1))
                     
-                    current_ppo_step = new_ppo_step
-                    collected_for_current_step = []
-
-                # Then check for layer detail line
-                if current_ppo_step in target_ppo_steps:
-                    layer_match = LAYER_WISE_DETAIL_PATTERN.search(cleaned_line)
-                    if layer_match:
-                        layer_id = int(layer_match.group(1))
-                        param_name = layer_match.group(2)
-                        grama_ratio = float(layer_match.group(3)) / 100.0  # Convert percentage to 0-1 scale
-                        bh_calc = float(layer_match.group(4))
-                        collected_for_current_step.append((param_name, layer_id, grama_ratio, bh_calc))
-            
-            # Process any remaining buffered lines for the last step
-            if current_ppo_step != -1 and current_ppo_step in target_ppo_steps:
-                for entry in collected_for_current_step:
-                    param, layer_id, grama_r, bh_c = entry
-                    layer_data[current_ppo_step][param][layer_id]['grama_ratio'] = grama_r
-                    layer_data[current_ppo_step][param][layer_id]['bh_calc'] = bh_c
+                    # Layer details in buffer belong to this current_ppo_step
+                    if current_ppo_step in target_ppo_steps and temp_layer_details_buffer:
+                        for entry in temp_layer_details_buffer:
+                            layer_data[current_ppo_step][entry['param_name']][entry['layer_id']]['grama_ratio'] = entry['grama_ratio']
+                            layer_data[current_ppo_step][entry['param_name']][entry['layer_id']]['bh_calc'] = entry['bh_calc']
+                    
+                    temp_layer_details_buffer = [] # Clear buffer, these details have been assigned or step not targeted
 
     except FileNotFoundError:
         print(f"Warning: Log file not found {log_file_path}")
@@ -191,6 +208,60 @@ def plot_heatmap(data_matrix, title, output_path, avg_bh_calc):
     plt.savefig(output_path)
     plt.close()
     print(f"Saved heatmap: {output_path}")
+
+def plot_grama_vs_layer_curves(sft_step_num_str, group_label_prefix, ppo_step, params_data_for_step, output_dir):
+    """Plots grama ratio vs. layer ID for q, k, v, o parameters on one graph for a specific PPO step."""
+    plt.figure(figsize=(12, 7))
+    layer_ids = np.arange(NUM_LAYERS)
+    plotted_anything = False
+
+    for param_name in TARGET_PARAMS:
+        if param_name in params_data_for_step:
+            grama_ratios_for_layers = np.full(NUM_LAYERS, np.nan)
+            for layer_id in range(NUM_LAYERS):
+                if layer_id in params_data_for_step[param_name] and 'grama_ratio' in params_data_for_step[param_name][layer_id]:
+                    grama_ratios_for_layers[layer_id] = params_data_for_step[param_name][layer_id]['grama_ratio']
+            
+            # Only plot if there's some non-NaN data for this parameter
+            if not np.all(np.isnan(grama_ratios_for_layers)):
+                # Apply smoothing if desired, similar to other curves
+                smoothed_grama_ratios = smooth_curve(grama_ratios_for_layers[~np.isnan(grama_ratios_for_layers)])
+                valid_layer_ids = layer_ids[~np.isnan(grama_ratios_for_layers)]
+                
+                # Need to handle cases where smoothing reduces points if too many NaNs at ends
+                # For simplicity, plot smoothed valid points. If all points are valid, it's fine.
+                # If there are NaNs, Savitzky-Golay on the non-NaN part might shift indices if not careful.
+                # A simpler approach for now: plot raw data or ensure smooth_curve handles NaNs gracefully by returning original if too short.
+                # Current smooth_curve returns original if too short, which is good.
+                # Let's plot the original points if smoothing is problematic with NaNs, or smooth only non-NaN segments.
+
+                # For now, let's plot the raw data for these lines to avoid complexity with partial NaNs and smoothing.
+                # Or, we can smooth the series if it has enough points after dropping NaNs.
+                
+                # Re-evaluate smoothing for this specific plot type:
+                # If we smooth, we should smooth the grama_ratios_for_layers directly if it has enough points.
+                # However, savgol_filter doesn't like NaNs. So, we'd interpolate or plot segments.
+                # Let's plot without smoothing for these specific lines for now for clarity across layers.
+                plt.plot(layer_ids, grama_ratios_for_layers, marker='o', linestyle='-', markersize=4, label=param_name)
+                plotted_anything = True
+
+    if not plotted_anything:
+        print(f"No grama ratio vs layer data to plot for {group_label_prefix}, PPO step {ppo_step} in SFT step {sft_step_num_str}")
+        plt.close()
+        return
+
+    plt.xlabel("Layer ID")
+    plt.ylabel("Grama Ratio")
+    plt.title(f"Grama Ratio vs. Layer ID for {group_label_prefix} (SFT {sft_step_num_str}, PPO Step {ppo_step})")
+    plt.xticks(np.arange(0, NUM_LAYERS, 2)) # Show ticks every 2 layers
+    plt.ylim(0, 1.05) # Grama ratio is 0-1
+    plt.legend(loc='best')
+    plt.grid(True)
+    plot_filename = f"{sft_step_num_str}_{group_label_prefix}_ppo_step_{ppo_step}_grama_vs_layer.png"
+    plot_path = output_dir / plot_filename
+    plt.savefig(plot_path)
+    plt.close()
+    print(f"Saved plot: {plot_path}")
 
 def plot_bh_calc_curves(sft_step_num_str, group_label, data_dict, output_dir):
     # data_dict: {param_name: {ppo_step: avg_bh_calc_for_param_over_layers}}
@@ -385,8 +456,12 @@ def main():
                     heatmap_title = f"{group_label_prefix} - {param_name} (PPO Step {ppo_step})"
                     heatmap_filename = f"{sft_step_num_str}_{group_label_prefix}_{param_name.replace('.', '_')}_step{ppo_step}_heatmap.png"
                     plot_heatmap(heatmap_matrix, heatmap_title, PLOT_OUTPUT_DIR / heatmap_filename, avg_bh_calc_for_step_param)
+                
+                # New: Plot grama ratio vs layer for q,k,v,o for this PPO step
+                if ppo_step in group_data: # Ensure data exists for this ppo_step
+                    plot_grama_vs_layer_curves(sft_step_num_str, group_label_prefix, ppo_step, group_data[ppo_step], PLOT_OUTPUT_DIR)
             
-            # B/H_calc Curves
+            # B/H_calc Curves (plotted once per group, after iterating all PPO steps for heatmaps)
             plot_bh_calc_curves(sft_step_num_str, group_label_prefix, bh_calc_for_curves, PLOT_OUTPUT_DIR)
 
     print("\nAll processing complete.")

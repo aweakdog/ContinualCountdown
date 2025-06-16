@@ -308,32 +308,41 @@ def aggregate_unknown_group_data(log_files, parse_func, *args):
     if not all_group_data:
         return None
 
-    # For general metrics (dict of dicts: {step: {'score': [val], 'grama': [val]}})
+    # For general metrics (dict: {'ppo_steps': [], 'scores': [], 'grama_ratios': []})
     if parse_func == parse_general_metrics:
-        # Data from parse_general_metrics is (metrics_dict, steps_list, scores_list, gramas_list)
-        # We need to average scores and gramas per step across groups.
-        aggregated_metrics = defaultdict(lambda: {'score': [], 'grama': []})
-        all_steps = set()
+        all_ppo_steps = []
+        all_scores = []
+        all_grama_ratios = []
         
-        processed_data = []
-        for data_tuple in all_group_data:
-            metrics_dict, _, _, _ = data_tuple
-            processed_data.append(metrics_dict)
-            for step in metrics_dict:
-                all_steps.add(step)
+        # all_group_data already contains the dictionaries from parse_general_metrics
+        for parsed_data_dict in all_group_data:
+            if parsed_data_dict and parsed_data_dict.get('ppo_steps'):
+                all_ppo_steps.extend(parsed_data_dict['ppo_steps'])
+                all_scores.extend(parsed_data_dict['scores'])
+                all_grama_ratios.extend(parsed_data_dict['grama_ratios'])
         
-        for step in sorted(list(all_steps)):
-            step_scores = []
-            step_gramas = []
-            for group_metrics in processed_data:
-                if step in group_metrics:
-                    step_scores.extend(group_metrics[step]['score'])
-                    step_gramas.extend(group_metrics[step]['grama'])
-            if step_scores:
-                aggregated_metrics[step]['score'] = [np.mean(step_scores)]
-            if step_gramas:
-                aggregated_metrics[step]['grama'] = [np.mean(step_gramas)]
-        return aggregated_metrics
+        if not all_ppo_steps:
+            return None
+
+        # Create a DataFrame for easier averaging per PPO step
+        df = pd.DataFrame({
+            'ppo_step': all_ppo_steps,
+            'score': all_scores,
+            'grama_ratio': all_grama_ratios
+        })
+        
+        # Ensure ppo_step is not empty before groupby
+        if df.empty or 'ppo_step' not in df.columns or df['ppo_step'].isnull().all():
+             print("DEBUG: DataFrame for aggregation is empty or ppo_step column is missing/all NaN.")
+             return None
+
+        avg_df = df.groupby('ppo_step').mean().reset_index()
+        
+        return {
+            'ppo_steps': avg_df['ppo_step'].tolist(),
+            'scores': avg_df['score'].tolist(),
+            'grama_ratios': avg_df['grama_ratio'].tolist()
+        }
 
     # For layer-wise metrics (dict of dicts: {ppo_step: {param: {layer: {'grama_ratio', 'bh_calc'}}}})
     elif parse_func == parse_layer_wise_metrics:
@@ -399,11 +408,12 @@ def main():
         print("  Plotting performance curves...")
         if known_group_files:
             # For simplicity, assuming one Group0 log file. If multiple, this would need averaging or selection.
-            known_data = parse_general_metrics(known_group_files[0]) 
-            if known_data and known_data.get('ppo_steps'): # Check if data and ppo_steps exist
-                print(f"    DEBUG: Known Group general metrics (SFT {sft_step_num_str}): PPO steps count: {len(known_data['ppo_steps'])}, Scores count: {len(known_data['scores'])}, Grama Ratios count: {len(known_data['grama_ratios'])}")
-                plot_performance_curves(sft_step_num_str, known_data, "Known Group", 'score', "Score (critic/score/mean)", PLOT_OUTPUT_DIR)
-                plot_performance_curves(sft_step_num_str, known_data, "Known Group", 'grama', "Grama (actor/zero_gradspace_ratio)", PLOT_OUTPUT_DIR)
+            # parse_general_metrics now returns a single dictionary
+            known_data_dict = parse_general_metrics(known_group_files[0]) 
+            if known_data_dict and known_data_dict.get('ppo_steps'): # Check if data and ppo_steps exist
+                print(f"    DEBUG: Known Group general metrics (SFT {sft_step_num_str}): PPO steps count: {len(known_data_dict['ppo_steps'])}, Scores count: {len(known_data_dict['scores'])}, Grama Ratios count: {len(known_data_dict['grama_ratios'])}")
+                plot_performance_curves(sft_step_num_str, known_data_dict, "Known Group", 'score', "Score (critic/score/mean)", PLOT_OUTPUT_DIR)
+                plot_performance_curves(sft_step_num_str, known_data_dict, "Known Group", 'grama', "Grama (actor/zero_gradspace_ratio)", PLOT_OUTPUT_DIR)
             else:
                 print(f"    DEBUG: Known Group general metrics (SFT {sft_step_num_str}): No data or no PPO steps parsed.")
         

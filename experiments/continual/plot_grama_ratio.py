@@ -57,39 +57,34 @@ def clean_ansi_codes(text):
     return ANSI_ESCAPE_PATTERN.sub('', text)
 
 def parse_general_metrics(log_file_path):
-    metrics = defaultdict(lambda: {'score': [], 'grama': []})
-    steps = [] 
-    scores = []
-    gramas = []
+    general_metrics = {'ppo_steps': [], 'scores': [], 'grama_ratios': []}
+    print(f"  Parsing general metrics from: {log_file_path}")
+    lines_parsed_general = 0
     try:
         with open(log_file_path, 'r', encoding='utf-8') as f:
             for line in f:
                 match = GENERAL_METRICS_PATTERN.search(line)
                 if match:
-                    step = int(match.group(1))
-                    score = float(match.group(2))
-                    grama = float(match.group(3))
-                    steps.append(step)
-                    scores.append(score)
-                    gramas.append(grama)
+                    ppo_step = int(match.group(1))
+                    score_mean = float(match.group(2))
+                    grama_ratio = float(match.group(3))
+                    general_metrics['ppo_steps'].append(ppo_step)
+                    general_metrics['scores'].append(score_mean)
+                    general_metrics['grama_ratios'].append(grama_ratio)
+                    lines_parsed_general += 1
     except FileNotFoundError:
         print(f"Warning: Log file not found {log_file_path}")
-        return {}, [], [], []
     except Exception as e:
         print(f"Error parsing general metrics from {log_file_path}: {e}")
-        return {}, [], [], []
-    
-    # Convert to dict for easier lookup by step, though not strictly needed for simple plotting
-    for i, step in enumerate(steps):
-        metrics[step]['score'].append(scores[i]) # Use append in case of duplicate steps, though unlikely
-        metrics[step]['grama'].append(gramas[i])
-
-    return metrics, sorted(list(set(steps))), scores, gramas # Return unique sorted steps and original lists
+    print(f"  Finished parsing general metrics from {log_file_path}. Found {lines_parsed_general} PPO step entries.")
+    return general_metrics
 
 def parse_layer_wise_metrics(log_file_path, target_ppo_steps):
     layer_data = defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: defaultdict(float))))
     # Structure: layer_data[ppo_step][param_name][layer_id] = {'grama_ratio': val, 'bh_calc': val}
-    
+    print(f"  Parsing layer-wise metrics from: {log_file_path} for PPO steps: {target_ppo_steps}")
+    found_layer_lines = 0
+    associated_layer_data_count = 0
     temp_layer_details_buffer = []
     target_params_str = "|".join(p.replace('.', '\\.') for p in TARGET_PARAMS)
 
@@ -135,6 +130,7 @@ def parse_layer_wise_metrics(log_file_path, target_ppo_steps):
                         'layer_id': layer_id, 'param_name': param_name,
                         'grama_ratio': grama_ratio, 'bh_calc': bh_calc
                     })
+                    found_layer_lines +=1
                     continue # Successfully processed as a layer line, move to next line
 
                 # If not a layer detail line, check if it's a general step summary line
@@ -147,6 +143,7 @@ def parse_layer_wise_metrics(log_file_path, target_ppo_steps):
                         for entry in temp_layer_details_buffer:
                             layer_data[current_ppo_step][entry['param_name']][entry['layer_id']]['grama_ratio'] = entry['grama_ratio']
                             layer_data[current_ppo_step][entry['param_name']][entry['layer_id']]['bh_calc'] = entry['bh_calc']
+                            associated_layer_data_count +=1
                     
                     temp_layer_details_buffer = [] # Clear buffer, these details have been assigned or step not targeted
 
@@ -154,6 +151,8 @@ def parse_layer_wise_metrics(log_file_path, target_ppo_steps):
         print(f"Warning: Log file not found {log_file_path}")
     except Exception as e:
         print(f"Error parsing layer-wise metrics from {log_file_path}: {e}")
+    print(f"  Finished parsing layer-wise metrics from {log_file_path}. Found {found_layer_lines} layer detail lines. Associated {associated_layer_data_count} data points to PPO steps.")
+    # print(f"  Layer data for {log_file_path}: {json.dumps(layer_data, indent=2)}") # Potentially very verbose
     return layer_data
 
 def plot_performance_curves(sft_step_num_str, group_data, group_label, metric_key, y_label, output_dir):
@@ -339,7 +338,8 @@ def aggregate_unknown_group_data(log_files, parse_func, *args):
     # For layer-wise metrics (dict of dicts: {ppo_step: {param: {layer: {'grama_ratio', 'bh_calc'}}}})
     elif parse_func == parse_layer_wise_metrics:
         # all_group_data is a list of dicts like: [ {ppo_step: {param: {layer: data}}} , ... ]
-        aggregated_layer_data = defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: {'grama_ratio': [], 'bh_calc': []})))
+        aggregated_layer_data = defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: defaultdict(float)))))
+        # aggregated_layer_data[ppo_step][param_name][layer_id] = {'grama_ratio': val, 'bh_calc': val}
         
         all_ppo_steps = set()
         for group_data in all_group_data:
@@ -377,6 +377,7 @@ def main():
     if PLOT_OUTPUT_DIR.exists():
         shutil.rmtree(PLOT_OUTPUT_DIR)
     PLOT_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    print(f"DEBUG: Output directory set to: {PLOT_OUTPUT_DIR}")
 
     sft_step_dirs = [d for d in LOG_DIR.iterdir() if d.is_dir() and SFT_DIR_PATTERN.match(d.name)]
 
@@ -398,16 +399,22 @@ def main():
         print("  Plotting performance curves...")
         if known_group_files:
             # For simplicity, assuming one Group0 log file. If multiple, this would need averaging or selection.
-            known_data, _, _, _ = parse_general_metrics(known_group_files[0]) 
-            if known_data:
+            known_data = parse_general_metrics(known_group_files[0]) 
+            if known_data and known_data.get('ppo_steps'): # Check if data and ppo_steps exist
+                print(f"    DEBUG: Known Group general metrics (SFT {sft_step_num_str}): PPO steps count: {len(known_data['ppo_steps'])}, Scores count: {len(known_data['scores'])}, Grama Ratios count: {len(known_data['grama_ratios'])}")
                 plot_performance_curves(sft_step_num_str, known_data, "Known Group", 'score', "Score (critic/score/mean)", PLOT_OUTPUT_DIR)
                 plot_performance_curves(sft_step_num_str, known_data, "Known Group", 'grama', "Grama (actor/zero_gradspace_ratio)", PLOT_OUTPUT_DIR)
+            else:
+                print(f"    DEBUG: Known Group general metrics (SFT {sft_step_num_str}): No data or no PPO steps parsed.")
         
         if unknown_group_files:
             avg_unknown_data_general = aggregate_unknown_group_data(unknown_group_files, parse_general_metrics)
-            if avg_unknown_data_general:
+            if avg_unknown_data_general and avg_unknown_data_general.get('ppo_steps'): # Check if data and ppo_steps exist
+                print(f"    DEBUG: Avg Unknown Group general metrics (SFT {sft_step_num_str}): PPO steps count: {len(avg_unknown_data_general['ppo_steps'])}, Scores count: {len(avg_unknown_data_general['scores'])}, Grama Ratios count: {len(avg_unknown_data_general['grama_ratios'])}")
                 plot_performance_curves(sft_step_num_str, avg_unknown_data_general, "Unknown Group Avg", 'score', "Score (critic/score/mean)", PLOT_OUTPUT_DIR)
                 plot_performance_curves(sft_step_num_str, avg_unknown_data_general, "Unknown Group Avg", 'grama', "Grama (actor/zero_gradspace_ratio)", PLOT_OUTPUT_DIR)
+            else:
+                print(f"    DEBUG: Avg Unknown Group general metrics (SFT {sft_step_num_str}): No data or no PPO steps parsed.")
 
         # --- 2. Case Study --- 
         print("  Processing case study data...")
@@ -415,11 +422,29 @@ def main():
         known_layer_data = None
         if known_group_files:
             known_layer_data = parse_layer_wise_metrics(known_group_files[0], CASE_STUDY_PPO_STEPS)
+            if known_layer_data:
+                print(f"    DEBUG: Known Group layer data (SFT {sft_step_num_str}): Parsed for PPO steps: {sorted(list(known_layer_data.keys()))}")
+                for p_step_debug in CASE_STUDY_PPO_STEPS:
+                    if p_step_debug in known_layer_data:
+                        print(f"      DEBUG: PPO {p_step_debug} (Known): Params found: {list(known_layer_data[p_step_debug].keys())}")
+                        # for param_k_debug in known_layer_data[p_step_debug]:
+                        #      print(f"        DEBUG: Param {param_k_debug}: Layers found: {list(known_layer_data[p_step_debug][param_k_debug].keys())}")
+            else:
+                print(f"    DEBUG: Known Group layer data (SFT {sft_step_num_str}): No data parsed.")
 
         # Unknown Group Average Case Study
         avg_unknown_layer_data = None
         if unknown_group_files:
             avg_unknown_layer_data = aggregate_unknown_group_data(unknown_group_files, parse_layer_wise_metrics, CASE_STUDY_PPO_STEPS)
+            if avg_unknown_layer_data:
+                print(f"    DEBUG: Avg Unknown Group layer data (SFT {sft_step_num_str}): Parsed for PPO steps: {sorted(list(avg_unknown_layer_data.keys()))}")
+                for p_step_debug in CASE_STUDY_PPO_STEPS:
+                    if p_step_debug in avg_unknown_layer_data:
+                        print(f"      DEBUG: PPO {p_step_debug} (Avg Unknown): Params found: {list(avg_unknown_layer_data[p_step_debug].keys())}")
+                        # for param_k_debug in avg_unknown_layer_data[p_step_debug]:
+                        #      print(f"        DEBUG: Param {param_k_debug}: Layers found: {list(avg_unknown_layer_data[p_step_debug][param_k_debug].keys())}")
+            else:
+                print(f"    DEBUG: Avg Unknown Group layer data (SFT {sft_step_num_str}): No data parsed.")
 
         for group_data, group_label_prefix in [(known_layer_data, "Known_Group"), (avg_unknown_layer_data, "Unknown_Group_Avg")]:
             if not group_data: continue
@@ -455,14 +480,30 @@ def main():
                     
                     heatmap_title = f"{group_label_prefix} - {param_name} (PPO Step {ppo_step})"
                     heatmap_filename = f"{sft_step_num_str}_{group_label_prefix}_{param_name.replace('.', '_')}_step{ppo_step}_heatmap.png"
-                    plot_heatmap(heatmap_matrix, heatmap_title, PLOT_OUTPUT_DIR / heatmap_filename, avg_bh_calc_for_step_param)
+                    print(f"      DEBUG: Plotting heatmap for SFT {sft_step_num_str}, Group {group_label_prefix}, PPO {ppo_step}, Param {param_name}. Matrix shape: {heatmap_matrix.shape}, Avg B/H: {avg_bh_calc_for_step_param}. Matrix data sum: {np.nansum(heatmap_matrix)}")
+                    if np.isnan(heatmap_matrix).all():
+                        print(f"        DEBUG: Heatmap data for {param_name} at PPO {ppo_step} is all NaN. Skipping plot.")
+                    else:
+                        plot_heatmap(heatmap_matrix, heatmap_title, PLOT_OUTPUT_DIR / heatmap_filename, avg_bh_calc_for_step_param)
                 
                 # New: Plot grama ratio vs layer for q,k,v,o for this PPO step
                 if ppo_step in group_data: # Ensure data exists for this ppo_step
-                    plot_grama_vs_layer_curves(sft_step_num_str, group_label_prefix, ppo_step, group_data[ppo_step], PLOT_OUTPUT_DIR)
+                    print(f"      DEBUG: Plotting grama_vs_layer for SFT {sft_step_num_str}, Group {group_label_prefix}, PPO {ppo_step}. Data keys for this step: {list(group_data[ppo_step].keys()) if ppo_step in group_data and group_data[ppo_step] else 'No data for PPO step or param keys'}")
+                    params_present_for_plot = [p for p in TARGET_PARAMS if p in group_data[ppo_step]]
+                    print(f"        DEBUG: Target params present in group_data[{ppo_step}] for grama_vs_layer plot: {params_present_for_plot}")
+                    if not params_present_for_plot:
+                        print(f"        DEBUG: No target parameters found in group_data for PPO step {ppo_step}. Skipping grama_vs_layer plot.")
+                    else:
+                        plot_grama_vs_layer_curves(sft_step_num_str, group_label_prefix, ppo_step, group_data[ppo_step], PLOT_OUTPUT_DIR)
+                else:
+                    print(f"      DEBUG: No data in group_data for PPO step {ppo_step} (key missing). Skipping grama_vs_layer plot.")
             
             # B/H_calc Curves (plotted once per group, after iterating all PPO steps for heatmaps)
-            plot_bh_calc_curves(sft_step_num_str, group_label_prefix, bh_calc_for_curves, PLOT_OUTPUT_DIR)
+            print(f"    DEBUG: Plotting B/H calc curves for SFT {sft_step_num_str}, Group {group_label_prefix}. Data: {dict(bh_calc_for_curves)}") # Convert defaultdict to dict for cleaner print
+            if not bh_calc_for_curves:
+                 print(f"      DEBUG: No data in bh_calc_for_curves for SFT {sft_step_num_str}, Group {group_label_prefix}. Skipping B/H plot.")
+            else:
+                plot_bh_calc_curves(sft_step_num_str, group_label_prefix, bh_calc_for_curves, PLOT_OUTPUT_DIR)
 
     print("\nAll processing complete.")
 

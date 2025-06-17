@@ -424,9 +424,13 @@ def plot_bh_calc_curves(sft_step_num_str, group_label_prefix, bh_calc_data_step_
 def plot_sft_comparison_curves(all_sfts_data, group_key_in_sft_data, metric_key, plot_title, y_axis_label, output_dir):
     plt.figure(figsize=(12, 7))
     sft_steps_plotted = 0
+    # Using matplotlib's default color cycle. To use a specific one:
+    # num_sft_steps = len([k for k, v in all_sfts_data.items() if v.get(group_key_in_sft_data)])
+    # colors = plt.cm.viridis(np.linspace(0, 1, num_sft_steps if num_sft_steps > 0 else 1))
+
     sorted_sft_keys = sorted(all_sfts_data.keys(), key=lambda x: int(x) if x.isdigit() else x)
 
-    for sft_step_num in sorted_sft_keys:
+    for i, sft_step_num in enumerate(sorted_sft_keys):
         sft_data = all_sfts_data.get(sft_step_num)
         if not sft_data:
             continue
@@ -435,38 +439,55 @@ def plot_sft_comparison_curves(all_sfts_data, group_key_in_sft_data, metric_key,
             continue
 
         steps_from_data = sorted(group_specific_data.keys())
-        values = []
+        mean_values = []
+        std_values = [] # To store standard deviations
         valid_steps_for_plot = []
+
+        metric_key_mean = f"{metric_key}_mean"
+        metric_key_std = f"{metric_key}_std"
 
         for ppo_step_val in steps_from_data:
             step_metrics = group_specific_data.get(ppo_step_val)
             if not isinstance(step_metrics, dict):
                 continue
-            metric_val = step_metrics.get(metric_key)
-            if metric_val is None:
+            
+            mean_val = step_metrics.get(metric_key_mean)
+            std_val = step_metrics.get(metric_key_std)
+
+            if mean_val is None: # If mean is None, skip this point
+                # print(f"Warning: Mean for {metric_key} at PPO step {ppo_step_val} for SFT {sft_step_num} is None. Skipping.")
                 continue
             
-            current_val_to_plot = None
-            if isinstance(metric_val, list):
-                if not metric_val: continue
-                current_val_to_plot = np.mean(metric_val)
-            elif isinstance(metric_val, (int, float)):
-                current_val_to_plot = metric_val
-            else:
+            # std_val can be None or 0 if not available or single data point, default to 0.0
+            std_val = std_val if std_val is not None else 0.0
+            
+            if not (isinstance(mean_val, (int, float)) and isinstance(std_val, (int, float))):
+                print(f"Warning: Mean or Std for {metric_key} at PPO step {ppo_step_val} for SFT {sft_step_num} are not numbers. Mean: {mean_val} (type: {type(mean_val)}), Std: {std_val} (type: {type(std_val)}). Skipping.")
                 continue
             
-            values.append(current_val_to_plot)
+            mean_values.append(mean_val)
+            std_values.append(std_val)
             valid_steps_for_plot.append(ppo_step_val)
 
-        if not values:
+        if not mean_values:
             continue
 
-        if len(values) > 1:
-            smoothed_values = smooth_curve(values)
+        mean_values_np = np.array(mean_values)
+        std_values_np = np.array(std_values)
+
+        if len(mean_values_np) > 1:
+            smoothed_means = smooth_curve(mean_values_np)
+            smoothed_stds = smooth_curve(std_values_np) # Smooth std deviations as well
         else:
-            smoothed_values = values
+            smoothed_means = mean_values_np
+            smoothed_stds = std_values_np
         
-        plt.plot(valid_steps_for_plot, smoothed_values, marker='o', markersize=0.1, linestyle='-', label=f"SFT {sft_step_num}")
+        # current_color = colors[i % len(colors)] if specific colors are used, else None for default cycle
+        line, = plt.plot(valid_steps_for_plot, smoothed_means, marker='o', markersize=0.1, linestyle='-', label=f"SFT {sft_step_num}") # color=current_color
+        plt.fill_between(valid_steps_for_plot, 
+                         smoothed_means - smoothed_stds, 
+                         smoothed_means + smoothed_stds, 
+                         color=line.get_color(), alpha=0.2)
         sft_steps_plotted += 1
 
     if sft_steps_plotted == 0:
@@ -481,9 +502,10 @@ def plot_sft_comparison_curves(all_sfts_data, group_key_in_sft_data, metric_key,
     plt.grid(True)
     plt.tight_layout(rect=[0, 0, 0.85, 1]) 
 
-    filename_metric = metric_key.replace('/', '_').replace(' ', '_').lower()
+    # Use the original metric_key for the filename, not the suffixed one
+    filename_metric_cleaned = metric_key.replace('/', '_').replace(' ', '_').lower()
     filename_group = group_key_in_sft_data.replace(' ', '_').lower()
-    plot_path = output_dir / f"comparison_{filename_group}_{filename_metric}.png"
+    plot_path = output_dir / f"comparison_{filename_group}_{filename_metric_cleaned}.png"
     plt.savefig(plot_path)
     plt.close()
     print(f"Saved SFT comparison plot: {plot_path}")
@@ -526,16 +548,21 @@ def aggregate_unknown_group_data(log_files, parse_func, *args):
              print("DEBUG: DataFrame for aggregation is empty or ppo_step column is missing/all NaN.")
              return None
 
-        avg_df = df.groupby('ppo_step').mean().reset_index()
+        # Calculate mean and standard deviation
+        avg_df = df.groupby('ppo_step').mean()
+        std_df = df.groupby('ppo_step').std()
         
         # Transform averaged data to step-centric format
         aggregated_step_centric = defaultdict(dict)
-        for _idx, row in avg_df.iterrows():
-            step = row['ppo_step']
+        for step in avg_df.index: # Iterate over PPO steps (which are the index of avg_df)
             if 'score' in avg_df.columns:
-                aggregated_step_centric[step]['scores'] = row['score']
+                aggregated_step_centric[step]['scores_mean'] = avg_df.loc[step, 'score']
+                # std_df might not have entries for all steps if only one data point exists for that step (std is NaN)
+                # Or if a column is missing (e.g. all NaNs for that group), pandas std() might drop it.
+                aggregated_step_centric[step]['scores_std'] = std_df.loc[step, 'score'] if step in std_df.index and 'score' in std_df.columns and not pd.isna(std_df.loc[step, 'score']) else 0.0
             if 'grama_ratio' in avg_df.columns:
-                aggregated_step_centric[step]['grama_ratios'] = row['grama_ratio']
+                aggregated_step_centric[step]['grama_ratios_mean'] = avg_df.loc[step, 'grama_ratio']
+                aggregated_step_centric[step]['grama_ratios_std'] = std_df.loc[step, 'grama_ratio'] if step in std_df.index and 'grama_ratio' in std_df.columns and not pd.isna(std_df.loc[step, 'grama_ratio']) else 0.0
         return aggregated_step_centric
 
     # For layer-wise metrics (dict of dicts: {ppo_step: {param: {layer: {'grama_ratio', 'bh_calc'}}}})

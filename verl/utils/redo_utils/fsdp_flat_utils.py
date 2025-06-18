@@ -700,18 +700,30 @@ def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=True, origi
                 # Since we're using the canonical parameter list, original_shape lookup is straightforward
                 original_shape = original_shapes_map.get(full_fqn_for_map) if original_shapes_map else None
                 original_shape_str = str(original_shape) if original_shape else "N/A (no map)"
-                param_dim_to_check = len(original_shape) if original_shape else param.dim()
-                # Check if parameter has the right dimension
-                if param_dim_to_check != 2:
+                # Determine the effective dimension for checking eligibility
+                # Use original_shape if available, otherwise the current param's dimension
+                effective_dim = len(original_shape) if original_shape else param.dim()
+                is_bias = full_fqn_for_map.endswith(".bias")
+
+                # Parameter eligibility condition:
+                # Must be 2D (handled by original_shape or param.dim()), OR
+                # Must be 1D AND NOT a bias parameter (these will be reshaped to (N,1) later).
+                # Bias parameters (1D or other) are typically not analyzed this way.
+                is_eligible_based_on_dim_and_type = (effective_dim == 2) or \
+                                                    (effective_dim == 1 and not is_bias)
+
+                if not is_eligible_based_on_dim_and_type:
                     skipped_dim_not_2 += 1
-                    if rank == 0 and verbose and skipped_dim_not_2 < 5:
-                        print(f"[ZeroGradV2-Debug][Rank {rank}] Param {full_fqn_for_map}: CONTRIBUTING ZEROS (dim_to_check is {param_dim_to_check}, original_shape: {original_shape_str}, current_param_dim: {param.dim()}, grad_shape: {param.grad.shape}).")
-                elif param.grad.shape[0] == 0:
+                    if rank == 0 and verbose and skipped_dim_not_2 < 5: # Log only a few times
+                        print(f"[ZeroGradV2-Debug][Rank {rank}] Param {full_fqn_for_map}: SKIPPING (effective_dim: {effective_dim}, is_bias: {is_bias}. Original shape: {original_shape_str}, current_param_dim: {param.dim()}, grad_shape: {param.grad.shape}). Not 2D or 1D non-bias.")
+                # For eligible dimensions, also check if grad.shape[0] is 0 (empty tensor along the main dim)
+                # This check is more relevant for 2D+ tensors or 1D tensors that will be treated as (N,1)
+                elif effective_dim > 0 and param.grad.shape[0] == 0 : 
                     skipped_shape0_is_0 += 1
-                    if rank == 0 and verbose and skipped_shape0_is_0 < 5:
-                        print(f"[ZeroGradV2-Debug][Rank {rank}] Param {full_fqn_for_map}: CONTRIBUTING ZEROS (grad.shape[0] is 0, grad_shape: {param.grad.shape}).")
+                    if rank == 0 and verbose and skipped_shape0_is_0 < 5: # Log only a few times
+                        print(f"[ZeroGradV2-Debug][Rank {rank}] Param {full_fqn_for_map}: SKIPPING (grad.shape[0] is 0, grad_shape: {param.grad.shape}).")
                 else:
-                    # Parameter is eligible for processing
+                    # Parameter is eligible for processing based on dimension, type, and grad shape
                     is_eligible = True
         
         # Only process eligible parameters, otherwise use the default zero values
@@ -834,6 +846,15 @@ def compute_fsdp_zero_grad_space_ratio(fsdp_module, tau=0.1, verbose=True, origi
             elif rank == 0 and verbose and not reshaped_from_map: # Log if not reshaped for other reasons
                 print(f"[ZeroGradV2-Debug][Rank {rank}] Param {full_fqn_for_map}: Grad (shape {param.grad.data.shape}, numel {param.grad.data.numel()}) not reshaped using map shape {original_shape} (numel {torch.prod(torch.tensor(original_shape)).item() if original_shape else 'N/A'}). Using original grad shape.")
             # If original_shape is None, current_grad_to_process remains param.grad.data.float() as initialized
+
+            # After all other potential reshaping, if current_grad_to_process is 1D 
+            # and it's a non-bias parameter (is_bias should be in scope from earlier check),
+            # reshape it to (N, 1) to be treated as a 2D matrix.
+            if current_grad_to_process.dim() == 1 and not is_bias: # `is_bias` refers to the current param
+                current_grad_to_process = current_grad_to_process.unsqueeze(1) # Shape (N) -> (N, 1)
+                if rank == 0 and verbose: # Add a log for this specific reshape
+                    print(f"[ZeroGradV2-Debug][Rank {rank}] Param {full_fqn_for_map}: Reshaped 1D non-bias grad to 2D ({current_grad_to_process.shape}) for analysis.")
+                reshaped_from_map = True # Indicate that a reshape for analysis occurred
 
             if rank == 0 and verbose: # This is the PRE-FILTER log
                 print(f"[ZeroGradV2-Debug][Rank {rank}] Param {full_fqn_for_map}: PRE-FILTER (original_grad_shape: {param.grad.data.shape}, processing_grad_shape: {current_grad_to_process.shape}, reshaped: {reshaped_from_map}, current_param_dim: {current_grad_to_process.dim()}).")

@@ -93,6 +93,7 @@ class DataParallelPPOActor(BasePPOActor):
             )
 
         self.compute_entropy_from_logits = torch.compile(verl_F.entropy_from_logits, dynamic=True)
+        self.debug_fqn_printed = False
 
     @register(dispatch_mode=Dispatch.ONE_TO_ALL)
     def reset_optimizer_learning_rate(self):
@@ -344,6 +345,19 @@ class DataParallelPPOActor(BasePPOActor):
                 # Synchronize all ranks to ensure reset is complete before analysis begins.
                 if is_fsdp:
                     dist.barrier()
+
+                # --- FQN DEBUGGING: Print the keys from original_param_shapes once ---
+                if rank == 0 and not self.debug_fqn_printed:
+                    print("--- FQN DEBUG: First 5 keys from original_param_shapes ---")
+                    if self.original_param_shapes:
+                        keys_to_print = list(self.original_param_shapes.keys())[:5]
+                        for key in keys_to_print:
+                            print(f"  - {key}")
+                    else:
+                        print("  - self.original_param_shapes is empty or None.")
+                    print("---------------------------------------------------------")
+                    self.debug_fqn_printed = True
+                # --- END FQN DEBUGGING ---
 
                 # Define components to analyze. This must match the model architecture.
                 # Assumes a standard HuggingFace transformer structure like Llama/Qwen.

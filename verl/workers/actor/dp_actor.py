@@ -338,7 +338,7 @@ class DataParallelPPOActor(BasePPOActor):
                         gradients=grad_state_dict,
                         original_param_shapes=self.original_param_shapes,
                         tau=self.redo_tau,
-                        verbose=(rank == 0),
+                        verbose=self.config.get("gradient_analyzer_verbose", True),
                         identifier='actor'
                     )
                     

@@ -91,7 +91,8 @@ def analyze_all_fsdp_zero_grad_space(module, tau=0.1, verbose=True, original_sha
             stats = compute_fsdp_zero_grad_space_ratio(submodule, tau=tau, verbose=verbose, 
                                                        original_shapes_map=original_shapes_map, 
                                                        fqn_prefix=name,
-                                                       )
+                                                       skip_mlp=skip_mlp,
+                                                       skip_embed=skip_embed)
             if stats is not None and '__global__' in stats:
                 submodule_global_stats = stats['__global__']
                 total_zero += submodule_global_stats.get('zero', 0)

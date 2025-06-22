@@ -138,22 +138,32 @@ class GradientAnalyzer:
                 if verbose: print(f"        -> Skipping: Final shape is not a non-empty 2D tensor.")
                 continue
 
-            # --- Neuron Analysis --- 
+            # --- Neuron Analysis ---
             row_norms = torch.norm(grad_to_process, p=1, dim=1)
             H = grad_to_process.shape[0]
-            avg_row_norm = row_norms.mean()
-            s_i = row_norms / (avg_row_norm + 1e-9)
-            num_dormant_neurons = (s_i < tau).sum().item()
 
-            if verbose: print(f"        -> Analysis: {num_dormant_neurons} dormant neurons out of {H}. Avg row norm: {avg_row_norm:.4e}")
+            if H > 0:
+                min_row_norm = row_norms.min()
+                max_row_norm = row_norms.max()
+                avg_row_norm = row_norms.mean()
+                s_i = row_norms / (avg_row_norm + 1e-9)
+                num_dormant_neurons = (s_i < tau).sum().item()
+                matrix_ratio = num_dormant_neurons / H
+            else:
+                min_row_norm, max_row_norm, avg_row_norm = torch.tensor(0.0), torch.tensor(0.0), torch.tensor(0.0)
+                num_dormant_neurons = 0
+                matrix_ratio = 0.0
+
+            if verbose: print(f"        -> Analysis: {num_dormant_neurons}/{H} dormant ({matrix_ratio:.2%}). Norms (min/avg/max): {min_row_norm:.4e} / {avg_row_norm:.4e} / {max_row_norm:.4e}")
 
             # Store per-matrix stats
-            matrix_ratio = num_dormant_neurons / H if H > 0 else 0.0
             per_matrix_stats[name] = {
                 'zero': num_dormant_neurons,
                 'total': H,
                 'ratio': matrix_ratio,
-                'avg_row_norm': avg_row_norm.item()
+                'avg_row_norm': avg_row_norm.item(),
+                'min_row_norm': min_row_norm.item(),
+                'max_row_norm': max_row_norm.item(),
             }
 
             total_rows += H

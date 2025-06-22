@@ -33,7 +33,7 @@ from verl.utils.seqlen_balancing import rearrange_micro_batches, get_reverse_idx
 from verl.single_controller.base.decorator import register, Dispatch
 import torch.nn as nn
 import torch.nn.functional as F
-from verl.utils.redo_utils.fsdp_flat_utils import analyze_all_fsdp_dormant_neurons, analyze_all_fsdp_zero_grad_space
+from verl.utils.redo_utils.fsdp_flat_utils import analyze_all_fsdp_zero_grad_space
 import verl.utils.torch_functional as verl_F
 
 from flash_attn.bert_padding import pad_input, unpad_input, rearrange, index_first_axis

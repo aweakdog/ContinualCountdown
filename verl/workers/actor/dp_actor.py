@@ -406,7 +406,7 @@ class DataParallelPPOActor(BasePPOActor):
                     else:
                         global_stats = final_stats.get('__global__', {})
                         global_ratio = global_stats.get('ratio', 0.0)
-                        self.logger.info(f"--- 📊 Gradient Analysis Results (Step {self.global_steps}) ---")
+                        self.logger.info(f"--- 📊 Gradient Analysis Results (Step {self.global_steps}, Tau: {self.redo_tau}) ---")
                         self.logger.info(f"Global Dormant Neuron Ratio: {global_ratio:.4%}")
                         
                         component_stats = final_stats.get('components', {})

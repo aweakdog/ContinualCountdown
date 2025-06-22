@@ -370,16 +370,12 @@ class ActorRolloutRefWorker(Worker):
             with open_dict(self.config.actor):
                 self.config.actor.use_remove_padding = use_remove_padding
             # Always use the gradient analyzer, hardcoded to True
+            # Always use the gradient analyzer, hardcoded to auto-select a GPU.
             if self.rank == 0:
-                print("[INFO] Initializing remote GradientAnalyzer actor...")
-            analyzer_gpu_id = self.config.actor.get("gradient_analyzer_gpu_id", None)
-            if analyzer_gpu_id is not None:
-                grad_analyzer_cls = ray.remote(num_gpus=1, resources={f"GPU_{analyzer_gpu_id}": 1})(GradientAnalyzer)
-            else:
-                grad_analyzer_cls = ray.remote(num_cpus=1)(GradientAnalyzer)
-            grad_analyzer = grad_analyzer_cls.remote()
+                print("[INFO] Initializing remote GradientAnalyzer actor with automatic GPU selection...")
+            grad_analyzer = GradientAnalyzer.options(num_gpus=1).remote()
             if self.rank == 0:
-                print(f"[INFO] GradientAnalyzer actor handle created for GPU: {analyzer_gpu_id}.")
+                print("[INFO] GradientAnalyzer actor handle created, GPU will be automatically selected by Ray.")
 
             self.actor = DataParallelPPOActor(config=self.config.actor,
                                               actor_module=self.actor_module_fsdp,

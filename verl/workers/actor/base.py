@@ -17,9 +17,9 @@ The base class for Actor
 from abc import ABC, abstractmethod
 from typing import Iterable, Dict
 
+import logging
 from verl import DataProto
 import torch
-from byzerllm.utils.log import get_logger
 
 __all__ = ['BasePPOActor']
 
@@ -27,7 +27,7 @@ __all__ = ['BasePPOActor']
 class BasePPOActor(ABC):
 
     def __init__(self, config):
-        self.logger = get_logger(config.get('logger_name', 'byzerllm'))
+        self.logger = logging.getLogger(self.__class__.__name__)
         """The base class for PPO actor
 
         Args:

@@ -333,9 +333,20 @@ class DataParallelPPOActor(BasePPOActor):
                     if rank == 0:
                         print(f"[INFO][Actor][Step {self.global_steps}] Rank 0 triggering remote gradient analysis.")
                         
-                        grad_state_dict = {
-                            name: param.grad.cpu() for name, param in self.actor_module.named_parameters() if param.grad is not None
-                        }
+                        grad_state_dict = {}
+                        mlp_params_with_grad = []
+                        mlp_params_without_grad = []
+
+                        for name, param in self.actor_module.named_parameters():
+                            if param.grad is not None:
+                                grad_state_dict[name] = param.grad.cpu()
+                                if 'mlp' in name:
+                                    mlp_params_with_grad.append(name)
+                            elif 'mlp' in name:
+                                mlp_params_without_grad.append(name)
+
+                        print(f"[DEBUG][Actor] MLP params with grad: {sorted(list(set(mlp_params_with_grad)))}")
+                        print(f"[DEBUG][Actor] MLP params without grad: {sorted(list(set(mlp_params_without_grad)))}")
                         
                         if grad_state_dict:
                             analysis_future = self.grad_analyzer.analyze_gradients.remote(

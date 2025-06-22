@@ -102,26 +102,33 @@ def calculate_zero_grad_ratio_from_full_grad(gradients: Dict[str, torch.Tensor],
         if grad_to_process.shape[0] == 0:
             continue
 
-        # Calculate the L1 norm for each row
+        # --- New Relative Zero-Grad Calculation ---
+        # Calculate the L1 norm for each row (neuron)
         row_norms = torch.norm(grad_to_process, p=1, dim=1)
-
-        if verbose:
-            # Check if tensor is empty before calling .min(), .max(), .mean()
-            if row_norms.numel() > 0:
-                print(f"  [Analyzer] For '{name}', row norms stats: min={row_norms.min().item():.6f}, max={row_norms.max().item():.6f}, mean={row_norms.mean().item():.6f}. Tau is {tau}.")
-            else:
-                print(f"  [Analyzer] For '{name}', row norms tensor is empty.")
-        
-        # Count rows where the norm is below the absolute threshold tau
-        num_zero_rows = (row_norms < tau).sum().item()
         H = grad_to_process.shape[0]
-        ratio = num_zero_rows / H if H > 0 else 0
+        num_dormant_neurons = 0
+
+        if H > 0:
+            # Calculate the average L1 norm, adding epsilon for stability
+            avg_row_norm = row_norms.mean()
+            
+            # Calculate the normalized score for each neuron (s_i)
+            # Add epsilon to avg_row_norm to prevent division by zero
+            s_i = row_norms / (avg_row_norm + 1e-9)
+            
+            # Count neurons where the normalized score is below the relative threshold tau
+            num_dormant_neurons = (s_i < tau).sum().item()
+            
+            if verbose:
+                print(f"  [Analyzer] For '{name}', avg L1 norm: {avg_row_norm.item():.6f}. Tau is {tau} (relative).")
+        
+        ratio = num_dormant_neurons / H if H > 0 else 0
 
         if verbose:
-            print(f"  [Analyzer] Analyzed '{name}' (shape: {grad_to_process.shape}): {num_zero_rows} / {H} zero-grad rows ({ratio:.2%}).")
+            print(f"  [Analyzer] Analyzed '{name}' (shape: {grad_to_process.shape}): {num_dormant_neurons} / {H} dormant neurons ({ratio:.2%}).")
 
         total_rows += H
-        zero_rows += num_zero_rows
+        zero_rows += num_dormant_neurons
 
     aggregated_ratio = zero_rows / total_rows if total_rows > 0 else 0
     if verbose:

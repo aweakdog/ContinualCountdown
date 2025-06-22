@@ -335,6 +335,7 @@ class DataParallelPPOActor(BasePPOActor):
                         grad_state_dict = {
                             name: param.grad.cpu() for name, param in self.actor_module.named_parameters() if param.grad is not None
                         }
+                        print(f"[DEBUG][Actor][Step {self.global_steps}] grad_state_dict collected. Num keys: {len(grad_state_dict)}. First 5 keys: {list(grad_state_dict.keys())[:5]}")
                         
                         if grad_state_dict:
                             try:

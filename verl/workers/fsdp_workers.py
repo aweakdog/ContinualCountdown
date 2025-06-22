@@ -23,6 +23,8 @@ import torch
 import torch.distributed
 import verl.utils.hdfs_io as hdfs_io
 import verl.utils.torch_functional as verl_F
+import ray
+from verl.utils.redo_utils.gradient_analyzer import GradientAnalyzer
 from omegaconf import DictConfig, open_dict
 from verl import DataProto
 from verl.single_controller.base import Worker
@@ -326,6 +328,7 @@ class ActorRolloutRefWorker(Worker):
     @register(dispatch_mode=Dispatch.ONE_TO_ALL)
     def init_model(self):
         from verl.workers.actor import DataParallelPPOActor
+
         # This is used to import external_lib into the huggingface systems
         import_external_libs(self.config.model.get('external_lib', None))
 
@@ -366,10 +369,23 @@ class ActorRolloutRefWorker(Worker):
             OmegaConf.set_struct(self.config.actor, True)
             with open_dict(self.config.actor):
                 self.config.actor.use_remove_padding = use_remove_padding
+            # Always use the gradient analyzer, hardcoded to True
+            if self.rank == 0:
+                print("[INFO] Initializing remote GradientAnalyzer actor...")
+            analyzer_gpu_id = self.config.actor.get("gradient_analyzer_gpu_id", None)
+            if analyzer_gpu_id is not None:
+                grad_analyzer_cls = ray.remote(num_gpus=1, resources={f"GPU_{analyzer_gpu_id}": 1})(GradientAnalyzer)
+            else:
+                grad_analyzer_cls = ray.remote(num_cpus=1)(GradientAnalyzer)
+            grad_analyzer = grad_analyzer_cls.remote()
+            if self.rank == 0:
+                print(f"[INFO] GradientAnalyzer actor handle created for GPU: {analyzer_gpu_id}.")
+
             self.actor = DataParallelPPOActor(config=self.config.actor,
                                               actor_module=self.actor_module_fsdp,
                                               actor_optimizer=self.actor_optimizer,
-                                              original_param_shapes=self.original_param_shapes) # <<< Cascade: Pass original_param_shapes
+                                              original_param_shapes=self.original_param_shapes,
+                                              grad_analyzer=grad_analyzer)
             # (Re-)initialize verl-compatible analyzer and redo for actor after checkpoint/model load
             self.actor_redo_enabled = getattr(self.config, 'redo_enabled', True)
             self.actor_redo_tau = getattr(self.config, 'redo_tau', 0.1)

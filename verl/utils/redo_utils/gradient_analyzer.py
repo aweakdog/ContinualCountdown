@@ -47,14 +47,15 @@ class GradientAnalyzer:
         """
         if verbose: print(f"[Analyzer] Analyzing component '{component_name}' for identifier '{identifier}'.")
 
-        local_total_rows, local_zero_rows = self._calculate_stats_for_grads(gradients, original_param_shapes, tau, verbose)
+        local_total_rows, local_zero_rows, per_matrix_stats = self._calculate_stats_for_grads(gradients, original_param_shapes, tau, verbose)
 
-        # Store component-specific stats
+        # Store component-specific stats, now including per-matrix details
         component_ratio = local_zero_rows / local_total_rows if local_total_rows > 0 else 0.0
         self.stats[identifier]['components'][component_name] = {
             'zero': local_zero_rows,
             'total': local_total_rows,
-            'ratio': component_ratio
+            'ratio': component_ratio,
+            'matrices': per_matrix_stats
         }
 
         # Accumulate global stats
@@ -62,7 +63,7 @@ class GradientAnalyzer:
         self.stats[identifier]['__global__']['total'] += local_total_rows
 
         if verbose:
-            print(f"  [Analyzer] Stats for '{component_name}': {self.stats[identifier]['components'][component_name]}.")
+            print(f"  [Analyzer] Finished component '{component_name}'.")
 
     def get_aggregated_stats(self, identifier: str, verbose: bool):
         """Computes and returns the final aggregated statistics, including the per-component breakdown."""
@@ -87,6 +88,7 @@ class GradientAnalyzer:
     def _calculate_stats_for_grads(self, gradients, original_param_shapes, tau, verbose):
         total_rows = 0
         zero_rows = 0
+        per_matrix_stats = {}
         if verbose: print(f"    [Analyzer Internals] Processing {len(gradients)} gradients.")
 
         for name, grad in gradients.items():
@@ -144,9 +146,17 @@ class GradientAnalyzer:
             num_dormant_neurons = (s_i < tau).sum().item()
 
             if verbose: print(f"        -> Analysis: {num_dormant_neurons} dormant neurons out of {H}.")
+            
+            # Store per-matrix stats
+            matrix_ratio = num_dormant_neurons / H if H > 0 else 0.0
+            per_matrix_stats[name] = {
+                'zero': num_dormant_neurons,
+                'total': H,
+                'ratio': matrix_ratio
+            }
 
             total_rows += H
             zero_rows += num_dormant_neurons
 
         if verbose: print(f"    [Analyzer Internals] Finished. Total rows: {total_rows}, Zero rows: {zero_rows}")
-        return total_rows, zero_rows
+        return total_rows, zero_rows, per_matrix_stats

@@ -394,39 +394,34 @@ class DataParallelPPOActor(BasePPOActor):
 
                 # Step 3: Get the final aggregated results from the analyzer on rank 0.
                 if rank == 0:
-                    print(f"--- Aggregating final results ---")
-                    try:
-                        analysis_future = self.grad_analyzer.get_aggregated_stats.remote(identifier='actor', verbose=True)
-                        stats = ray.get(analysis_future, timeout=60)
-                        zero_grad_stats = stats  # Preserve for use outside this block
+                    final_stats = ray.get(self.grad_analyzer.get_aggregated_stats.remote(identifier='actor', verbose=False))
+                    
+                    if not final_stats:
+                        self.logger.warning(f"[Actor][Step {self.global_steps}] Failed to get zero-grad analysis results.")
+                    else:
+                        global_stats = final_stats.get('__global__', {})
+                        global_ratio = global_stats.get('ratio', 0.0)
+                        self.logger.info(f"--- 📊 Gradient Analysis Results (Step {self.global_steps}) ---")
+                        self.logger.info(f"Global Dormant Neuron Ratio: {global_ratio:.4%}")
+                        
+                        component_stats = final_stats.get('components', {})
+                        if component_stats:
+                            self.logger.info(f"--- Per-Component & Per-Matrix Breakdown ---")
+                            for component_name, comp_stats in sorted(component_stats.items()):
+                                self.logger.info(f"  - Component: {component_name} ({comp_stats.get('ratio', 0.0):.4%})")
+                                matrix_stats = comp_stats.get('matrices', {})
+                                if not matrix_stats:
+                                    self.logger.info("    (No eligible matrices found in this component)")
+                                else:
+                                    for matrix_name, mat_stats in sorted(matrix_stats.items()):
+                                        short_name = '.'.join(matrix_name.split('.')[-4:])
+                                        self.logger.info(f"    - {short_name:<40} | Ratio: {mat_stats.get('ratio', 0.0):.4%}")
+                        self.logger.info("-" * 60)
 
-                        if stats:
-                            # Log the global aggregated stats
-                            global_stats = stats.get('__global__', {})
-                            if global_stats:
-                                self.logger.info(f"[Actor][Step {self.global_steps}][Gradient Analysis] "
-                                                 f"Global Dormant Ratio: {global_stats.get('ratio', 0):.2%}")
-                            
-                            # Log the per-component stats
-                            component_stats = stats.get('components', {})
-                            if component_stats:
-                                self.logger.info("--- Per-Component Dormant Ratios ---")
-                                for name, comp_stats in sorted(component_stats.items()):
-                                    self.logger.info(f"  - {name:15s}: {comp_stats.get('ratio', 0):.2%}")
-                                self.logger.info("------------------------------------")
-                            
-                        else:
-                            self.logger.warning(f"[Actor][Step {self.global_steps}] Failed to get zero-grad analysis results.")
-                    except Exception as e:
-                        self.logger.error(f"[Actor][Step {self.global_steps}] Error getting zero-grad analysis: {e}")
-
-            if zero_grad_stats and '__global__' in zero_grad_stats:
-                zero_gradspace_ratio_avg = zero_grad_stats['__global__'].get('aggregated_ratio', 0.0)
-                if rank == 0:
-                    print(f"[INFO][Actor][Step {self.global_steps}] Aggregated Zero Grad Space Ratio from analyzer: {zero_gradspace_ratio_avg:.4f}")
+            # Correctly extract the global ratio for any downstream use.
+            if rank == 0:
+                zero_gradspace_ratio_avg = final_stats.get('__global__', {}).get('ratio', 0.0) if final_stats else 0.0
             else:
-                if rank == 0 and self.grad_analyzer is not None:
-                    print(f"[DEBUG][Actor][Step {self.global_steps}] zero_grad_stats not available or does not contain '__global__' key. Stats: {zero_grad_stats}")
                 zero_gradspace_ratio_avg = 0.0
 
             if rank == 0:

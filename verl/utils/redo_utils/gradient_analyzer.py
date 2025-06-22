@@ -145,14 +145,15 @@ class GradientAnalyzer:
             s_i = row_norms / (avg_row_norm + 1e-9)
             num_dormant_neurons = (s_i < tau).sum().item()
 
-            if verbose: print(f"        -> Analysis: {num_dormant_neurons} dormant neurons out of {H}.")
-            
+            if verbose: print(f"        -> Analysis: {num_dormant_neurons} dormant neurons out of {H}. Avg row norm: {avg_row_norm:.4e}")
+
             # Store per-matrix stats
             matrix_ratio = num_dormant_neurons / H if H > 0 else 0.0
             per_matrix_stats[name] = {
                 'zero': num_dormant_neurons,
                 'total': H,
-                'ratio': matrix_ratio
+                'ratio': matrix_ratio,
+                'avg_row_norm': avg_row_norm.item()
             }
 
             total_rows += H

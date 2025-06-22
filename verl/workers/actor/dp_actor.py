@@ -420,7 +420,8 @@ class DataParallelPPOActor(BasePPOActor):
                                 else:
                                     for matrix_name, mat_stats in sorted(matrix_stats.items()):
                                         short_name = '.'.join(matrix_name.split('.')[-4:])
-                                        self.logger.info(f"    - {short_name:<40} | Ratio: {mat_stats.get('ratio', 0.0):.4%}")
+                                        avg_norm = mat_stats.get('avg_row_norm', 0.0)
+                                        self.logger.info(f"    - {short_name:<40} | Ratio: {mat_stats.get('ratio', 0.0):.4%} | Avg Norm: {avg_norm:.4e}")
                         self.logger.info("-" * 60)
 
             # Correctly extract the global ratio for any downstream use.

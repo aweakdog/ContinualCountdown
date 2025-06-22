@@ -23,7 +23,6 @@ import torch
 import torch.distributed
 import verl.utils.hdfs_io as hdfs_io
 import verl.utils.torch_functional as verl_F
-from verl.utils.redo_utils.redo import VerlGradientReDo
 from omegaconf import DictConfig, open_dict
 from verl import DataProto
 from verl.single_controller.base import Worker

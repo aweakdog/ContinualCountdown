@@ -15,8 +15,9 @@
 import ray
 import torch
 import collections
+from typing import Dict
 
-def calculate_zero_grad_ratio_from_full_grad(gradients: dict, original_param_shapes: dict, tau=0.1, verbose=True):
+def calculate_zero_grad_ratio_from_full_grad(gradients: Dict[str, torch.Tensor], original_param_shapes: dict, tau: float, verbose: bool):
     """
     Calculates the zero-gradient space ratio from a dictionary of full, unsharded gradients.
     
@@ -29,69 +30,77 @@ def calculate_zero_grad_ratio_from_full_grad(gradients: dict, original_param_sha
     Returns:
         dict: A dictionary containing statistics like total rows, zero rows, and the ratio.
     """
+    if verbose:
+        print(f"[Analyzer] Received {len(gradients)} gradients for analysis with tau={tau}.")
+
     total_rows = 0
     zero_rows = 0
-    
-    if verbose:
-        print(f"[GradientAnalyzer] Starting analysis with tau={tau}. Analyzing {len(gradients)} tensors.")
 
     for name, grad in gradients.items():
         if grad is None:
+            if verbose:
+                print(f"  [Analyzer] Skipping {name}: Gradient is None.")
             continue
 
-        is_bias = name.endswith(".bias")
         original_shape = original_param_shapes.get(name)
+        if not original_shape:
+            if verbose:
+                print(f"  [Analyzer] Skipping {name}: No original shape found.")
+            continue
 
-        # Determine effective dimension for analysis using original shapes if available
-        effective_dim = len(original_shape) if original_shape else grad.dim()
+        # Determine eligibility based on original shape
+        is_bias = name.endswith(".bias")
+        effective_dim = len(original_shape)
         
+        # We process 2D matrices and 1D non-bias vectors (like LayerNorm weights)
         is_eligible = (effective_dim == 2) or (effective_dim == 1 and not is_bias)
 
         if not is_eligible:
             if verbose:
-                print(f"[GradientAnalyzer] Skipping '{name}' (shape: {grad.shape}, original_dim: {effective_dim}, is_bias: {is_bias}). Not eligible.")
+                print(f"  [Analyzer] Skipping '{name}' (original shape: {original_shape}). Not eligible (dim={effective_dim}, is_bias={is_bias}).")
             continue
 
         grad_to_process = grad.float()
 
-        # Reshape flattened 2D tensors back to their original shape
-        if original_shape and len(original_shape) > 1 and grad_to_process.dim() == 1:
-            if grad_to_process.numel() == original_shape.numel():
-                grad_to_process = grad_to_process.reshape(original_shape)
-            else:
-                if verbose:
-                    print(f"[GradientAnalyzer] Skipping reshape for '{name}' due to numel mismatch: grad ({grad_to_process.numel()}) vs original ({original_shape.numel()})")
-                continue
-
+        # Reshape flattened tensors back to their original shape if necessary
+        if grad_to_process.dim() == 1 and grad_to_process.numel() == torch.Size(original_shape).numel():
+             grad_to_process = grad_to_process.view(original_shape)
+        
         # Reshape 1D non-bias tensors to be processed like 2D tensors
         if grad_to_process.dim() == 1:
             grad_to_process = grad_to_process.unsqueeze(1) # Shape (N) -> (N, 1)
 
+        if grad_to_process.dim() != 2:
+            if verbose:
+                print(f"  [Analyzer] Skipping '{name}' after reshape attempt. Final dim is not 2 (shape: {grad_to_process.shape}).")
+            continue
+
         if grad_to_process.shape[0] == 0:
             continue
 
-        # Calculate the L1 norm for each row (neuron's output gradient)
-        A_local_row_tensor = torch.norm(grad_to_process, p=1, dim=1)
+        # Calculate the L1 norm for each row
+        row_norms = torch.norm(grad_to_process, p=1, dim=1)
         
+        # Count rows where the norm is below the absolute threshold tau
+        num_zero_rows = (row_norms < tau).sum().item()
         H = grad_to_process.shape[0]
-        B = A_local_row_tensor.sum()
-        
-        avg_norm = B / H if H > 0 else 0
-        threshold = tau * avg_norm
-        
-        num_zero_rows = (A_local_row_tensor < threshold).sum().item()
         ratio = num_zero_rows / H if H > 0 else 0
 
         if verbose:
-            print(f"[GradientAnalyzer] Analyzed '{name}' (shape: {grad.shape}, reshaped_to: {grad_to_process.shape}): {num_zero_rows} / {H} zero-grad rows ({ratio:.2%}). Avg norm: {avg_norm:.4e}, Threshold: {threshold:.4e}")
+            print(f"  [Analyzer] Analyzed '{name}' (shape: {grad_to_process.shape}): {num_zero_rows} / {H} zero-grad rows ({ratio:.2%}).")
 
         total_rows += H
         zero_rows += num_zero_rows
 
     aggregated_ratio = zero_rows / total_rows if total_rows > 0 else 0
     if verbose:
-        print(f"[GradientAnalyzer] Global Stats: Zero Rows: {zero_rows}, Total Rows: {total_rows}, Ratio: {aggregated_ratio:.4f}")
+        print(f"[Analyzer] Global Stats: Zero Rows: {zero_rows}, Total Rows: {total_rows}, Ratio: {aggregated_ratio:.4f}")
         
+    if total_rows == 0:
+        if verbose:
+            print("[Analyzer] No eligible parameters found for analysis. Returning empty stats.")
+        return {}
+
     return {
         '__global__': {
             'zero': zero_rows,

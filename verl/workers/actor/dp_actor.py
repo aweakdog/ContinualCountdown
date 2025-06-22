@@ -341,33 +341,36 @@ class DataParallelPPOActor(BasePPOActor):
                 # By setting rank0_only=False, we force every rank to materialize the full params, which is a more robust (though less efficient) gathering strategy.
                 # Per FSDP docs, with_grads=True is the correct way to gather gradients, but it's incompatible with offload_to_cpu=True.
                 # We prioritize correctness, materializing the full gradient on the GPU and then manually moving it to the CPU.
-                with self.actor_module.summon_full_params(self.actor_module, writeback=False, rank0_only=True, offload_to_cpu=False, with_grads=False):
+                #with self.actor_module.summon_full_params(self.actor_module, writeback=False, rank0_only=True, offload_to_cpu=False, with_grads=False):
                     # However, only rank 0 should collect the gradients and trigger the analysis.
-                    if rank == 1:
-                        print(f"[INFO][Actor][Step {self.global_steps}] Rank 0 triggering remote gradient analysis.")
+                for name, param in self.actor_module.named_parameters():
+                    if param.grad is not None:
+                        print(f"[INFO][rank{rank}][Actor][Step {self.global_steps}] {name}: {param.grad.shape}")
+                if rank == 2:
+                    print(f"[INFO][Actor][Step {self.global_steps}] Rank 0 triggering remote gradient analysis.")
+                    
+                    # Since offload_to_cpu is False, we must manually move the gathered gradients to CPU.
+                    grad_state_dict = {
+                        name: param.grad.cpu() for name, param in self.actor_module.named_parameters() if param.grad is not None
+                    }
+                    
+                    if grad_state_dict:
+                        analysis_future = self.grad_analyzer.analyze_gradients.remote(
+                            gradients=grad_state_dict,
+                            original_param_shapes=self.original_param_shapes,
+                            tau=self.redo_tau,
+                            verbose=True, # Hardcoded for debugging
+                            identifier='actor'
+                        )
                         
-                        # Since offload_to_cpu is False, we must manually move the gathered gradients to CPU.
-                        grad_state_dict = {
-                            name: param.grad.cpu() for name, param in self.actor_module.named_parameters() if param.grad is not None
-                        }
-                        
-                        if grad_state_dict:
-                            analysis_future = self.grad_analyzer.analyze_gradients.remote(
-                                gradients=grad_state_dict,
-                                original_param_shapes=self.original_param_shapes,
-                                tau=self.redo_tau,
-                                verbose=True, # Hardcoded for debugging
-                                identifier='actor'
-                            )
-                            
-                            try:
-                                zero_grad_stats = ray.get(analysis_future, timeout=60)
-                                if zero_grad_stats:
-                                    print(f"[INFO][Actor][Step {self.global_steps}] Remote analysis complete. Stats: {zero_grad_stats.get('__global__')}")
-                            except Exception as e:
-                                print(f"[ERROR] Failed to get gradient analysis results: {e}")
-                        else:
-                            print("[INFO][Actor] No gradients found to analyze.")
+                        try:
+                            zero_grad_stats = ray.get(analysis_future, timeout=60)
+                            if zero_grad_stats:
+                                print(f"[INFO][Actor][Step {self.global_steps}] Remote analysis complete. Stats: {zero_grad_stats.get('__global__')}")
+                        except Exception as e:
+                            print(f"[ERROR] Failed to get gradient analysis results: {e}")
+                    else:
+                        print("[INFO][Actor] No gradients found to analyze.")
 
             if zero_grad_stats and '__global__' in zero_grad_stats:
                 zero_gradspace_ratio_avg = zero_grad_stats['__global__'].get('aggregated_ratio', 0.0)

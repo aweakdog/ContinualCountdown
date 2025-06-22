@@ -382,7 +382,7 @@ class DataParallelPPOActor(BasePPOActor):
 
                             if grad_state_dict:
                                 # Fire-and-forget the analysis for this component.
-                                self.grad_analyzer.analyze_component_gradients.remote(
+                                self.grad_analyzer.analyze_component_gradients(
                                     identifier='actor',
                                     component_name=component_name,
                                     gradients=grad_state_dict,

@@ -61,14 +61,37 @@ def calculate_zero_grad_ratio_from_full_grad(gradients: Dict[str, torch.Tensor],
             continue
 
         grad_to_process = grad.float()
+        original_shape_size = torch.Size(original_shape)
 
-        # Reshape flattened tensors back to their original shape if necessary
-        if grad_to_process.dim() == 1 and grad_to_process.numel() == torch.Size(original_shape).numel():
-             grad_to_process = grad_to_process.view(original_shape)
-        
-        # Reshape 1D non-bias tensors to be processed like 2D tensors
+        # --- Intelligent Reshaping Logic ---
+        # If we have a flattened tensor, try to reshape it to 2D
         if grad_to_process.dim() == 1:
-            grad_to_process = grad_to_process.unsqueeze(1) # Shape (N) -> (N, 1)
+            # Case 1: It's a full, unsharded tensor.
+            if grad_to_process.numel() == original_shape_size.numel():
+                grad_to_process = grad_to_process.view(original_shape_size)
+            
+            # Case 2: It's a shard of an originally 2D tensor.
+            elif len(original_shape_size) == 2:
+                H, W = original_shape_size
+                shard_numel = grad_to_process.numel()
+                reshaped = False
+                # Try to un-flatten assuming row-wise sharding (most common for MLP)
+                if W > 0 and shard_numel % W == 0:
+                    h_shard = shard_numel // W
+                    grad_to_process = grad_to_process.view(h_shard, W)
+                    reshaped = True
+                # Fallback: try col-wise sharding
+                elif H > 0 and shard_numel % H == 0:
+                    w_shard = shard_numel // H
+                    grad_to_process = grad_to_process.view(H, w_shard)
+                    reshaped = True
+                
+                if reshaped and verbose:
+                    print(f"  [Analyzer] Reshaped sharded tensor '{name}' to {grad_to_process.shape}.")
+
+        # Case 3: It's an originally 1D tensor, make it (N, 1) for consistent processing.
+        if grad_to_process.dim() == 1 and len(original_shape_size) == 1:
+            grad_to_process = grad_to_process.unsqueeze(1)
 
         if grad_to_process.dim() != 2:
             if verbose:
@@ -80,6 +103,13 @@ def calculate_zero_grad_ratio_from_full_grad(gradients: Dict[str, torch.Tensor],
 
         # Calculate the L1 norm for each row
         row_norms = torch.norm(grad_to_process, p=1, dim=1)
+
+        if verbose:
+            # Check if tensor is empty before calling .min(), .max(), .mean()
+            if row_norms.numel() > 0:
+                print(f"  [Analyzer] For '{name}', row norms stats: min={row_norms.min().item():.6f}, max={row_norms.max().item():.6f}, mean={row_norms.mean().item():.6f}. Tau is {tau}.")
+            else:
+                print(f"  [Analyzer] For '{name}', row norms tensor is empty.")
         
         # Count rows where the norm is below the absolute threshold tau
         num_zero_rows = (row_norms < tau).sum().item()

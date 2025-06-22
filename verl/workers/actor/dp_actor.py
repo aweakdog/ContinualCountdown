@@ -358,26 +358,32 @@ class DataParallelPPOActor(BasePPOActor):
                 # Step 2: Analyze each component chunk by chunk.
                 for component_name, component_module in components_to_analyze.items():
                     if rank == 0:
-                        print(f"--- Analyzing component: {component_name} ---")
-                    
+                        self.logger.info(f"--- Analyzing component: {component_name} ---")
+
+                    # Get the set of parameter IDs for the current component for efficient lookup.
+                    component_param_ids = {id(p) for p in component_module.parameters()}
+
                     # Summon gradients for only this component. This is memory-safe.
                     with FSDP.summon_full_params(component_module, writeback=False, rank0_only=True, with_grads=True):
                         if rank == 0:
+                            # We must use FQNs that match the keys in `original_param_shapes`.
+                            # We iterate over the full model's parameters to get the FQN,
+                            # but only include the ones that are part of the current component.
                             grad_state_dict = {
-                                name: param.grad.cpu() 
-                                for name, param in component_module.named_parameters() 
-                                if param.grad is not None
+                                fqn: param.grad.cpu()
+                                for fqn, param in self.actor_module.model.named_parameters()
+                                if id(param) in component_param_ids and param.grad is not None
                             }
-                            
+
                             if grad_state_dict:
                                 # Fire-and-forget the analysis for this component.
                                 self.grad_analyzer.analyze_component_gradients.remote(
+                                    identifier='actor',
+                                    component_name=component_name,
                                     gradients=grad_state_dict,
                                     original_param_shapes=self.original_param_shapes,
                                     tau=self.redo_tau,
-                                    verbose=True, # Hardcoded for debugging
-                                    identifier='actor',
-                                    component_name=component_name
+                                    verbose=True
                                 )
                             else:
                                 print(f"[INFO][Actor][Step {self.global_steps}] No gradients found for component {component_name}.")

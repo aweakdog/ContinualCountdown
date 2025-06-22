@@ -327,7 +327,8 @@ class DataParallelPPOActor(BasePPOActor):
             if self.grad_analyzer is not None and self.global_steps % self.config.get("redo_analysis_freq", 1) == 0:
                 rank = dist.get_rank()
                 # All ranks must participate in summoning the full parameters.
-                with self.actor_module.summon_full_params(self.actor_module, writeback=False, rank0_only=False):
+                # Using rank0_only=True can be more reliable for gathering very large, complexly sharded parameters.
+                with self.actor_module.summon_full_params(self.actor_module, writeback=False, rank0_only=True):
                     # However, only rank 0 should collect the gradients and trigger the analysis.
                     if rank == 0:
                         print(f"[INFO][Actor][Step {self.global_steps}] Rank 0 triggering remote gradient analysis.")

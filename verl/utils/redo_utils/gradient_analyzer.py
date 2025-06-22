@@ -111,18 +111,29 @@ class GradientAnalyzer:
         self.device = None # Lazy initialization
 
     def analyze_gradients(self, gradients: dict, original_param_shapes: dict, tau: float, verbose: bool, identifier: str):
-        if self.device is None:
-            # Automatically select the device assigned by Ray
-            self.device = torch.cuda.current_device() if torch.cuda.is_available() else "cpu"
-            if verbose: print(f"[GradientAnalyzer] Actor '{identifier}' initialized on device: {self.device}")
+        try:
+            if self.device is None:
+                gpu_ids = ray.get_gpu_ids()
+                if gpu_ids and torch.cuda.is_available():
+                    self.device = torch.device(f"cuda:{gpu_ids[0]}")
+                else:
+                    self.device = torch.device("cpu")
+                
+                if verbose: 
+                    print(f"[GradientAnalyzer] Actor '{identifier}' initialized on device: {self.device}")
 
-        # Move gradients to the actor's device
-        device_gradients = {name: grad.to(self.device) for name, grad in gradients.items()}
-        
-        results = calculate_zero_grad_ratio_from_full_grad(
-            device_gradients,
-            original_param_shapes,
-            tau=tau,
-            verbose=verbose
-        )
-        return results
+            device_gradients = {name: grad.to(self.device) for name, grad in gradients.items()}
+            
+            results = calculate_zero_grad_ratio_from_full_grad(
+                device_gradients,
+                original_param_shapes,
+                tau=tau,
+                verbose=verbose
+            )
+            return results
+        except Exception as e:
+            if verbose:
+                print(f"[ERROR][GradientAnalyzer] Analysis failed for '{identifier}': {e}")
+                import traceback
+                traceback.print_exc()
+            return None

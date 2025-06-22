@@ -329,7 +329,8 @@ class DataParallelPPOActor(BasePPOActor):
                 # All ranks must participate in summoning the full parameters.
                 # Using rank0_only=True can be more reliable for gathering very large, complexly sharded parameters.
                 # Using offload_to_cpu=True can help gather parameters from other TP ranks directly to CPU memory.
-                with self.actor_module.summon_full_params(self.actor_module, writeback=False, rank0_only=True, offload_to_cpu=True):
+                # By setting rank0_only=False, we force every rank to materialize the full params, which is a more robust (though less efficient) gathering strategy.
+                with self.actor_module.summon_full_params(self.actor_module, writeback=False, rank0_only=False, offload_to_cpu=True):
                     # However, only rank 0 should collect the gradients and trigger the analysis.
                     if rank == 0:
                         print(f"[INFO][Actor][Step {self.global_steps}] Rank 0 triggering remote gradient analysis.")

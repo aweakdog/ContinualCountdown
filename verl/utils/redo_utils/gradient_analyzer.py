@@ -74,20 +74,21 @@ def calculate_zero_grad_ratio_from_full_grad(gradients: Dict[str, torch.Tensor],
             elif len(original_shape_size) == 2:
                 H, W = original_shape_size
                 shard_numel = grad_to_process.numel()
-                reshaped = False
-                # Try to un-flatten assuming row-wise sharding (most common for MLP)
+                
+                # Try to un-flatten assuming row-wise sharding (the most common case).
                 if W > 0 and shard_numel % W == 0:
                     h_shard = shard_numel // W
                     grad_to_process = grad_to_process.view(h_shard, W)
-                    reshaped = True
-                # Fallback: try col-wise sharding
-                elif H > 0 and shard_numel % H == 0:
-                    w_shard = shard_numel // H
-                    grad_to_process = grad_to_process.view(H, w_shard)
-                    reshaped = True
-                
-                if reshaped and verbose:
-                    print(f"  [Analyzer] Reshaped sharded tensor '{name}' to {grad_to_process.shape}.")
+                # **NEW**: Handle ragged shards where numel is not divisible by width.
+                elif W > 0:
+                    num_full_rows = shard_numel // W
+                    if verbose:
+                        print(f"  [Analyzer] WARNING: Ragged shard for '{name}'. Numel ({shard_numel}) not divisible by width ({W}). Analyzing the {num_full_rows} full rows available.")
+                    if num_full_rows > 0:
+                        grad_to_process = grad_to_process[:num_full_rows * W].view(num_full_rows, W)
+                    else:
+                        # Not even one full row's worth of data. Create empty 2D tensor to prevent skipping.
+                        grad_to_process = torch.empty((0, W), device=grad_to_process.device, dtype=grad_to_process.dtype)
 
         # Case 3: It's an originally 1D tensor, make it (N, 1) for consistent processing.
         if grad_to_process.dim() == 1 and len(original_shape_size) == 1:

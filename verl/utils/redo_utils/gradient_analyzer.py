@@ -16,14 +16,15 @@ import ray
 import torch
 import collections
 
-def calculate_zero_grad_ratio_from_full_grad(gradients, tau=0.1, verbose=True):
+def calculate_zero_grad_ratio_from_full_grad(gradients: dict, original_param_shapes: dict, tau=0.1, verbose=True):
     """
-    Calculates the zero-gradient space ratio from full, unsharded gradient tensors.
-
+    Calculates the zero-gradient space ratio from a dictionary of full, unsharded gradients.
+    
     Args:
-        gradients (dict): A dictionary mapping parameter names (str) to their full gradient tensors (torch.Tensor).
-        tau (float): The threshold below which a gradient norm is considered zero.
-        verbose (bool): Whether to print detailed logs.
+        gradients (dict): A dictionary mapping parameter names to their full gradient tensors.
+        original_param_shapes (dict): A map from FQN to original torch.Size.
+        tau (float): The threshold for considering a gradient norm to be zero.
+        verbose (bool): Whether to print detailed analysis for each tensor.
 
     Returns:
         dict: A dictionary containing statistics like total rows, zero rows, and the ratio.
@@ -38,20 +39,29 @@ def calculate_zero_grad_ratio_from_full_grad(gradients, tau=0.1, verbose=True):
         if grad is None:
             continue
 
-        # We are interested in weights (2D) and 1D non-bias parameters (e.g., LayerNorm)
         is_bias = name.endswith(".bias")
-        
-        # Determine effective dimension for analysis
-        effective_dim = grad.dim()
+        original_shape = original_param_shapes.get(name)
+
+        # Determine effective dimension for analysis using original shapes if available
+        effective_dim = len(original_shape) if original_shape else grad.dim()
         
         is_eligible = (effective_dim == 2) or (effective_dim == 1 and not is_bias)
 
         if not is_eligible:
             if verbose:
-                print(f"[GradientAnalyzer] Skipping '{name}' (shape: {grad.shape}, dim: {grad.dim()}, is_bias: {is_bias}). Not a 2D or 1D non-bias parameter.")
+                print(f"[GradientAnalyzer] Skipping '{name}' (shape: {grad.shape}, original_dim: {effective_dim}, is_bias: {is_bias}). Not eligible.")
             continue
 
         grad_to_process = grad.float()
+
+        # Reshape flattened 2D tensors back to their original shape
+        if original_shape and len(original_shape) > 1 and grad_to_process.dim() == 1:
+            if grad_to_process.numel() == original_shape.numel():
+                grad_to_process = grad_to_process.reshape(original_shape)
+            else:
+                if verbose:
+                    print(f"[GradientAnalyzer] Skipping reshape for '{name}' due to numel mismatch: grad ({grad_to_process.numel()}) vs original ({original_shape.numel()})")
+                continue
 
         # Reshape 1D non-bias tensors to be processed like 2D tensors
         if grad_to_process.dim() == 1:
@@ -61,81 +71,58 @@ def calculate_zero_grad_ratio_from_full_grad(gradients, tau=0.1, verbose=True):
             continue
 
         # Calculate the L1 norm for each row (neuron's output gradient)
-        # For a (N, 1) tensor, this is just the absolute value.
         A_local_row_tensor = torch.norm(grad_to_process, p=1, dim=1)
         
-        # H is the number of rows (neurons)
         H = grad_to_process.shape[0]
-        
-        # B is the sum of all row norms
         B = A_local_row_tensor.sum()
         
-        # The metric `si` is defined as A / (B/H), which simplifies to A * H / B
-        # We check if si < tau, which is equivalent to A < tau * B / H
-        threshold = tau * B / H
+        avg_norm = B / H if H > 0 else 0
+        threshold = tau * avg_norm
         
-        local_zero_rows = (A_local_row_tensor < threshold).sum().item()
-        
+        num_zero_rows = (A_local_row_tensor < threshold).sum().item()
+        ratio = num_zero_rows / H if H > 0 else 0
+
         if verbose:
-            print(f"[GradientAnalyzer] Analyzed '{name}' (shape: {grad.shape}): "
-                  f"{local_zero_rows} / {H} zero-grad rows. "
-                  f"Avg norm: {B/H:.4e}, Threshold: {threshold:.4e}")
+            print(f"[GradientAnalyzer] Analyzed '{name}' (shape: {grad.shape}, reshaped_to: {grad_to_process.shape}): {num_zero_rows} / {H} zero-grad rows ({ratio:.2%}). Avg norm: {avg_norm:.4e}, Threshold: {threshold:.4e}")
 
         total_rows += H
-        zero_rows += local_zero_rows
+        zero_rows += num_zero_rows
 
-    ratio = zero_rows / (total_rows + 1e-8)
-    
+    aggregated_ratio = zero_rows / total_rows if total_rows > 0 else 0
     if verbose:
-        print(f"[GradientAnalyzer] Global Stats: Zero Rows: {zero_rows}, Total Rows: {total_rows}, Ratio: {ratio:.4f}")
-
+        print(f"[GradientAnalyzer] Global Stats: Zero Rows: {zero_rows}, Total Rows: {total_rows}, Ratio: {aggregated_ratio:.4f}")
+        
     return {
-        'zero': zero_rows,
-        'total': total_rows,
-        'ratio': ratio,
-        'aggregated_ratio': ratio # For compatibility with dp_actor
+        '__global__': {
+            'zero': zero_rows,
+            'total': total_rows,
+            'ratio': aggregated_ratio,
+            'aggregated_ratio': aggregated_ratio
+        }
     }
 
 
-@ray.remote(num_cpus=1, num_gpus=1)
+@ray.remote
 class GradientAnalyzer:
     """
-    A Ray actor dedicated to analyzing gradients on a single GPU.
+    A Ray actor that performs gradient analysis on a dedicated device (preferably a GPU).
     """
     def __init__(self):
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        print(f"[GradientAnalyzer] Actor initialized on device: {self.device}")
+        self.device = None # Lazy initialization
 
-    def analyze_gradients(self, component_name: str, grad_state_dict: dict, tau: float, original_shapes_map: dict):
-        """
-        Receives gradients from a worker, moves them to its own device, and analyzes them.
+    def analyze_gradients(self, gradients: dict, original_param_shapes: dict, tau: float, verbose: bool, identifier: str):
+        if self.device is None:
+            # Automatically select the device assigned by Ray
+            self.device = torch.cuda.current_device() if torch.cuda.is_available() else "cpu"
+            if verbose: print(f"[GradientAnalyzer] Actor '{identifier}' initialized on device: {self.device}")
 
-        Args:
-            component_name (str): The name of the model component being analyzed (e.g., 'actor').
-            grad_state_dict (dict): A state dict of the gradients, where keys are param FQNs.
-            tau (float): The threshold for zero-grad analysis.
-            original_shapes_map (dict): A map from FQN to original torch.Size.
-
-        Returns:
-            dict: The analysis results.
-        """
-        print(f"[GradientAnalyzer] Received gradients for component '{component_name}' for analysis.")
+        # Move gradients to the actor's device
+        device_gradients = {name: grad.to(self.device) for name, grad in gradients.items()}
         
-        # Move gradients to the analyzer's device
-        local_grads = {name: grad.to(self.device) for name, grad in grad_state_dict.items()}
-
-        # Here, we can filter or select specific gradients if needed.
-        # For now, we analyze all provided gradients.
-        
-        # We don't need the complex logic from the old function because we have full gradients.
-        # We can write a simpler analysis function.
-        stats = calculate_zero_grad_ratio_from_full_grad(local_grads, tau=tau, verbose=True)
-
-        # Structure the results similarly to the old function for compatibility
-        results = {
-            component_name: stats,
-            '__global__': stats
-        }
-        
-        print(f"[GradientAnalyzer] Analysis complete for '{component_name}'. Ratio: {stats.get('ratio'):.4f}")
+        results = calculate_zero_grad_ratio_from_full_grad(
+            device_gradients,
+            original_param_shapes,
+            tau=tau,
+            verbose=verbose
+        )
         return results

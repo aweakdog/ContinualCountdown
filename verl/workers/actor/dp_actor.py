@@ -322,8 +322,10 @@ class DataParallelPPOActor(BasePPOActor):
         zero_grad_stats = None
 
         with torch.no_grad():
-            if is_fsdp and self.grad_analyzer is not None and self.global_steps % self.redo_metric_freq == 0:
-                if rank == 0: print(f"[INFO][Actor][Step {self.global_steps}] Analyzing gradients via remote analyzer...")
+            if self.use_gradient_analyzer and self.global_steps % self.config.actor.get("redo_analysis_freq", 10) == 0:
+                rank = dist.get_rank()
+                if rank == 0:
+                    print(f"[INFO][Actor][Step {self.global_steps}] Triggering remote gradient analysis.")
                 
                 grad_state_dict = {}
                 with self.actor_module.summon_full_params(self.actor_module, writeback=False, rank0_only=False):
@@ -333,10 +335,11 @@ class DataParallelPPOActor(BasePPOActor):
                 
                 if grad_state_dict:
                     analysis_future = self.grad_analyzer.analyze_gradients.remote(
-                        component_name="actor",
-                        grad_state_dict=grad_state_dict,
+                        gradients=grad_state_dict,
+                        original_param_shapes=self.original_param_shapes,
                         tau=self.redo_tau,
-                        original_shapes_map=self.original_param_shapes
+                        verbose=(rank == 0),
+                        identifier='actor'
                     )
                     
                     try:
@@ -346,7 +349,7 @@ class DataParallelPPOActor(BasePPOActor):
                     except Exception as e:
                         if rank == 0: print(f"[ERROR] Failed to get gradient analysis results: {e}")
                 elif rank == 0:
-                    print("[WARN][Actor] No gradients found to analyze.")
+                    print("[INFO][Actor] No gradients found to analyze.")
 
             if zero_grad_stats and '__global__' in zero_grad_stats:
                 zero_gradspace_ratio_avg = zero_grad_stats['__global__'].get('aggregated_ratio', 0.0)

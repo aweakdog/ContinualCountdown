@@ -17,7 +17,7 @@ import torch
 import collections
 from typing import Dict
 
-@ray.remote(num_gpus=0.25, num_cpus=1)
+@ray.remote(num_gpus=1, num_cpus=1)
 class GradientAnalyzer:
     """
     A stateful Ray actor that analyzes gradients component-wise to avoid OOM errors.
@@ -87,24 +87,35 @@ class GradientAnalyzer:
     def _calculate_stats_for_grads(self, gradients, original_param_shapes, tau, verbose):
         total_rows = 0
         zero_rows = 0
+        if verbose: print(f"    [Analyzer Internals] Processing {len(gradients)} gradients.")
+
         for name, grad in gradients.items():
             if grad is None: continue
 
+            if verbose: print(f"      [Param: {name}] - Received grad with shape {grad.shape}")
+
             original_shape = original_param_shapes.get(name)
-            if not original_shape: continue
+            if not original_shape:
+                if verbose: print(f"        -> Skipping: Name not found in original_param_shapes map.")
+                continue
 
             is_bias = name.endswith(".bias")
             effective_dim = len(original_shape)
             is_eligible = (effective_dim == 2) or (effective_dim == 1 and not is_bias)
-            if not is_eligible: continue
+            if not is_eligible:
+                if verbose: print(f"        -> Skipping: Not eligible (dim={effective_dim}, is_bias={is_bias}).")
+                continue
 
             grad_to_process = grad.float()
             original_shape_size = torch.Size(original_shape)
+            if verbose: print(f"        -> Original shape: {original_shape_size}")
 
+            # --- Reshaping Logic for FSDP --- 
             if grad_to_process.dim() == 1:
+                if verbose: print(f"        -> Is 1D tensor, attempting reshape.")
                 if grad_to_process.numel() == original_shape_size.numel():
                     grad_to_process = grad_to_process.view(original_shape_size)
-                elif len(original_shape_size) == 2:
+                elif len(original_shape_size) == 2: # Shard of a 2D tensor
                     H, W = original_shape_size
                     shard_numel = grad_to_process.numel()
                     if W > 0 and shard_numel % W == 0:
@@ -115,18 +126,27 @@ class GradientAnalyzer:
                             grad_to_process = grad_to_process[:num_full_rows * W].view(num_full_rows, W)
                         else:
                             grad_to_process = torch.empty((0, W), device=grad_to_process.device, dtype=grad_to_process.dtype)
-
+            
             if grad_to_process.dim() == 1 and len(original_shape_size) == 1:
-                grad_to_process = grad_to_process.unsqueeze(1)
+                grad_to_process = grad_to_process.unsqueeze(1) # Reshape 1D LayerNorm weights to (N, 1)
 
-            if grad_to_process.dim() != 2 or grad_to_process.shape[0] == 0: continue
+            if verbose: print(f"        -> Shape after reshape: {grad_to_process.shape}")
 
+            if grad_to_process.dim() != 2 or grad_to_process.shape[0] == 0:
+                if verbose: print(f"        -> Skipping: Final shape is not a non-empty 2D tensor.")
+                continue
+
+            # --- Neuron Analysis --- 
             row_norms = torch.norm(grad_to_process, p=1, dim=1)
             H = grad_to_process.shape[0]
             avg_row_norm = row_norms.mean()
             s_i = row_norms / (avg_row_norm + 1e-9)
             num_dormant_neurons = (s_i < tau).sum().item()
 
+            if verbose: print(f"        -> Analysis: {num_dormant_neurons} dormant neurons out of {H}.")
+
             total_rows += H
             zero_rows += num_dormant_neurons
+
+        if verbose: print(f"    [Analyzer Internals] Finished. Total rows: {total_rows}, Zero rows: {zero_rows}")
         return total_rows, zero_rows

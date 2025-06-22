@@ -324,32 +324,34 @@ class DataParallelPPOActor(BasePPOActor):
         with torch.no_grad():
             if self.grad_analyzer is not None and self.global_steps % self.config.get("redo_analysis_freq", 10) == 0:
                 rank = dist.get_rank()
-                if rank == 0:
-                    print(f"[INFO][Actor][Step {self.global_steps}] Triggering remote gradient analysis.")
-                
-                grad_state_dict = {}
+                # All ranks must participate in summoning the full parameters.
                 with self.actor_module.summon_full_params(self.actor_module, writeback=False, rank0_only=False):
-                    grad_state_dict = {
-                        name: param.grad.cpu() for name, param in self.actor_module.named_parameters() if param.grad is not None
-                    }
-                
-                if grad_state_dict:
-                    analysis_future = self.grad_analyzer.analyze_gradients.remote(
-                        gradients=grad_state_dict,
-                        original_param_shapes=self.original_param_shapes,
-                        tau=self.redo_tau,
-                        verbose=self.config.get("gradient_analyzer_verbose", True),
-                        identifier='actor'
-                    )
-                    
-                    try:
-                        zero_grad_stats = ray.get(analysis_future, timeout=60)
-                        if rank == 0 and zero_grad_stats:
-                            print(f"[INFO][Actor][Step {self.global_steps}] Remote analysis complete. Stats: {zero_grad_stats.get('__global__')}")
-                    except Exception as e:
-                        if rank == 0: print(f"[ERROR] Failed to get gradient analysis results: {e}")
-                elif rank == 0:
-                    print("[INFO][Actor] No gradients found to analyze.")
+                    # However, only rank 0 should collect the gradients and trigger the analysis.
+                    if rank == 0:
+                        print(f"[INFO][Actor][Step {self.global_steps}] Rank 0 triggering remote gradient analysis.")
+                        
+                        grad_state_dict = {
+                            name: param.grad.cpu() for name, param in self.actor_module.named_parameters() if param.grad is not None
+                        }
+                        
+                        if grad_state_dict:
+                            analysis_future = self.grad_analyzer.analyze_gradients.remote(
+                                gradients=grad_state_dict,
+                                original_param_shapes=self.original_param_shapes,
+                                tau=self.redo_tau,
+                                #verbose=self.config.get("gradient_analyzer_verbose", True),
+                                verbose=True,
+                                identifier='actor'
+                            )
+                            
+                            try:
+                                zero_grad_stats = ray.get(analysis_future, timeout=60)
+                                if zero_grad_stats:
+                                    print(f"[INFO][Actor][Step {self.global_steps}] Remote analysis complete. Stats: {zero_grad_stats.get('__global__')}")
+                            except Exception as e:
+                                print(f"[ERROR] Failed to get gradient analysis results: {e}")
+                        else:
+                            print("[INFO][Actor] No gradients found to analyze.")
 
             if zero_grad_stats and '__global__' in zero_grad_stats:
                 zero_gradspace_ratio_avg = zero_grad_stats['__global__'].get('aggregated_ratio', 0.0)

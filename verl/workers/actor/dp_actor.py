@@ -328,25 +328,15 @@ class DataParallelPPOActor(BasePPOActor):
                 rank = dist.get_rank()
                 # All ranks must participate in summoning the full parameters.
                 # Using rank0_only=True can be more reliable for gathering very large, complexly sharded parameters.
-                with self.actor_module.summon_full_params(self.actor_module, writeback=False, rank0_only=True):
+                # Using offload_to_cpu=True can help gather parameters from other TP ranks directly to CPU memory.
+                with self.actor_module.summon_full_params(self.actor_module, writeback=False, rank0_only=True, offload_to_cpu=True):
                     # However, only rank 0 should collect the gradients and trigger the analysis.
                     if rank == 0:
                         print(f"[INFO][Actor][Step {self.global_steps}] Rank 0 triggering remote gradient analysis.")
                         
-                        grad_state_dict = {}
-                        mlp_params_with_grad = []
-                        mlp_params_without_grad = []
-
-                        for name, param in self.actor_module.named_parameters():
-                            if param.grad is not None:
-                                grad_state_dict[name] = param.grad.cpu()
-                                if 'mlp' in name:
-                                    mlp_params_with_grad.append(name)
-                            elif 'mlp' in name:
-                                mlp_params_without_grad.append(name)
-
-                        print(f"[DEBUG][Actor] MLP params with grad: {sorted(list(set(mlp_params_with_grad)))}")
-                        print(f"[DEBUG][Actor] MLP params without grad: {sorted(list(set(mlp_params_without_grad)))}")
+                        grad_state_dict = {
+                            name: param.grad for name, param in self.actor_module.named_parameters() if param.grad is not None
+                        }
                         
                         if grad_state_dict:
                             analysis_future = self.grad_analyzer.analyze_gradients.remote(

@@ -323,6 +323,15 @@ class DataParallelPPOActor(BasePPOActor):
         is_fsdp = isinstance(self.actor_module, FSDP)
         zero_grad_stats = None
 
+        # To prevent OOM, we aggressively clear the CUDA cache on rank 0 before summoning full gradients.
+        if rank == 0:
+            print(f"[INFO][Actor][Step {self.global_steps}] Clearing CUDA cache on Rank 0 to free memory for gradient gathering.")
+            torch.cuda.empty_cache()
+
+        if is_fsdp:
+            # All ranks must wait for rank 0 to finish before proceeding.
+            dist.barrier()
+
         with torch.no_grad():
             if self.grad_analyzer is not None and self.global_steps % self.config.get("redo_analysis_freq", 1) == 0:
                 rank = dist.get_rank()

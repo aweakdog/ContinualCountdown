@@ -324,7 +324,7 @@ class DataParallelPPOActor(BasePPOActor):
         zero_grad_stats = None
 
         with torch.no_grad():
-            if self.grad_analyzer is not None and self.global_steps % self.config.get("redo_analysis_freq", 10) == 0:
+            if self.grad_analyzer is not None and self.global_steps % self.config.get("redo_analysis_freq", 1) == 0:
                 rank = dist.get_rank()
                 # All ranks must participate in summoning the full parameters.
                 with self.actor_module.summon_full_params(self.actor_module, writeback=False, rank0_only=False):

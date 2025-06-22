@@ -346,18 +346,7 @@ class DataParallelPPOActor(BasePPOActor):
                 if is_fsdp:
                     dist.barrier()
 
-                # --- FQN DEBUGGING: Print the keys from original_param_shapes once ---
-                if rank == 0 and not self.debug_fqn_printed:
-                    print("--- FQN DEBUG: First 5 keys from original_param_shapes ---")
-                    if self.original_param_shapes:
-                        keys_to_print = list(self.original_param_shapes.keys())[:5]
-                        for key in keys_to_print:
-                            print(f"  - {key}")
-                    else:
-                        print("  - self.original_param_shapes is empty or None.")
-                    print("---------------------------------------------------------")
-                    self.debug_fqn_printed = True
-                # --- END FQN DEBUGGING ---
+
 
                 # Define components to analyze. This must match the model architecture.
                 # Assumes a standard HuggingFace transformer structure like Llama/Qwen.
@@ -384,9 +373,9 @@ class DataParallelPPOActor(BasePPOActor):
                             # We iterate over the full model's parameters to get the FQN,
                             # but only include the ones that are part of the current component.
                             # FSDP inserts `_fsdp_wrapped_module` into parameter names. We must remove
-                            # it to match the keys in `original_param_shapes`.
+                            # it. We also prepend `model.` to match the keys in `original_param_shapes`.
                             grad_state_dict = {
-                                fqn.replace('._fsdp_wrapped_module', ''): param.grad.cpu()
+                                f"model.{fqn.replace('._fsdp_wrapped_module', '')}": param.grad.cpu()
                                 for fqn, param in self.actor_module.model.named_parameters()
                                 if id(param) in component_param_ids and param.grad is not None
                             }

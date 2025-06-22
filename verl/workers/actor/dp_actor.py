@@ -329,7 +329,7 @@ class DataParallelPPOActor(BasePPOActor):
                 print('327self.grad_analyzer: ',self.grad_analyzer)
                 print('327self.grad_analyzer is not None: ',(self.grad_analyzer is not None))
                 print('327overall_condition',self.grad_analyzer is not None and self.global_steps % self.config.get("redo_analysis_freq", 10) == 0)
-            if self.grad_analyzer is not None and self.global_steps % self.config.get("redo_analysis_freq", 10) == 0:
+            if self.grad_analyzer is not None and self.global_steps % self.config.get("redo_analysis_freq", 1) == 0:
                 # All ranks must participate in summoning the full parameters.
                 if rank ==0:
                     print('330self.grad_analyzer: ',self.grad_analyzer)

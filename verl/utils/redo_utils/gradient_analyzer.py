@@ -124,7 +124,8 @@ class GradientAnalyzer:
             if self.device is None:
                 gpu_ids = ray.get_gpu_ids()
                 if gpu_ids and torch.cuda.is_available():
-                    self.device = torch.device(f"cuda:{gpu_ids[0]}")
+                    # Inside a Ray actor, the assigned GPU is always ordinal 0 from torch's perspective
+                    self.device = torch.device("cuda:0")
                 else:
                     self.device = torch.device("cpu")
                 

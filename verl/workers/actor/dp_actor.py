@@ -322,7 +322,7 @@ class DataParallelPPOActor(BasePPOActor):
         zero_grad_stats = None
 
         with torch.no_grad():
-            if self.use_gradient_analyzer and self.global_steps % self.config.actor.get("redo_analysis_freq", 10) == 0:
+            if self.grad_analyzer is not None and self.global_steps % self.config.actor.get("redo_analysis_freq", 10) == 0:
                 rank = dist.get_rank()
                 if rank == 0:
                     print(f"[INFO][Actor][Step {self.global_steps}] Triggering remote gradient analysis.")

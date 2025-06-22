@@ -325,10 +325,14 @@ class DataParallelPPOActor(BasePPOActor):
 
         with torch.no_grad():
             rank = dist.get_rank()
-            print('327self.grad_analyzer: ',self.grad_analyzer)
+            if rank ==0:
+                print('327self.grad_analyzer: ',self.grad_analyzer)
+                print('327self.grad_analyzer is not None: ',(self.grad_analyzer is not None))
+                print('327overall_condition',self.grad_analyzer is not None and self.global_steps % self.config.get("redo_analysis_freq", 10) == 0)
             if self.grad_analyzer is not None and self.global_steps % self.config.get("redo_analysis_freq", 10) == 0:
                 # All ranks must participate in summoning the full parameters.
-                print('330self.grad_analyzer: ',self.grad_analyzer)
+                if rank ==0:
+                    print('330self.grad_analyzer: ',self.grad_analyzer)
                 with self.actor_module.summon_full_params(self.actor_module, writeback=False, rank0_only=False):
                     # However, only rank 0 should collect the gradients and trigger the analysis.
                     if rank == 0:

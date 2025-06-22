@@ -20,10 +20,8 @@ from typing import Iterable, Tuple
 import torch
 from torch import nn
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
-import torch.distributed as dist
-import ray
-
-from verl import DataProto
+from torch.distributed.fsdp.fully_sharded_data_parallel import StateDictType
+from verl.utils.redo_utils.gradient_analyzer import calculate_zero_grad_ratio_from_full_grad
 from verl.trainer.ppo import core_algos
 from verl.workers.actor import BasePPOActor
 from verl.utils.py_functional import append_to_dict
@@ -335,21 +333,27 @@ class DataParallelPPOActor(BasePPOActor):
                         }
                         
                         if grad_state_dict:
-                            analysis_future = self.grad_analyzer.analyze_gradients.remote(
-                                gradients=grad_state_dict,
-                                original_param_shapes=self.original_param_shapes,
-                                tau=self.redo_tau,
-                                #verbose=self.config.get("gradient_analyzer_verbose", True),
-                                verbose=True,
-                                identifier='actor'
-                            )
-                            
                             try:
-                                zero_grad_stats = ray.get(analysis_future, timeout=60)
+                                # --- LOCAL ANALYSIS DEBUG ---
+                                # Move gradients to the current device (GPU 0) for analysis
+                                device = torch.device(f"cuda:{rank}")
+                                device_gradients = {name: grad.to(device) for name, grad in grad_state_dict.items()}
+                                
+                                print(f"[DEBUG][Actor][Step {self.global_steps}] Running gradient analysis locally on rank 0.")
+                                
+                                zero_grad_stats = calculate_zero_grad_ratio_from_full_grad(
+                                    gradients=device_gradients,
+                                    original_param_shapes=self.original_param_shapes,
+                                    tau=self.redo_tau,
+                                    verbose=True
+                                )
                                 if zero_grad_stats:
-                                    print(f"[INFO][Actor][Step {self.global_steps}] Remote analysis complete. Stats: {zero_grad_stats.get('__global__')}")
+                                    print(f"[INFO][Actor][Step {self.global_steps}] Local analysis complete. Stats: {zero_grad_stats.get('__global__')}")
+                                # --- END LOCAL ANALYSIS DEBUG ---
                             except Exception as e:
-                                print(f"[ERROR] Failed to get gradient analysis results: {e}")
+                                print(f"[ERROR] CRASH during local gradient analysis on Rank 0:")
+                                import traceback
+                                traceback.print_exc()
                         else:
                             print("[INFO][Actor] No gradients found to analyze.")
 

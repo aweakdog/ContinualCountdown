@@ -369,8 +369,10 @@ class DataParallelPPOActor(BasePPOActor):
                             # We must use FQNs that match the keys in `original_param_shapes`.
                             # We iterate over the full model's parameters to get the FQN,
                             # but only include the ones that are part of the current component.
+                            # FSDP inserts `_fsdp_wrapped_module` into parameter names. We must remove
+                            # it to match the keys in `original_param_shapes`.
                             grad_state_dict = {
-                                fqn: param.grad.cpu()
+                                fqn.replace('._fsdp_wrapped_module', ''): param.grad.cpu()
                                 for fqn, param in self.actor_module.model.named_parameters()
                                 if id(param) in component_param_ids and param.grad is not None
                             }

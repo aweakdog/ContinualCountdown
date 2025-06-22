@@ -352,12 +352,9 @@ class DataParallelPPOActor(BasePPOActor):
                 # Assumes a standard HuggingFace transformer structure like Llama/Qwen.
                 components_to_analyze = {
                     "embed_tokens": self.actor_module.model.embed_tokens,
-                    "final_norm": self.actor_module.model.norm
+                    "final_norm": self.actor_module.model.norm,
+                    "lm_head": self.actor_module.lm_head,
                 }
-                # 在 DataParallelPPOActor 的某个方法中（例如 __init__ 或 update_policy）
-                print("--- Submodules of actor_module.model ---")
-                for name, module in self.actor_module.named_modules():
-                    print(name)
                 # Add all transformer layers.
                 for i, layer in enumerate(self.actor_module.model.layers):
                     components_to_analyze[f"layer_{i}"] = layer

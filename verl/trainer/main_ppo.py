@@ -100,6 +100,7 @@ import hydra
 def main(config):
     if not ray.is_initialized():
         ray.init(
+            log_to_driver=True,
             address=os.environ.get("RAY_ADDRESS"),  # Use the exported address
             runtime_env={
                 'env_vars': {

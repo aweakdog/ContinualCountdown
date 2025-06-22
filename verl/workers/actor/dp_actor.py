@@ -341,9 +341,9 @@ class DataParallelPPOActor(BasePPOActor):
                 # By setting rank0_only=False, we force every rank to materialize the full params, which is a more robust (though less efficient) gathering strategy.
                 # Per FSDP docs, with_grads=True is the correct way to gather gradients, but it's incompatible with offload_to_cpu=True.
                 # We prioritize correctness, materializing the full gradient on the GPU and then manually moving it to the CPU.
-                with self.actor_module.summon_full_params(self.actor_module, writeback=False, rank0_only=True, offload_to_cpu=False, with_grads=True):
+                with self.actor_module.summon_full_params(self.actor_module, writeback=False, rank0_only=True, offload_to_cpu=False, with_grads=False):
                     # However, only rank 0 should collect the gradients and trigger the analysis.
-                    if rank == 0:
+                    if rank == 1:
                         print(f"[INFO][Actor][Step {self.global_steps}] Rank 0 triggering remote gradient analysis.")
                         
                         # Since offload_to_cpu is False, we must manually move the gathered gradients to CPU.

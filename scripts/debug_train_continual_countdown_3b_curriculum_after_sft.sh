@@ -18,7 +18,7 @@ export N_GPUS=${N_GPUS:-4}  # Using 4 A800 GPUs
 export ROLLOUT_TP_SIZE=${ROLLOUT_TP_SIZE:-1}  # Tensor parallel size optimized for 4 GPUs
 export WANDB_MODE=${WANDB_MODE:-offline}  # Run WandB in offline mode
 export VLLM_ATTENTION_BACKEND=${VLLM_ATTENTION_BACKEND:-XFORMERS}
-export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0,1,2,3,4}
+export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0,1,2,3,4,5,6,7}
 export NCCL_DEBUG=${NCCL_DEBUG:-INFO}
 
 

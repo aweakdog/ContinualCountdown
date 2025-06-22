@@ -369,13 +369,14 @@ class ActorRolloutRefWorker(Worker):
             OmegaConf.set_struct(self.config.actor, True)
             with open_dict(self.config.actor):
                 self.config.actor.use_remove_padding = use_remove_padding
-            # Always use the gradient analyzer, hardcoded to True
-            # Always use the gradient analyzer, hardcoded to auto-select a GPU.
-            if self.rank == 0:
-                print("[INFO] Initializing remote GradientAnalyzer actor with automatic GPU selection...")
-            grad_analyzer = GradientAnalyzer.options(num_gpus=1).remote()
-            if self.rank == 0:
-                print("[INFO] GradientAnalyzer actor handle created, GPU will be automatically selected by Ray.")
+            grad_analyzer = None
+            if self.config.actor.get("use_gradient_analyzer", True):
+                if self.rank == 0:
+                    print("[INFO] Initializing remote GradientAnalyzer actor with fractional GPU (1) request...")
+                # Requesting a fractional GPU allows it to share a device with other workers, avoiding resource conflicts.
+                grad_analyzer = GradientAnalyzer.options(num_gpus=1, num_cpus=1).remote()
+                if self.rank == 0:
+                    print("[INFO] GradientAnalyzer actor handle created.")
 
             self.actor = DataParallelPPOActor(config=self.config.actor,
                                               actor_module=self.actor_module_fsdp,

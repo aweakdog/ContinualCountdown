@@ -354,9 +354,14 @@ class DataParallelPPOActor(BasePPOActor):
                     "embed_tokens": self.actor_module.model.embed_tokens,
                     "final_norm": self.actor_module.model.norm
                 }
+                # 在 DataParallelPPOActor 的某个方法中（例如 __init__ 或 update_policy）
+                print("--- Submodules of actor_module.model ---")
+                for name, module in self.actor_module.named_modules():
+                    print(name)
                 # Add all transformer layers.
                 for i, layer in enumerate(self.actor_module.model.layers):
                     components_to_analyze[f"layer_{i}"] = layer
+
                 
                 # Step 2: Analyze each component chunk by chunk.
                 for component_name, component_module in components_to_analyze.items():

@@ -334,43 +334,85 @@ class DataParallelPPOActor(BasePPOActor):
 
         with torch.no_grad():
             if self.grad_analyzer is not None and self.global_steps % self.config.get("redo_analysis_freq", 1) == 0:
-                rank = dist.get_rank()
-                # All ranks must participate in summoning the full parameters.
-                # Using rank0_only=True can be more reliable for gathering very large, complexly sharded parameters.
-                # Using offload_to_cpu=True can help gather parameters from other TP ranks directly to CPU memory.
-                # By setting rank0_only=False, we force every rank to materialize the full params, which is a more robust (though less efficient) gathering strategy.
-                # Per FSDP docs, with_grads=True is the correct way to gather gradients, but it's incompatible with offload_to_cpu=True.
-                # We prioritize correctness, materializing the full gradient on the GPU and then manually moving it to the CPU.
-                #with self.actor_module.summon_full_params(self.actor_module, writeback=False, rank0_only=True, offload_to_cpu=False, with_grads=False):
-                    # However, only rank 0 should collect the gradients and trigger the analysis.
-                for name, param in self.actor_module.named_parameters():
-                    if param.grad is not None:
-                        print(f"[INFO][rank{rank}][Actor][Step {self.global_steps}] {name}: {param.grad.shape}")
-                if rank == 2:
-                    print(f"[INFO][Actor][Step {self.global_steps}] Rank 0 triggering remote gradient analysis.")
+                # --- Component-wise Gradient Analysis to Avoid OOM ---
+                # Step 1: Reset the state of the remote analyzer on rank 0.
+                if rank == 0:
+                    print(f"[INFO][Actor][Step {self.global_steps}] Resetting remote gradient analyzer state.")
+                    # Use ray.get to ensure reset is complete before proceeding.
+                    ray.get(self.grad_analyzer.reset.remote(identifier='actor'))
+
+                # Synchronize all ranks to ensure reset is complete before analysis begins.
+                if is_fsdp:
+                    dist.barrier()
+
+                # Define components to analyze. This must match the model architecture.
+                # Assumes a standard HuggingFace transformer structure like Llama/Qwen.
+                components_to_analyze = {
+                    "embed_tokens": self.actor_module.model.embed_tokens,
+                    "final_norm": self.actor_module.model.norm
+                }
+                # Add all transformer layers.
+                for i, layer in enumerate(self.actor_module.model.layers):
+                    components_to_analyze[f"layer_{i}"] = layer
+                
+                # Step 2: Analyze each component chunk by chunk.
+                for component_name, component_module in components_to_analyze.items():
+                    if rank == 0:
+                        print(f"--- Analyzing component: {component_name} ---")
                     
-                    # Since offload_to_cpu is False, we must manually move the gathered gradients to CPU.
-                    grad_state_dict = {
-                        name: param.grad.cpu() for name, param in self.actor_module.named_parameters() if param.grad is not None
-                    }
+                    # Summon gradients for only this component. This is memory-safe.
+                    with FSDP.summon_full_params(component_module, writeback=False, rank0_only=True, with_grads=True):
+                        if rank == 0:
+                            grad_state_dict = {
+                                name: param.grad.cpu() 
+                                for name, param in component_module.named_parameters() 
+                                if param.grad is not None
+                            }
+                            
+                            if grad_state_dict:
+                                # Fire-and-forget the analysis for this component.
+                                self.grad_analyzer.analyze_component_gradients.remote(
+                                    gradients=grad_state_dict,
+                                    original_param_shapes=self.original_param_shapes,
+                                    tau=self.redo_tau,
+                                    verbose=True, # Hardcoded for debugging
+                                    identifier='actor',
+                                    component_name=component_name
+                                )
+                            else:
+                                print(f"[INFO][Actor][Step {self.global_steps}] No gradients found for component {component_name}.")
                     
-                    if grad_state_dict:
-                        analysis_future = self.grad_analyzer.analyze_gradients.remote(
-                            gradients=grad_state_dict,
-                            original_param_shapes=self.original_param_shapes,
-                            tau=self.redo_tau,
-                            verbose=True, # Hardcoded for debugging
-                            identifier='actor'
-                        )
-                        
-                        try:
-                            zero_grad_stats = ray.get(analysis_future, timeout=60)
-                            if zero_grad_stats:
-                                print(f"[INFO][Actor][Step {self.global_steps}] Remote analysis complete. Stats: {zero_grad_stats.get('__global__')}")
-                        except Exception as e:
-                            print(f"[ERROR] Failed to get gradient analysis results: {e}")
-                    else:
-                        print("[INFO][Actor] No gradients found to analyze.")
+                    # Barrier to ensure all ranks are done with a component before the next.
+                    if is_fsdp:
+                        dist.barrier()
+
+                # Step 3: Get the final aggregated results from the analyzer on rank 0.
+                if rank == 0:
+                    print(f"--- Aggregating final results ---")
+                    try:
+                        analysis_future = self.grad_analyzer.get_aggregated_stats.remote(identifier='actor', verbose=True)
+                        stats = ray.get(analysis_future, timeout=60)
+                        zero_grad_stats = stats  # Preserve for use outside this block
+
+                        if stats:
+                            # Log the global aggregated stats
+                            global_stats = stats.get('__global__', {})
+                            if global_stats:
+                                self.logger.info(f"[Actor][Step {self.global_steps}][Gradient Analysis] "
+                                                 f"Global Dormant Ratio: {global_stats.get('ratio', 0):.2%}")
+                            
+                            # Log the per-component stats
+                            component_stats = stats.get('components', {})
+                            if component_stats:
+                                self.logger.info("--- Per-Component Dormant Ratios ---")
+                                for name, comp_stats in sorted(component_stats.items()):
+                                    self.logger.info(f"  - {name:15s}: {comp_stats.get('ratio', 0):.2%}")
+                                self.logger.info("------------------------------------")
+                            
+                        else:
+                            self.logger.warning(f"[Actor][Step {self.global_steps}] Failed to get zero-grad analysis results.")
+                    except Exception as e:
+                        self.logger.error(f"[Actor][Step {self.global_steps}] Error getting zero-grad analysis: {e}")
 
             if zero_grad_stats and '__global__' in zero_grad_stats:
                 zero_gradspace_ratio_avg = zero_grad_stats['__global__'].get('aggregated_ratio', 0.0)

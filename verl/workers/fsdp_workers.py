@@ -373,8 +373,9 @@ class ActorRolloutRefWorker(Worker):
             if self.config.actor.get("use_gradient_analyzer", True):
                 if self.rank == 0:
                     print("[INFO] Initializing remote GradientAnalyzer actor with fractional GPU (1) request...")
-                # Requesting a fractional GPU allows it to share a device with other workers, avoiding resource conflicts.
-                grad_analyzer = GradientAnalyzer.options(num_gpus=1, num_cpus=1).remote()
+                # The new GradientAnalyzer class is decorated with @ray.remote, which defines its own resources.
+                # We simply call .remote() to instantiate it with the specified fractional resources.
+                grad_analyzer = GradientAnalyzer.remote()
                 if self.rank == 0:
                     print("[INFO] GradientAnalyzer actor handle created.")
 

@@ -337,11 +337,14 @@ class DataParallelPPOActor(BasePPOActor):
             # Capture the learning rate that will be used for this optimizer step.
             # This is critical because some schedulers might update the LR after the step.
             current_lr = self.actor_optimizer.param_groups[0]['lr']
-            print(f"[DP Actor Debug] Captured current_lr = {current_lr} before optimizer step.")
 
             if isinstance(self.actor_module, FSDP):
                 self.actor_module.clip_grad_norm_(max_norm=self.config.grad_clip)
             self.actor_optimizer.step()
+            if self.lr_scheduler is not None:
+                self.lr_scheduler.step()
+                new_lr = self.actor_optimizer.param_groups[0]['lr']
+                print(f"[DP Actor Debug] LR for next step is: {new_lr}")
 
             with torch.no_grad():
                 metrics['actor/pg_loss'] = pg_loss.item()

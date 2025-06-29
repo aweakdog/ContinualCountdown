@@ -95,7 +95,10 @@ class FisherInfoAnalyzer:
                 fisher_tilde = jacobian @ jacobian.T
                 
                 eigenvalues = torch.linalg.eigvalsh(fisher_tilde)
-                non_zero_eigenvalues = eigenvalues[eigenvalues > 1e-8]
+                
+                # Use config to set the eigenvalue threshold, with a default for backward compatibility.
+                eig_threshold = self.config.actor.get('fsdp_component_analysis', {}).get('fisher_eig_threshold', 1e-8)
+                non_zero_eigenvalues = eigenvalues[eigenvalues > eig_threshold]
 
                 if len(non_zero_eigenvalues) == 0:
                     print(f"[DEBUG][Fisher] Param '{name}': Skipping due to 0 non-zero eigenvalues.")

@@ -82,6 +82,8 @@ class FisherInfoAnalyzer:
                         reshaped_then_flattened_grads.append(g_reshaped.flatten().cuda())
                     else:
                         # If shape mismatch, just flatten what we have.
+                        if self.rank == 0:
+                            print(f"[Fisher WARN] Mismatch for {name}: grad numel {g.numel()} vs original shape numel {original_shape.numel()}. Using as-is.")
                         reshaped_then_flattened_grads.append(g.flatten().cuda())
 
                 if not reshaped_then_flattened_grads:

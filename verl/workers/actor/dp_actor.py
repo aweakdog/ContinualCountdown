@@ -363,6 +363,7 @@ class DataParallelPPOActor(BasePPOActor):
 
         rank = dist.get_rank() if dist.is_available() and dist.is_initialized() else 0
         is_fsdp = isinstance(self.actor_module, FSDP)
+        final_stats = None
         zero_grad_stats = None
 
         if self.grad_analyzer is not None and self.global_steps % self.config.get("redo_analysis_freq", 1) == 0:

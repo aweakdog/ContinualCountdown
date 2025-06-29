@@ -346,7 +346,10 @@ class DataParallelPPOActor(BasePPOActor):
                         components_to_analyze[f"layer_{i}"] = layer
 
                 for component_name, component_module in components_to_analyze.items():
+                    # Get the set of parameter IDs for the current component for efficient lookup.
+                    component_param_ids = {id(p) for p in component_module.parameters()}
                     per_micro_batch_grads = []
+                    
                     # We must re-calculate gradients for each component analysis pass
                     for data in micro_batches:
                         data = data.cuda()
@@ -364,9 +367,12 @@ class DataParallelPPOActor(BasePPOActor):
 
                         with FSDP.summon_full_params(component_module, writeback=False, rank0_only=True, with_grads=True):
                             if rank == 0:
+                                # Correctly collect gradients by iterating over the full model's parameters
+                                # and filtering by parameter ID. This is the robust way to handle FSDP.
                                 grad_dict = {
                                     fqn.replace('._fsdp_wrapped_module', ''): p.grad.clone().cpu()
-                                    for fqn, p in component_module.named_parameters() if p.grad is not None
+                                    for fqn, p in self.actor_module.named_parameters()
+                                    if id(p) in component_param_ids and p.grad is not None
                                 }
                                 if grad_dict:
                                     per_micro_batch_grads.append(grad_dict)

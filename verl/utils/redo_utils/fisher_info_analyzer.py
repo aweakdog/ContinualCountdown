@@ -112,9 +112,9 @@ class FisherInfoAnalyzer:
                     sigma_max = torch.sqrt(non_zero_eigenvalues.max())
                     sigma_min = torch.sqrt(non_zero_eigenvalues.min())
                     c_k = sigma_max / sigma_min
-                # The trace of the full Fisher matrix F = J.T @ J is the sum of the squared singular values of J.
-                # trace(F) = sum(s_i^2)
-                trace_F = torch.sum(s**2)
+                # The trace of the full Fisher matrix F = J.T @ J is the sum of its eigenvalues.
+                # The non-zero eigenvalues of F are the same as the non-zero eigenvalues of the reduced matrix F_tilde.
+                trace_F = torch.sum(non_zero_eigenvalues)
                 l_k = (current_lr / micro_batch_size) * torch.sqrt(trace_F)
 
                 param_stats = {

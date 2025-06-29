@@ -97,13 +97,20 @@ class FisherInfoAnalyzer:
                 eigenvalues = torch.linalg.eigvalsh(fisher_tilde)
                 non_zero_eigenvalues = eigenvalues[eigenvalues > 1e-8]
 
-                if len(non_zero_eigenvalues) < 2:
-                    print(f"[DEBUG][Fisher] Param '{name}': Skipping due to < 2 non-zero eigenvalues ({len(non_zero_eigenvalues)} found).")
+                if len(non_zero_eigenvalues) == 0:
+                    print(f"[DEBUG][Fisher] Param '{name}': Skipping due to 0 non-zero eigenvalues.")
                     continue
-
-                sigma_max = torch.sqrt(non_zero_eigenvalues.max())
-                sigma_min = torch.sqrt(non_zero_eigenvalues.min())
-                c_k = sigma_max / sigma_min
+                elif len(non_zero_eigenvalues) == 1:
+                    # Handle the case of a single gradient vector where c_k is not meaningful.
+                    print(f"[DEBUG][Fisher] Param '{name}': Only 1 non-zero eigenvalue found. Reporting default c_k=1.0.")
+                    sigma_max = torch.sqrt(non_zero_eigenvalues.max())
+                    sigma_min = sigma_max  # With one value, min is the same as max
+                    c_k = torch.tensor(1.0)
+                else:
+                    # Original logic for 2 or more eigenvalues
+                    sigma_max = torch.sqrt(non_zero_eigenvalues.max())
+                    sigma_min = torch.sqrt(non_zero_eigenvalues.min())
+                    c_k = sigma_max / sigma_min
                 trace_F = torch.trace(fisher_tilde)
                 l_k = (current_lr / micro_batch_size) * torch.sqrt(trace_F)
 

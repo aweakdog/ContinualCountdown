@@ -301,8 +301,23 @@ class DataParallelPPOActor(BasePPOActor):
                 data = data.cuda()  
                 responses, response_mask = data['responses'], data['attention_mask'][:, -data['responses'].size(1):]
                 entropy, log_prob = self._forward_micro_batch(micro_batch=data, temperature=temperature)
-                pg_loss, _, _ = core_algos.compute_policy_loss(data['old_log_probs'], log_prob, data['advantages'], response_mask, self.config.clip_ratio)
-                policy_loss = pg_loss - verl_F.masked_mean(entropy, response_mask) * self.config.entropy_coeff
+
+                pg_loss, pg_clipfrac, ppo_kl = core_algos.compute_policy_loss(
+                    old_log_prob=data['old_log_probs'],
+                    log_prob=log_prob,
+                    advantages=data['advantages'],
+                    eos_mask=response_mask,
+                    cliprange=self.config.clip_ratio
+                )
+                entropy_loss = verl_F.masked_mean(entropy, response_mask)
+                policy_loss = pg_loss - entropy_loss * self.config.entropy_coeff
+
+                kl_loss = None
+                if self.config.use_kl_loss:
+                    ref_log_prob = data['ref_log_prob']
+                    kl_loss = verl_F.masked_mean(log_prob - ref_log_prob, response_mask)
+                    policy_loss += kl_loss * self.config.kl_coeff
+
                 loss = policy_loss / self.gradient_accumulation
                 loss.backward()
 
@@ -324,7 +339,12 @@ class DataParallelPPOActor(BasePPOActor):
             self.actor_optimizer.step()
 
             with torch.no_grad():
-                metrics = self._update_metrics(metrics, pg_loss, entropy_loss, data['advantages'], None)
+                metrics['actor/pg_loss'] = pg_loss.item()
+                metrics['actor/entropy_loss'] = entropy_loss.item()
+                metrics['actor/pg_clipfrac'] = pg_clipfrac.item()
+                metrics['actor/ppo_kl'] = ppo_kl.item()
+                if kl_loss is not None:
+                    metrics['actor/kl_loss'] = kl_loss.item()
 
         if run_fisher_analysis and rank == 0:
             for component_name, per_mini_batch_grads in collected_grads_for_fisher.items():

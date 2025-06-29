@@ -29,14 +29,17 @@ class FisherInfoAnalyzer:
         print("[FisherInfoAnalyzer] Actor initialized.")
         # self.stats stores metrics for the CURRENT analysis step
         self.stats = collections.defaultdict(lambda: {'params': {}})
-        # self.history stores metrics from ALL past analysis steps to compute running stats
-        self.history = collections.defaultdict(lambda: {'c_k_means': [], 'l_k_sums': []})
+        # self.global_history stores aggregated metrics from ALL past analysis steps to compute running global stats
+        self.global_history = collections.defaultdict(lambda: {'c_k_means': [], 'l_k_sums': []})
+        # self.param_history stores per-parameter metrics from ALL past analysis steps
+        self.param_history = collections.defaultdict(lambda: {'params': collections.defaultdict(lambda: {'c_k_history': [], 'l_k_history': []})})
 
     def reset(self, identifier: str):
-        """Resets the statistics and history for a given analysis identifier (e.g., 'actor')."""
+        """Resets all statistics and history for a given analysis identifier (e.g., 'actor')."""
         self.stats.pop(identifier, None)
-        self.history.pop(identifier, None)
-        print(f"[FisherInfoAnalyzer] Reset statistics and history for identifier '{identifier}'.")
+        self.global_history.pop(identifier, None)
+        self.param_history.pop(identifier, None)
+        print(f"[FisherInfoAnalyzer] Reset all statistics and history for identifier '{identifier}'.")
 
     def analyze_component_grads(self, identifier: str, component_name: str, per_micro_batch_grads: List[Dict[str, torch.Tensor]], original_param_shapes: Dict[str, torch.Size], micro_batch_size: int, current_lr: float, global_step: int):
         """
@@ -127,7 +130,15 @@ class FisherInfoAnalyzer:
                     'sigma_max': sigma_max.item(),
                     'sigma_min': sigma_min.item(),
                 }
-                print(f"[FisherInfo] Param '{name}': c_k={param_stats['c_k']:.4f}, l_k={param_stats['l_k']:.6g}")
+                # Update and calculate per-parameter historical stats
+                param_hist = self.param_history[identifier]['params'][name]
+                param_hist['c_k_history'].append(param_stats['c_k'])
+                param_hist['l_k_history'].append(param_stats['l_k'])
+                
+                C_K_param = np.mean(param_hist['c_k_history'])
+                L_K_param = np.sum(param_hist['l_k_history'])
+
+                print(f"[FisherInfo] Param '{name}': c_k={param_stats['c_k']:.4f}, l_k={param_stats['l_k']:.6g}, C_K={C_K_param:.4f}, L_K={L_K_param:.6g}")
                 component_stats[name] = param_stats
 
             except torch.linalg.LinAlgError as e:
@@ -161,14 +172,14 @@ class FisherInfoAnalyzer:
         current_c_k_mean = np.mean(current_all_c_k)
         current_l_k_sum_for_this_step = np.sum(current_all_l_k)
 
-        # 2. Update history
-        self.history.setdefault(identifier, {'c_k_means': [], 'l_k_sums': []})
-        self.history[identifier]['c_k_means'].append(current_c_k_mean)
-        self.history[identifier]['l_k_sums'].append(current_l_k_sum_for_this_step)
+        # 2. Update global history
+        self.global_history.setdefault(identifier, {'c_k_means': [], 'l_k_sums': []})
+        self.global_history[identifier]['c_k_means'].append(current_c_k_mean)
+        self.global_history[identifier]['l_k_sums'].append(current_l_k_sum_for_this_step)
 
         # 3. Calculate and return final time-aggregated metrics
-        c_k_history_list = self.history[identifier]['c_k_means']
-        l_k_history_list = self.history[identifier]['l_k_sums']
+        c_k_history_list = self.global_history[identifier]['c_k_means']
+        l_k_history_list = self.global_history[identifier]['l_k_sums']
         
         K = len(c_k_history_list) # K is the number of steps we have history for
 

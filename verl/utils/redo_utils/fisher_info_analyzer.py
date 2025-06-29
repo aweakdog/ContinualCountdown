@@ -181,6 +181,7 @@ class FisherInfoAnalyzer:
         summary_stats = {
             'fisher/c_k_running_avg': final_c_k_running_avg,
             'fisher/l_k_cumulative_sum': final_l_k_cumulative_sum,
+            'fisher/l_k_cumulative_sum_e6': final_l_k_cumulative_sum * 1e6, # Scaled for visibility in logs
             'fisher/c_k_mean_current': current_c_k_mean,
             'fisher/l_k_sum_current': current_l_k_sum_for_this_step,
         }

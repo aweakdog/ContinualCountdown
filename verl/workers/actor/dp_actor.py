@@ -334,6 +334,7 @@ class DataParallelPPOActor(BasePPOActor):
                 if isinstance(self.actor_module, FSDP):
                     dist.barrier()
 
+                # Define components and prepare data structures
                 components_to_analyze = {
                     "embed_tokens": self.actor_module.model.embed_tokens,
                     "final_norm": self.actor_module.model.norm,
@@ -342,63 +343,53 @@ class DataParallelPPOActor(BasePPOActor):
                 for i, layer in enumerate(self.actor_module.model.layers):
                     components_to_analyze[f"layer_{i}"] = layer
 
-                for component_name, component_module in components_to_analyze.items():
-                    component_param_ids = {id(p) for p in component_module.parameters()}
-                    per_micro_batch_grads = []
+                component_param_ids = {name: {id(p) for p in module.parameters()} for name, module in components_to_analyze.items()}
+                collected_grads = {name: [] for name in components_to_analyze}
 
-                    # We must re-calculate gradients for each component analysis pass
-                    for i, data in enumerate(micro_batches):
-                        data = data.cuda()
-                        self.actor_optimizer.zero_grad(set_to_none=True)
-                        with torch.enable_grad():
-                            responses = data['responses']
-                            response_mask = data['attention_mask'][:, -responses.size(1):]
-                            old_log_prob = data['old_log_probs']
-                            advantages = data['advantages']
-                            entropy, log_prob = self._forward_micro_batch(micro_batch=data, temperature=temperature)
-                            pg_loss, _, _ = core_algos.compute_policy_loss(old_log_prob=old_log_prob, log_prob=log_prob, advantages=advantages, eos_mask=response_mask, cliprange=self.config.clip_ratio)
-                            entropy_loss = verl_F.masked_mean(entropy, response_mask)
-                            policy_loss = pg_loss - entropy_loss * self.config.entropy_coeff
-                            policy_loss.backward()
+                # Loop through micro-batches ONCE to calculate gradients
+                for i, data in enumerate(micro_batches):
+                    data = data.cuda()
+                    self.actor_optimizer.zero_grad(set_to_none=True)
+                    with torch.enable_grad():
+                        # Forward and backward pass
+                        responses, response_mask = data['responses'], data['attention_mask'][:, -data['responses'].size(1):]
+                        entropy, log_prob = self._forward_micro_batch(micro_batch=data, temperature=temperature)
+                        pg_loss, _, _ = core_algos.compute_policy_loss(data['old_log_probs'], log_prob, data['advantages'], response_mask, self.config.clip_ratio)
+                        policy_loss = pg_loss - verl_F.masked_mean(entropy, response_mask) * self.config.entropy_coeff
+                        policy_loss.backward()
 
-                        if isinstance(self.actor_module, FSDP):
-                            self.actor_module.clip_grad_norm_(max_norm=self.config.grad_clip)
+                    if isinstance(self.actor_module, FSDP):
+                        self.actor_module.clip_grad_norm_(max_norm=self.config.grad_clip)
 
-                        # Summon full params on the top-level module, not the sub-component, to ensure
-                        # FSDP correctly gathers all sharded gradients.
-                        with FSDP.summon_full_params(self.actor_module, writeback=False, rank0_only=True, with_grads=True):
+                    # After backward pass, iterate through components to collect their respective gradients
+                    for component_name, component_module in components_to_analyze.items():
+                        with FSDP.summon_full_params(component_module, writeback=False, rank0_only=True, with_grads=True):
                             if rank == 0:
-                                print(f"--- [Fisher Debug] Micro-batch {i+1}/{len(micro_batches)} for component {component_name} ---")
                                 grad_dict = {}
+                                # Iterate over the main model's params to get the correct FQN and check against the component's param IDs
                                 for fqn, p in self.actor_module.named_parameters():
-                                    if id(p) in component_param_ids:
+                                    if id(p) in component_param_ids[component_name]:
                                         if p.grad is not None:
                                             clean_fqn = fqn.replace('_fsdp_wrapped_module.', '').replace('._fsdp_wrapped_module', '')
                                             grad_dict[clean_fqn] = p.grad.clone().cpu()
-                                        else:
-                                            # This is the key debug information we need.
-                                            print(f"  [!!] Grad is None for {fqn}")
-
                                 if grad_dict:
-                                    per_micro_batch_grads.append(grad_dict)
-                                    print(f"  ==> Appended grads. List size now {len(per_micro_batch_grads)}")
-                                else:
-                                    print(f"  ==> grad_dict is empty. Not appending.")
-                        if isinstance(self.actor_module, FSDP):
-                            dist.barrier()
+                                    collected_grads[component_name].append(grad_dict)
 
-                    if rank == 0 and per_micro_batch_grads:
-                        print(f"[Fisher Debug] Finished collecting grads for {component_name}. Sending {len(per_micro_batch_grads)} to analyzer.")
-                        current_lr = self.actor_optimizer.param_groups[0]['lr']
-                        self.fisher_info_analyzer.analyze_component_grads.remote(
-                            identifier='actor',
-                            component_name=component_name,
-                            per_micro_batch_grads=per_micro_batch_grads,
-                            original_param_shapes=self.original_param_shapes,
-                            micro_batch_size=self.config.ppo_micro_batch_size,
-                            current_lr=current_lr,
-                            global_step=self.global_steps
-                        )
+                # After all micro-batches, send the collected gradients to the analyzer
+                if rank == 0:
+                    for component_name, per_micro_batch_grads in collected_grads.items():
+                        if per_micro_batch_grads:
+                            print(f"[Fisher Debug] Finished collecting grads for {component_name}. Sending {len(per_micro_batch_grads)} to analyzer.")
+                            current_lr = self.actor_optimizer.param_groups[0]['lr']
+                            self.fisher_info_analyzer.analyze_component_grads.remote(
+                                identifier='actor',
+                                component_name=component_name,
+                                per_micro_batch_grads=per_micro_batch_grads,
+                                original_param_shapes=self.original_param_shapes,
+                                micro_batch_size=self.config.ppo_micro_batch_size,
+                                current_lr=current_lr,
+                                global_step=self.global_steps
+                            )
                 self.actor_optimizer.zero_grad(set_to_none=True)
 
         rank = dist.get_rank() if dist.is_available() and dist.is_initialized() else 0

@@ -347,19 +347,30 @@ class DataParallelPPOActor(BasePPOActor):
                     metrics['actor/kl_loss'] = kl_loss.item()
 
         if run_fisher_analysis and rank == 0:
+            # --- Trigger asynchronous analysis for each component ---
+            analysis_tasks = []
             for component_name, per_mini_batch_grads in collected_grads_for_fisher.items():
                 if per_mini_batch_grads:
                     print(f"[Fisher Debug] Finished collecting grads for {component_name}. Sending {len(per_mini_batch_grads)} mini-batch grads to analyzer.")
                     current_lr = self.actor_optimizer.param_groups[0]['lr']
-                    self.fisher_info_analyzer.analyze_component_grads.remote(
+                    task = self.fisher_info_analyzer.analyze_component_grads.remote(
                         identifier='actor',
                         component_name=component_name,
-                        per_micro_batch_grads=per_mini_batch_grads, 
+                        per_micro_batch_grads=per_mini_batch_grads,
                         original_param_shapes=self.original_param_shapes,
-                        micro_batch_size=self.config.ppo_mini_batch_size, 
+                        micro_batch_size=self.config.ppo_mini_batch_size,
                         current_lr=current_lr,
                         global_step=self.global_steps
                     )
+                    analysis_tasks.append(task)
+            
+            # --- Wait for all analyses to complete, then aggregate and log stats ---
+            if analysis_tasks:
+                ray.get(analysis_tasks) # Ensure all component analyses are done
+                fisher_stats_ref = self.fisher_info_analyzer.get_aggregated_stats.remote(identifier='actor')
+                fisher_stats = ray.get(fisher_stats_ref)
+                if fisher_stats:
+                    metrics.update(fisher_stats)
 
         rank = dist.get_rank() if dist.is_available() and dist.is_initialized() else 0
         is_fsdp = isinstance(self.actor_module, FSDP)

@@ -123,6 +123,7 @@ class FisherInfoAnalyzer:
                     'sigma_max': sigma_max.item(),
                     'sigma_min': sigma_min.item(),
                 }
+                print(f"[FisherInfo] Param '{name}': c_k={param_stats['c_k']:.4f}, l_k={param_stats['l_k']:.4f}")
                 component_stats[name] = param_stats
 
             except torch.linalg.LinAlgError as e:
@@ -134,8 +135,38 @@ class FisherInfoAnalyzer:
 
     def get_aggregated_stats(self, identifier: str):
         """
-        Computes and returns the final aggregated statistics for the entire model.
+        Computes and returns aggregated statistics (mean, max, min) for c_k and l_k
+        across all analyzed components and parameters for a given identifier.
         """
-        # This method can be expanded to compute running averages across all params if needed.
-        # For now, it just returns the collected per-parameter stats.
-        return self.stats.get(identifier, {})
+        stats = self.stats.get(identifier)
+        if not stats or 'params' not in stats:
+            return {}
+
+        all_c_k = []
+        all_l_k = []
+
+        for component_name, component_data in stats['params'].items():
+            for param_name, param_stats in component_data.items():
+                if 'c_k' in param_stats:
+                    all_c_k.append(param_stats['c_k'])
+                if 'l_k' in param_stats:
+                    all_l_k.append(param_stats['l_k'])
+        
+        if not all_c_k: # If no params were analyzed, return empty
+            return {}
+
+        summary_stats = {
+            'fisher/c_k_mean': np.mean(all_c_k),
+            'fisher/c_k_max': np.max(all_c_k),
+            'fisher/c_k_min': np.min(all_c_k),
+            'fisher/c_k_std': np.std(all_c_k),
+            'fisher/l_k_mean': np.mean(all_l_k),
+            'fisher/l_k_max': np.max(all_l_k),
+            'fisher/l_k_min': np.min(all_l_k),
+            'fisher/l_k_std': np.std(all_l_k),
+        }
+        
+        # Store summary and return
+        self.stats[identifier]['summary'] = summary_stats
+        print(f"[FisherInfoAnalyzer] Aggregated Stats for '{identifier}': c_k_mean={summary_stats['fisher/c_k_mean']:.4f}, l_k_mean={summary_stats['fisher/l_k_mean']:.4f}")
+        return summary_stats

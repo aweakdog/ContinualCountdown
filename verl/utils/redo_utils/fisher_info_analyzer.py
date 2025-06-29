@@ -43,21 +43,29 @@ class FisherInfoAnalyzer:
         """
         Analyzes gradients for a specific model component to compute EFIM metrics for each parameter.
         """
+        print(f"[DEBUG][Fisher] Received request for component '{component_name}' with {len(per_micro_batch_grads)} micro-batch grads.")
         if not per_micro_batch_grads or not per_micro_batch_grads[0]:
             print(f"[FisherInfoAnalyzer] No gradients for component '{component_name}'. Skipping.")
             return
 
         # Reorganize from a list of dicts to a dict of lists.
         grads_by_param = collections.defaultdict(list)
-        for grad_dict in per_micro_batch_grads:
+        for i, grad_dict in enumerate(per_micro_batch_grads):
             for name, grad_tensor in grad_dict.items():
                 grads_by_param[name].append(grad_tensor)
 
+        if not grads_by_param:
+            print(f"[DEBUG][Fisher] 'grads_by_param' is empty for component '{component_name}'. Exiting analysis for this component.")
+            return
+
         component_stats = {}
+        print(f"[DEBUG][Fisher] Analyzing {len(grads_by_param)} params for component '{component_name}': {list(grads_by_param.keys())}")
         for name, grads in grads_by_param.items():
             try:
+                print(f"[DEBUG][Fisher] Param '{name}': processing {len(grads)} gradients.")
                 # Stack gradients to form the Jacobian for this parameter
                 jacobian = torch.stack([g.flatten().cuda() for g in grads])
+                print(f"[DEBUG][Fisher] Param '{name}': Jacobian shape: {jacobian.shape}")
                 
                 # Compute reduced Fisher matrix: F_tilde = J @ J.T
                 fisher_tilde = jacobian @ jacobian.T
@@ -66,6 +74,7 @@ class FisherInfoAnalyzer:
                 non_zero_eigenvalues = eigenvalues[eigenvalues > 1e-8]
 
                 if len(non_zero_eigenvalues) < 2:
+                    print(f"[DEBUG][Fisher] Param '{name}': Skipping due to < 2 non-zero eigenvalues ({len(non_zero_eigenvalues)} found).")
                     continue
 
                 sigma_max = torch.sqrt(non_zero_eigenvalues.max())

@@ -382,8 +382,8 @@ class ActorRolloutRefWorker(Worker):
 
             self.fisher_info_analyzer = None
             if self.config.actor.get("fisher_analysis_enabled", True):
-                from verl.utils.redo_utils.fisher_info_analyzer import FisherInfoAnalyzer
-                self.fisher_info_analyzer = FisherInfoAnalyzer.remote()
+                if self.config.actor.fsdp_component_analysis.get('run_fisher_info_analysis', True):
+                    self.fisher_info_analyzer = FisherInfoAnalyzer.remote(self.config)
 
             self.actor = DataParallelPPOActor(
                 config=self.config.actor,

@@ -65,7 +65,8 @@ class DataParallelPPOActor(BasePPOActor):
         self.original_param_shapes = original_param_shapes 
         self.grad_analyzer = grad_analyzer
         self.fisher_info_analyzer = fisher_info_analyzer
-        self.fisher_analysis_freq = self.config.get("fisher_analysis_freq", 50)
+        self.fisher_analysis_freq = self.config.get("fisher_analysis_freq", 1)
+        self.fisher_components_to_analyze = self.config.get("fisher_components_to_analyze", None)
         self.use_remove_padding = self.config.get('use_remove_padding', False)
         print(f'Actor use_remove_padding={self.use_remove_padding}')
         self.ulysses_sequence_parallel_size = self.config.ulysses_sequence_parallel_size
@@ -194,80 +195,7 @@ class DataParallelPPOActor(BasePPOActor):
         self.actor_optimizer.step()
         return grad_norm
 
-    def _run_fisher_analysis(self, mini_batch, temperature):
-        """
-        Runs a separate forward/backward pass to compute per-micro-batch gradients
-        for Fisher Information Matrix analysis, without affecting the main training gradients.
-        This method is designed to be safe with FSDP and gradient accumulation.
-        """
-        if not self.fisher_info_analyzer:
-            return
 
-        rank = dist.get_rank()
-        if rank == 0:
-            print(f"[INFO][Actor][Step {self.global_steps}] Running Fisher Information analysis.")
-
-        if self.config.use_dynamic_bsz:
-            max_token_len = self.config.ppo_max_token_len_per_gpu * self.ulysses_sequence_parallel_size
-            micro_batches, _ = rearrange_micro_batches(batch=mini_batch, max_token_len=max_token_len)
-        else:
-            micro_batches = mini_batch.split(self.config.ppo_micro_batch_size)
-
-        per_micro_batch_grads = []
-        self.actor_module.train()  # Ensure module is in train mode for gradients
-
-        for data in micro_batches:
-            data = data.cuda()
-            # Clear gradients for this specific micro-batch analysis
-            self.actor_optimizer.zero_grad(set_to_none=True)
-
-            with torch.enable_grad():
-                # Re-compute loss for this micro-batch to get its gradient
-                responses = data['responses']
-                response_mask = data['attention_mask'][:, -responses.size(1):]
-                old_log_prob = data['old_log_probs']
-                advantages = data['advantages']
-
-                entropy, log_prob = self._forward_micro_batch(micro_batch=data, temperature=temperature)
-
-                pg_loss, _, _ = core_algos.compute_policy_loss(
-                    old_log_prob=old_log_prob, log_prob=log_prob, advantages=advantages,
-                    eos_mask=response_mask, cliprange=self.config.clip_ratio
-                )
-                entropy_loss = verl_F.masked_mean(entropy, response_mask)
-                policy_loss = pg_loss - entropy_loss * self.config.entropy_coeff
-                
-                # The backward pass computes the gradient for this micro-batch only
-                policy_loss.backward()
-
-            # Gather the full gradient from all shards on rank 0
-            with FSDP.summon_full_params(self.actor_module, writeback=False, rank0_only=True, with_grads=True):
-                if rank == 0:
-                    # Flatten and collect the gradient, moving it to CPU to save GPU memory
-                    flat_grad = torch.cat([
-                        p.grad.flatten().cpu()
-                        for p in self.actor_module.parameters()
-                        if p.grad is not None
-                    ])
-                    per_micro_batch_grads.append(flat_grad)
-            
-            # Synchronize all ranks before proceeding to the next micro-batch
-            if isinstance(self.actor_module, FSDP):
-                dist.barrier()
-
-        # After processing all micro-batches, send the collected gradients to the analyzer
-        if rank == 0 and per_micro_batch_grads:
-            current_lr = self.actor_optimizer.param_groups[0]['lr']
-            self.fisher_info_analyzer.analyze_fisher_info.remote(
-                per_micro_batch_grads=per_micro_batch_grads,
-                micro_batch_size=self.config.ppo_micro_batch_size,
-                current_lr=current_lr,
-                global_step=self.global_steps
-            )
-
-        # IMPORTANT: Clean up gradients to ensure this analysis does not interfere
-        # with the main training loop's gradient accumulation.
-        self.actor_optimizer.zero_grad(set_to_none=True)
 
     def compute_log_prob(self, data: DataProto) -> torch.Tensor:
         """Compute the log probability of the responses given input_ids, attention_mask and position_ids
@@ -400,8 +328,57 @@ class DataParallelPPOActor(BasePPOActor):
 
             # --- Fisher Information Matrix Analysis ---
             if self.fisher_info_analyzer and self.global_steps % self.fisher_analysis_freq == 0:
-                # This analysis runs a separate backward pass and does not affect training.
-                self._run_fisher_analysis(mini_batch, temperature)
+                rank = dist.get_rank()
+                if rank == 0:
+                    ray.get(self.fisher_info_analyzer.reset.remote(identifier='actor'))
+                if isinstance(self.actor_module, FSDP):
+                    dist.barrier()
+
+                # Determine which components to analyze
+                if self.fisher_components_to_analyze:
+                    components_to_analyze = {name: self.actor_module.get_submodule(fqn) for name, fqn in self.fisher_components_to_analyze.items()}
+                else: # Fallback to all layers if not specified
+                    components_to_analyze = {f"layer_{i}": layer for i, layer in enumerate(self.actor_module.model.layers)}
+
+                for component_name, component_module in components_to_analyze.items():
+                    per_micro_batch_grads = []
+                    # We must re-calculate gradients for each component analysis pass
+                    for data in micro_batches:
+                        data = data.cuda()
+                        self.actor_optimizer.zero_grad(set_to_none=True)
+                        with torch.enable_grad():
+                            responses = data['responses']
+                            response_mask = data['attention_mask'][:, -responses.size(1):]
+                            old_log_prob = data['old_log_probs']
+                            advantages = data['advantages']
+                            entropy, log_prob = self._forward_micro_batch(micro_batch=data, temperature=temperature)
+                            pg_loss, _, _ = core_algos.compute_policy_loss(old_log_prob=old_log_prob, log_prob=log_prob, advantages=advantages, eos_mask=response_mask, cliprange=self.config.clip_ratio)
+                            entropy_loss = verl_F.masked_mean(entropy, response_mask)
+                            policy_loss = pg_loss - entropy_loss * self.config.entropy_coeff
+                            policy_loss.backward()
+
+                        with FSDP.summon_full_params(component_module, writeback=False, rank0_only=True, with_grads=True):
+                            if rank == 0:
+                                grad_dict = {
+                                    fqn.replace('._fsdp_wrapped_module', ''): p.grad.clone().cpu()
+                                    for fqn, p in component_module.named_parameters() if p.grad is not None
+                                }
+                                if grad_dict:
+                                    per_micro_batch_grads.append(grad_dict)
+                        if isinstance(self.actor_module, FSDP):
+                            dist.barrier()
+
+                    if rank == 0 and per_micro_batch_grads:
+                        current_lr = self.actor_optimizer.param_groups[0]['lr']
+                        self.fisher_info_analyzer.analyze_component_grads.remote(
+                            identifier='actor',
+                            component_name=component_name,
+                            per_micro_batch_grads=per_micro_batch_grads,
+                            micro_batch_size=self.config.ppo_micro_batch_size,
+                            current_lr=current_lr,
+                            global_step=self.global_steps
+                        )
+                self.actor_optimizer.zero_grad(set_to_none=True)
 
         rank = dist.get_rank() if dist.is_available() and dist.is_initialized() else 0
         is_fsdp = isinstance(self.actor_module, FSDP)

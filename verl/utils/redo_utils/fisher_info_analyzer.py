@@ -16,96 +16,84 @@ import ray
 import torch
 import numpy as np
 import collections
-from typing import List
+from typing import List, Dict
 
 @ray.remote(num_gpus=1, num_cpus=1)
 class FisherInfoAnalyzer:
     """
-    A stateful Ray actor to compute and track Empirical Fisher Information Matrix (EFIM)
-    based metrics, specifically the condition number (C_K) and cumulative energy (L_K),
-    as described in the user's pseudocode.
+    A stateful Ray actor that computes Empirical Fisher Information Matrix (EFIM) metrics
+    on a per-parameter basis, aggregated by component.
     """
     def __init__(self):
-        """
-        Initializes the analyzer.
-        """
         print("[FisherInfoAnalyzer] Actor initialized.")
-        self.running_C = 0.0
-        self.cumulative_L = 0.0
-        self.current_step_idx = 0
+        self.stats = collections.defaultdict(lambda: {'params': {}, 'summary': {}})
+        self.current_step_idx = collections.defaultdict(int)
+        self.running_C = collections.defaultdict(float)
+        self.cumulative_L = collections.defaultdict(float)
 
-    def reset(self):
-        """Resets the internal state of the analyzer."""
-        self.running_C = 0.0
-        self.cumulative_L = 0.0
-        self.current_step_idx = 0
-        print(f"[FisherInfoAnalyzer] State has been reset.")
+    def reset(self, identifier: str):
+        """Resets the statistics for a given analysis identifier (e.g., 'actor')."""
+        self.stats[identifier] = {'params': {}, 'summary': {}}
+        self.current_step_idx[identifier] = 0
+        self.running_C[identifier] = 0.0
+        self.cumulative_L[identifier] = 0.0
+        print(f"[FisherInfoAnalyzer] Statistics reset for identifier: '{identifier}'.")
 
-    def analyze_fisher_info(self, per_micro_batch_grads: List[torch.Tensor], micro_batch_size: int, current_lr: float, global_step: int):
+    def analyze_component_grads(self, identifier: str, component_name: str, per_micro_batch_grads: List[Dict[str, torch.Tensor]], micro_batch_size: int, current_lr: float, global_step: int):
         """
-        Computes C_K and L_K from a list of per-micro-batch gradients.
-
-        Args:
-            per_micro_batch_grads: A list of flattened gradient tensors, one for each micro-batch.
-            micro_batch_size: The number of samples in each micro-batch.
-            current_lr: The learning rate at the current step.
-            global_step: The global training step, used for logging.
+        Analyzes gradients for a specific model component to compute EFIM metrics for each parameter.
         """
-        if not per_micro_batch_grads:
-            print("[FisherInfoAnalyzer] Received an empty list of gradients. Skipping analysis.")
-            return None
+        if not per_micro_batch_grads or not per_micro_batch_grads[0]:
+            print(f"[FisherInfoAnalyzer] No gradients for component '{component_name}'. Skipping.")
+            return
 
-        # Move gradients to the GPU where the actor is running and stack into a Jacobian matrix.
-        try:
-            jacobian = torch.stack([g.cuda() for g in per_micro_batch_grads])  # Shape: [num_micro_batches, param_dim]
-        except Exception as e:
-            print(f"[FisherInfoAnalyzer] Error stacking gradients: {e}")
-            return None
+        # Reorganize from a list of dicts to a dict of lists.
+        grads_by_param = collections.defaultdict(list)
+        for grad_dict in per_micro_batch_grads:
+            for name, grad_tensor in grad_dict.items():
+                grads_by_param[name].append(grad_tensor)
 
-        # Compute the reduced Fisher matrix F_tilde = J @ J.T
-        # This results in a small matrix of shape [num_micro_batches, num_micro_batches].
-        fisher_tilde = jacobian @ jacobian.T
+        component_stats = {}
+        for name, grads in grads_by_param.items():
+            try:
+                # Stack gradients to form the Jacobian for this parameter
+                jacobian = torch.stack([g.flatten().cuda() for g in grads])
+                
+                # Compute reduced Fisher matrix: F_tilde = J @ J.T
+                fisher_tilde = jacobian @ jacobian.T
+                
+                eigenvalues = torch.linalg.eigvalsh(fisher_tilde)
+                non_zero_eigenvalues = eigenvalues[eigenvalues > 1e-8]
 
-        try:
-            # Compute eigenvalues. eigvalsh is for symmetric matrices and is more efficient.
-            eigenvalues = torch.linalg.eigvalsh(fisher_tilde)
-            # Filter out near-zero eigenvalues to avoid numerical instability.
-            non_zero_eigenvalues = eigenvalues[eigenvalues > 1e-8]
+                if len(non_zero_eigenvalues) < 2:
+                    continue
 
-            if len(non_zero_eigenvalues) < 2:
-                print(f"[FisherInfoAnalyzer] Not enough non-zero eigenvalues ({len(non_zero_eigenvalues)}) to compute condition number. Skipping.")
-                return None
+                sigma_max = torch.sqrt(non_zero_eigenvalues.max())
+                sigma_min = torch.sqrt(non_zero_eigenvalues.min())
+                c_k = sigma_max / sigma_min
+                trace_F = torch.trace(fisher_tilde)
+                l_k = (current_lr / micro_batch_size) * torch.sqrt(trace_F)
 
-            # Calculate c_k (condition number of the EFIM)
-            sigma_max = torch.sqrt(non_zero_eigenvalues.max())
-            sigma_min = torch.sqrt(non_zero_eigenvalues.min())
-            c_k = sigma_max / sigma_min
+                param_stats = {
+                    'c_k': c_k.item(),
+                    'l_k': l_k.item(),
+                    'trace_F': trace_F.item(),
+                    'sigma_max': sigma_max.item(),
+                    'sigma_min': sigma_min.item(),
+                }
+                component_stats[name] = param_stats
 
-            # Calculate the trace of the Fisher matrix
-            trace_F = torch.trace(fisher_tilde)
+            except torch.linalg.LinAlgError as e:
+                print(f"[FisherInfoAnalyzer] LinAlgError for param '{name}' in component '{component_name}': {e}")
+                continue
+        
+        self.stats[identifier]['params'][component_name] = component_stats
+        print(f"[FisherInfoAnalyzer] Step {global_step} | Component '{component_name}': Analyzed {len(component_stats)} params.")
 
-            # Update the running average for C_K (average condition number)
-            self.running_C += c_k.item()
-            C_K = self.running_C / (self.current_step_idx + 1)
-
-            # Update the cumulative L_K (total energy)
-            l_k = (current_lr / micro_batch_size) * torch.sqrt(trace_F)
-            self.cumulative_L += l_k.item()
-            L_K = self.cumulative_L
-
-            self.current_step_idx += 1
-
-            stats = {
-                'fisher/c_k_step': c_k.item(),
-                'fisher/trace_F_step': trace_F.item(),
-                'fisher/C_K_running_avg': C_K,
-                'fisher/L_K_cumulative': L_K,
-                'fisher/sigma_max': sigma_max.item(),
-                'fisher/sigma_min': sigma_min.item(),
-            }
-            print(f"[FisherInfoAnalyzer] Step {global_step}: {stats}")
-            return stats
-
-        except torch.linalg.LinAlgError as e:
-            print(f"[FisherInfoAnalyzer] A linear algebra error occurred during eigenvalue computation: {e}. Skipping analysis for this step.")
-            return None
+    def get_aggregated_stats(self, identifier: str):
+        """
+        Computes and returns the final aggregated statistics for the entire model.
+        """
+        # This method can be expanded to compute running averages across all params if needed.
+        # For now, it just returns the collected per-parameter stats.
+        return self.stats.get(identifier, {})

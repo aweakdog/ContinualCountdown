@@ -353,6 +353,7 @@ class DataParallelPPOActor(BasePPOActor):
                 if per_mini_batch_grads:
                     print(f"[Fisher Debug] Finished collecting grads for {component_name}. Sending {len(per_mini_batch_grads)} mini-batch grads to analyzer.")
                     current_lr = self.actor_optimizer.param_groups[0]['lr']
+                    print(f"[Fisher Debug] Using current_lr={current_lr} for l_k calculation.")
                     task = self.fisher_info_analyzer.analyze_component_grads.remote(
                         identifier='actor',
                         component_name=component_name,

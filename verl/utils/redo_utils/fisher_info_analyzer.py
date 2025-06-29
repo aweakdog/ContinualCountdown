@@ -24,20 +24,19 @@ class FisherInfoAnalyzer:
     A stateful Ray actor that computes Empirical Fisher Information Matrix (EFIM) metrics
     on a per-parameter basis, aggregated by component.
     """
-    def __init__(self):
+    def __init__(self, config):
+        self.config = config
         print("[FisherInfoAnalyzer] Actor initialized.")
-        self.stats = collections.defaultdict(lambda: {'params': {}, 'summary': {}})
-        self.current_step_idx = collections.defaultdict(int)
-        self.running_C = collections.defaultdict(float)
-        self.cumulative_L = collections.defaultdict(float)
+        # self.stats stores metrics for the CURRENT analysis step
+        self.stats = collections.defaultdict(lambda: {'params': {}})
+        # self.history stores metrics from ALL past analysis steps to compute running stats
+        self.history = collections.defaultdict(lambda: {'c_k_means': [], 'l_k_sums': []})
 
     def reset(self, identifier: str):
-        """Resets the statistics for a given analysis identifier (e.g., 'actor')."""
-        self.stats[identifier] = {'params': {}, 'summary': {}}
-        self.current_step_idx[identifier] = 0
-        self.running_C[identifier] = 0.0
-        self.cumulative_L[identifier] = 0.0
-        print(f"[FisherInfoAnalyzer] Statistics reset for identifier: '{identifier}'.")
+        """Resets the statistics and history for a given analysis identifier (e.g., 'actor')."""
+        self.stats.pop(identifier, None)
+        self.history.pop(identifier, None)
+        print(f"[FisherInfoAnalyzer] Reset statistics and history for identifier '{identifier}'.")
 
     def analyze_component_grads(self, identifier: str, component_name: str, per_micro_batch_grads: List[Dict[str, torch.Tensor]], original_param_shapes: Dict[str, torch.Size], micro_batch_size: int, current_lr: float, global_step: int):
         """
@@ -137,38 +136,53 @@ class FisherInfoAnalyzer:
 
     def get_aggregated_stats(self, identifier: str):
         """
-        Computes and returns aggregated statistics (mean, max, min) for c_k and l_k
-        across all analyzed components and parameters for a given identifier.
+        Computes and returns time-aggregated statistics for c_k and l_k.
+        - c_k is the running average of the mean c_k from each step.
+        - l_k is the cumulative sum of the l_k values from each step.
         """
-        stats = self.stats.get(identifier)
-        if not stats or 'params' not in stats:
+        # 1. Calculate stats for the CURRENT step from self.stats
+        current_stats = self.stats.get(identifier)
+        if not current_stats or 'params' not in current_stats:
             return {}
 
-        all_c_k = []
-        all_l_k = []
+        current_all_c_k = []
+        current_all_l_k = []
+        for component_data in current_stats['params'].values():
+            for param_stats in component_data.values():
+                current_all_c_k.append(param_stats['c_k'])
+                current_all_l_k.append(param_stats['l_k'])
 
-        for component_name, component_data in stats['params'].items():
-            for param_name, param_stats in component_data.items():
-                if 'c_k' in param_stats:
-                    all_c_k.append(param_stats['c_k'])
-                if 'l_k' in param_stats:
-                    all_l_k.append(param_stats['l_k'])
+        if not current_all_c_k:
+            return {}
+
+        current_c_k_mean = np.mean(current_all_c_k)
+        current_l_k_sum_for_this_step = np.sum(current_all_l_k)
+
+        # 2. Update history
+        self.history.setdefault(identifier, {'c_k_means': [], 'l_k_sums': []})
+        self.history[identifier]['c_k_means'].append(current_c_k_mean)
+        self.history[identifier]['l_k_sums'].append(current_l_k_sum_for_this_step)
+
+        # 3. Calculate and return final time-aggregated metrics
+        c_k_history_list = self.history[identifier]['c_k_means']
+        l_k_history_list = self.history[identifier]['l_k_sums']
         
-        if not all_c_k: # If no params were analyzed, return empty
-            return {}
+        K = len(c_k_history_list) # K is the number of steps we have history for
+
+        # C_K = sigma(past c_k)/K -> This is the mean of the historical means
+        final_c_k_running_avg = np.mean(c_k_history_list)
+        
+        # l_k is the sum of the history l_k -> This is the sum of the historical sums
+        final_l_k_cumulative_sum = np.sum(l_k_history_list)
 
         summary_stats = {
-            'fisher/c_k_mean': np.mean(all_c_k),
-            'fisher/c_k_max': np.max(all_c_k),
-            'fisher/c_k_min': np.min(all_c_k),
-            'fisher/c_k_std': np.std(all_c_k),
-            'fisher/l_k_mean': np.mean(all_l_k),
-            'fisher/l_k_max': np.max(all_l_k),
-            'fisher/l_k_min': np.min(all_l_k),
-            'fisher/l_k_std': np.std(all_l_k),
+            'fisher/c_k_running_avg': final_c_k_running_avg,
+            'fisher/l_k_cumulative_sum': final_l_k_cumulative_sum,
+            'fisher/c_k_mean_current': current_c_k_mean,
+            'fisher/l_k_sum_current': current_l_k_sum_for_this_step,
         }
-        
-        # Store summary and return
-        self.stats[identifier]['summary'] = summary_stats
-        print(f"[FisherInfoAnalyzer] Aggregated Stats for '{identifier}': c_k_mean={summary_stats['fisher/c_k_mean']:.4f}, l_k_mean={summary_stats['fisher/l_k_mean']:.4f}")
+
+        print(f"[FisherInfoAnalyzer] Aggregated Stats for '{identifier}': "
+              f"c_k_running_avg={summary_stats['fisher/c_k_running_avg']:.4f}, "
+              f"l_k_cumulative_sum={summary_stats['fisher/l_k_cumulative_sum']:.6g}")
         return summary_stats

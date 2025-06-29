@@ -334,6 +334,11 @@ class DataParallelPPOActor(BasePPOActor):
                             if grad_dict:
                                 collected_grads_for_fisher[component_name].append(grad_dict)
 
+            # Capture the learning rate that will be used for this optimizer step.
+            # This is critical because some schedulers might update the LR after the step.
+            current_lr = self.actor_optimizer.param_groups[0]['lr']
+            print(f"[DP Actor Debug] Captured current_lr = {current_lr} before optimizer step.")
+
             if isinstance(self.actor_module, FSDP):
                 self.actor_module.clip_grad_norm_(max_norm=self.config.grad_clip)
             self.actor_optimizer.step()
@@ -352,7 +357,6 @@ class DataParallelPPOActor(BasePPOActor):
             for component_name, per_mini_batch_grads in collected_grads_for_fisher.items():
                 if per_mini_batch_grads:
                     print(f"[Fisher Debug] Finished collecting grads for {component_name}. Sending {len(per_mini_batch_grads)} mini-batch grads to analyzer.")
-                    current_lr = self.actor_optimizer.param_groups[0]['lr']
                     print(f"[Fisher Debug] Using current_lr={current_lr} for l_k calculation.")
                     task = self.fisher_info_analyzer.analyze_component_grads.remote(
                         identifier='actor',

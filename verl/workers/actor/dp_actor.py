@@ -364,7 +364,9 @@ class DataParallelPPOActor(BasePPOActor):
                         if isinstance(self.actor_module, FSDP):
                             self.actor_module.clip_grad_norm_(max_norm=self.config.grad_clip)
 
-                        with FSDP.summon_full_params(component_module, writeback=False, rank0_only=True, with_grads=True):
+                        # Summon full params on the top-level module, not the sub-component, to ensure
+                        # FSDP correctly gathers all sharded gradients.
+                        with FSDP.summon_full_params(self.actor_module, writeback=False, rank0_only=True, with_grads=True):
                             if rank == 0:
                                 print(f"--- [Fisher Debug] Micro-batch {i+1}/{len(micro_batches)} for component {component_name} ---")
                                 grad_dict = {}

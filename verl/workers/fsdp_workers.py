@@ -375,15 +375,24 @@ class ActorRolloutRefWorker(Worker):
                     print("[INFO] Initializing remote GradientAnalyzer actor with fractional GPU (1) request...")
                 # The new GradientAnalyzer class is decorated with @ray.remote, which defines its own resources.
                 # We simply call .remote() to instantiate it with the specified fractional resources.
-                grad_analyzer = GradientAnalyzer.remote()
-                if self.rank == 0:
-                    print("[INFO] GradientAnalyzer actor handle created.")
+                self.grad_analyzer = None
+            if self.config.actor.get("fsdp_grad_metric_enabled", False):
+                from verl.utils.redo_utils.gradient_analyzer import GradientAnalyzer
+                self.grad_analyzer = GradientAnalyzer.options(num_gpus=1).remote()
 
-            self.actor = DataParallelPPOActor(config=self.config.actor,
-                                              actor_module=self.actor_module_fsdp,
-                                              actor_optimizer=self.actor_optimizer,
-                                              original_param_shapes=self.original_param_shapes,
-                                              grad_analyzer=grad_analyzer)
+            self.fisher_info_analyzer = None
+            if self.config.actor.get("fisher_analysis_enabled", True):
+                from verl.utils.redo_utils.fisher_info_analyzer import FisherInfoAnalyzer
+                self.fisher_info_analyzer = FisherInfoAnalyzer.remote()
+
+            self.actor = DataParallelPPOActor(
+                config=self.config.actor,
+                actor_module=self.actor_module_fsdp,
+                actor_optimizer=self.actor_optimizer,
+                original_param_shapes=self.original_param_shapes, 
+                grad_analyzer=self.grad_analyzer,
+                fisher_info_analyzer=self.fisher_info_analyzer,
+            )
             # (Re-)initialize verl-compatible analyzer and redo for actor after checkpoint/model load
             self.actor_redo_enabled = getattr(self.config, 'redo_enabled', True)
             self.actor_redo_tau = getattr(self.config, 'redo_tau', 0.1)

@@ -61,65 +61,47 @@ class FisherInfoAnalyzer:
             return
 
         component_stats = {}
-        # print(f"[DEBUG][Fisher] Analyzing {len(param_names)} params for component '{component_name}': {param_names}")
-        # print(f"[DEBUG][Fisher] Received original_param_shapes with {len(original_param_shapes)} entries. Keys: {list(original_param_shapes.keys())[:5]}...")
-
         for name, grads in grads_by_param.items():
             try:
-                # print(f"[DEBUG][Fisher] Param '{name}': processing {J.shape[0]} gradients.")
-                # print(f"[DEBUG][Fisher] Param '{name}': Jacobian shape: {J.shape}")s.get(name)
                 original_shape = original_param_shapes.get(name)
                 if not original_shape:
-                    print(f"[DEBUG][Fisher] Param '{name}': No original shape found. Skipping.")
                     continue
 
                 # Per user instruction, reshape the flattened gradients before stacking them into the Jacobian.
-                # This mimics the GradientAnalyzer's behavior.
                 reshaped_then_flattened_grads = []
                 for g in grads:
-                    # Ensure the number of elements matches before reshaping
                     if g.numel() == original_shape.numel():
                         g_reshaped = g.reshape(original_shape)
                         reshaped_then_flattened_grads.append(g_reshaped.flatten().cuda())
                     else:
                         # If shape mismatch, just flatten what we have.
-                        print(f"[Fisher WARN] Mismatch for {name}: grad numel {g.numel()} vs original shape numel {original_shape.numel()}. Using as-is.")
                         reshaped_then_flattened_grads.append(g.flatten().cuda())
 
                 if not reshaped_then_flattened_grads:
-                    print(f"[DEBUG][Fisher] Param '{name}': No valid gradients to stack after reshape/flatten. Skipping.")
                     continue
 
                 jacobian = torch.stack(reshaped_then_flattened_grads)
-                print(f"[DEBUG][Fisher] Param '{name}': Jacobian shape: {jacobian.shape}")
                 
                 # Compute reduced Fisher matrix: F_tilde = J @ J.T
                 fisher_tilde = jacobian @ jacobian.T
                 
                 eigenvalues = torch.linalg.eigvalsh(fisher_tilde)
                 
-                # Use config to set the eigenvalue threshold, with a default for backward compatibility.
                 eig_threshold = self.config.actor.get('fsdp_component_analysis', {}).get('fisher_eig_threshold', 1e-8)
                 non_zero_eigenvalues = eigenvalues[eigenvalues > eig_threshold]
 
                 if len(non_zero_eigenvalues) == 0:
-                    print(f"[DEBUG][Fisher] Param '{name}': Skipping due to 0 non-zero eigenvalues.")
                     continue
                 elif len(non_zero_eigenvalues) == 1:
-                    # Handle the case of a single gradient vector where c_k is not meaningful.
-                    print(f"[DEBUG][Fisher] Param '{name}': Only 1 non-zero eigenvalue found. Reporting default c_k=1.0.")
                     sigma_max = torch.sqrt(non_zero_eigenvalues.max())
-                    sigma_min = sigma_max  # With one value, min is the same as max
+                    sigma_min = sigma_max
                     c_k = torch.tensor(1.0)
                 else:
-                    # Original logic for 2 or more eigenvalues
                     sigma_max = torch.sqrt(non_zero_eigenvalues.max())
                     sigma_min = torch.sqrt(non_zero_eigenvalues.min())
                     c_k = sigma_max / sigma_min
-                # The trace of the full Fisher matrix F = J.T @ J is the sum of its eigenvalues.
-                # The non-zero eigenvalues of F are the same as the non-zero eigenvalues of the reduced matrix F_tilde.
+
                 trace_F = torch.sum(non_zero_eigenvalues)
-                # print(f"[DEBUG][Fisher] Param '{name}': trace_F={trace_F:.6g}")
                 l_k = (current_lr / micro_batch_size) * torch.sqrt(trace_F)
 
                 param_stats = {
@@ -129,7 +111,7 @@ class FisherInfoAnalyzer:
                     'sigma_max': sigma_max.item(),
                     'sigma_min': sigma_min.item(),
                 }
-                # Update and calculate per-parameter historical stats
+
                 param_hist = self.param_history[identifier]['params'][name]
                 param_hist['c_k_history'].append(param_stats['c_k'])
                 param_hist['l_k_history'].append(param_stats['l_k'])

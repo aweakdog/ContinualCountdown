@@ -344,7 +344,7 @@ class DataParallelPPOActor(BasePPOActor):
             if self.lr_scheduler is not None:
                 self.lr_scheduler.step()
                 new_lr = self.actor_optimizer.param_groups[0]['lr']
-                print(f"[DP Actor Debug] LR for next step is: {new_lr}")
+                # print(f"[DP Actor Debug] LR for next step is: {new_lr}")
 
             with torch.no_grad():
                 metrics['actor/pg_loss'] = pg_loss.item()
@@ -359,8 +359,8 @@ class DataParallelPPOActor(BasePPOActor):
             analysis_tasks = []
             for component_name, per_mini_batch_grads in collected_grads_for_fisher.items():
                 if per_mini_batch_grads:
-                    print(f"[Fisher Debug] Finished collecting grads for {component_name}. Sending {len(per_mini_batch_grads)} mini-batch grads to analyzer.")
-                    print(f"[Fisher Debug] Using current_lr={current_lr} for l_k calculation.")
+                    # print(f"[Fisher Debug] Finished collecting grads for {component_name}. Sending {len(per_mini_batch_grads)} mini-batch grads to analyzer.")
+                    # print(f"[Fisher Debug] Using current_lr={current_lr} for l_k calculation.")
                     task = self.fisher_info_analyzer.analyze_component_grads.remote(
                         identifier='actor',
                         component_name=component_name,

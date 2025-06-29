@@ -45,7 +45,7 @@ class FisherInfoAnalyzer:
         """
         Analyzes gradients for a specific model component to compute EFIM metrics for each parameter.
         """
-        print(f"[DEBUG][Fisher] Received request for component '{component_name}' with {len(per_micro_batch_grads)} micro-batch grads.")
+        # print(f"[DEBUG][Fisher] Received request for component '{component_name}' with {len(per_micro_batch_grads)} micro-batch grads.")
         if not per_micro_batch_grads or not per_micro_batch_grads[0]:
             print(f"[FisherInfoAnalyzer] No gradients for component '{component_name}'. Skipping.")
             return
@@ -61,14 +61,13 @@ class FisherInfoAnalyzer:
             return
 
         component_stats = {}
-        print(f"[DEBUG][Fisher] Analyzing {len(grads_by_param)} params for component '{component_name}': {list(grads_by_param.keys())}")
-        if original_param_shapes:
-            print(f"[DEBUG][Fisher] Received original_param_shapes with {len(original_param_shapes)} entries. Keys: {list(original_param_shapes.keys())[:5]}...")
+        # print(f"[DEBUG][Fisher] Analyzing {len(param_names)} params for component '{component_name}': {param_names}")
+        # print(f"[DEBUG][Fisher] Received original_param_shapes with {len(original_param_shapes)} entries. Keys: {list(original_param_shapes.keys())[:5]}...")
 
         for name, grads in grads_by_param.items():
             try:
-                print(f"[DEBUG][Fisher] Param '{name}': processing {len(grads)} gradients.")
-                
+                # print(f"[DEBUG][Fisher] Param '{name}': processing {J.shape[0]} gradients.")
+                # print(f"[DEBUG][Fisher] Param '{name}': Jacobian shape: {J.shape}")s.get(name)
                 original_shape = original_param_shapes.get(name)
                 if not original_shape:
                     print(f"[DEBUG][Fisher] Param '{name}': No original shape found. Skipping.")
@@ -120,7 +119,7 @@ class FisherInfoAnalyzer:
                 # The trace of the full Fisher matrix F = J.T @ J is the sum of its eigenvalues.
                 # The non-zero eigenvalues of F are the same as the non-zero eigenvalues of the reduced matrix F_tilde.
                 trace_F = torch.sum(non_zero_eigenvalues)
-                print(f"[DEBUG][Fisher] Param '{name}': trace_F={trace_F:.6g}")
+                # print(f"[DEBUG][Fisher] Param '{name}': trace_F={trace_F:.6g}")
                 l_k = (current_lr / micro_batch_size) * torch.sqrt(trace_F)
 
                 param_stats = {

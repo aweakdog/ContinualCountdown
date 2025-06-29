@@ -268,6 +268,25 @@ class DataParallelPPOActor(BasePPOActor):
         dataloader = batch.split(self.config.ppo_mini_batch_size)
 
         metrics = {}
+        run_fisher_analysis = self.fisher_info_analyzer and self.global_steps % self.fisher_analysis_freq == 0
+        if run_fisher_analysis:
+            rank = dist.get_rank()
+            if rank == 0:
+                ray.get(self.fisher_info_analyzer.reset.remote(identifier='actor'))
+            if isinstance(self.actor_module, FSDP):
+                dist.barrier()
+
+            components_to_analyze = {
+                "embed_tokens": self.actor_module.model.embed_tokens,
+                "final_norm": self.actor_module.model.norm,
+                "lm_head": self.actor_module.lm_head,
+            }
+            for i, layer in enumerate(self.actor_module.model.layers):
+                components_to_analyze[f"layer_{i}"] = layer
+            
+            component_param_ids = {name: {id(p) for p in module.parameters()} for name, module in components_to_analyze.items()}
+            collected_grads_for_fisher = {name: [] for name in components_to_analyze}
+
         for batch_idx, data in enumerate(dataloader):
             mini_batch = data
             if self.config.use_dynamic_bsz:
@@ -280,123 +299,90 @@ class DataParallelPPOActor(BasePPOActor):
 
             for data in micro_batches:
                 data = data.cuda()  
-                responses = data['responses']
-                response_length = responses.size(1)
-                attention_mask = data['attention_mask']
-                response_mask = attention_mask[:, -response_length:]
-                old_log_prob = data['old_log_probs']
-                advantages = data['advantages']
-
-                clip_ratio = self.config.clip_ratio
-                entropy_coeff = self.config.entropy_coeff
-
+                responses, response_mask = data['responses'], data['attention_mask'][:, -data['responses'].size(1):]
                 entropy, log_prob = self._forward_micro_batch(micro_batch=data, temperature=temperature)
-
-                pg_loss, pg_clipfrac, ppo_kl = core_algos.compute_policy_loss(old_log_prob=old_log_prob,
-                                                                              log_prob=log_prob,
-                                                                              advantages=advantages,
-                                                                              eos_mask=response_mask,
-                                                                              cliprange=clip_ratio)
-                entropy_loss = verl_F.masked_mean(entropy, response_mask)
-
-                policy_loss = pg_loss - entropy_loss * entropy_coeff
-
-                if self.config.use_kl_loss:
-                    ref_log_prob = data['ref_log_prob']
-                    kld = core_algos.kl_penalty(logprob=log_prob,
-                                                ref_logprob=ref_log_prob,
-                                                kl_penalty=self.config.kl_loss_type)
-                    kl_loss = masked_mean(kld, response_mask)
-
-                    policy_loss = policy_loss - kl_loss * self.config.kl_loss_coef
-                    metrics['actor/kl_loss'] = kl_loss.detach().item()
-                    metrics['actor/kl_coef'] = self.config.kl_loss_coef
-
+                pg_loss, _, _ = core_algos.compute_policy_loss(data['old_log_probs'], log_prob, data['advantages'], response_mask, self.config.clip_ratio)
+                policy_loss = pg_loss - verl_F.masked_mean(entropy, response_mask) * self.config.entropy_coeff
                 loss = policy_loss / self.gradient_accumulation
                 loss.backward()
 
-                data = {
-                    'actor/entropy_loss': entropy_loss.detach().item(),
-                    'actor/pg_loss': pg_loss.detach().item(),
-                    'actor/pg_clipfrac': pg_clipfrac.detach().item(),
-                    'actor/ppo_kl': ppo_kl.detach().item(),
-                }
-                append_to_dict(metrics, data)
-            grad_norm = self._optimizer_step()
-            data = {'actor/grad_norm': grad_norm.detach().item()}
-            append_to_dict(metrics, data)
+            if run_fisher_analysis:
+                for component_name, component_module in components_to_analyze.items():
+                    with FSDP.summon_full_params(component_module, writeback=False, rank0_only=True, with_grads=True):
+                        if rank == 0:
+                            grad_dict = {}
+                            for fqn, p in self.actor_module.named_parameters():
+                                if id(p) in component_param_ids[component_name]:
+                                    if p.grad is not None:
+                                        clean_fqn = fqn.replace('_fsdp_wrapped_module.', '').replace('._fsdp_wrapped_module', '')
+                                        grad_dict[clean_fqn] = p.grad.clone().cpu()
+                            if grad_dict:
+                                collected_grads_for_fisher[component_name].append(grad_dict)
 
-            # Fisher Information Matrix Analysis
-            if self.fisher_info_analyzer and self.global_steps % self.fisher_analysis_freq == 0:
-                rank = dist.get_rank()
-                if rank == 0:
-                    ray.get(self.fisher_info_analyzer.reset.remote(identifier='actor'))
-                if isinstance(self.actor_module, FSDP):
-                    dist.barrier()
+            if isinstance(self.actor_module, FSDP):
+                self.actor_module.clip_grad_norm_(max_norm=self.config.grad_clip)
+            self.actor_optimizer.step()
 
-                # Define components and prepare data structures
-                components_to_analyze = {
-                    "embed_tokens": self.actor_module.model.embed_tokens,
-                    "final_norm": self.actor_module.model.norm,
-                    "lm_head": self.actor_module.lm_head,
-                }
-                for i, layer in enumerate(self.actor_module.model.layers):
-                    components_to_analyze[f"layer_{i}"] = layer
+            with torch.no_grad():
+                metrics = self._update_metrics(metrics, pg_loss, entropy_loss, data['advantages'], None)
 
-                component_param_ids = {name: {id(p) for p in module.parameters()} for name, module in components_to_analyze.items()}
-                collected_grads = {name: [] for name in components_to_analyze}
-
-                # Loop through micro-batches ONCE to calculate gradients
-                for i, data in enumerate(micro_batches):
-                    data = data.cuda()
-                    self.actor_optimizer.zero_grad(set_to_none=True)
-                    with torch.enable_grad():
-                        # Forward and backward pass
-                        responses, response_mask = data['responses'], data['attention_mask'][:, -data['responses'].size(1):]
-                        entropy, log_prob = self._forward_micro_batch(micro_batch=data, temperature=temperature)
-                        pg_loss, _, _ = core_algos.compute_policy_loss(data['old_log_probs'], log_prob, data['advantages'], response_mask, self.config.clip_ratio)
-                        policy_loss = pg_loss - verl_F.masked_mean(entropy, response_mask) * self.config.entropy_coeff
-                        policy_loss.backward()
-
-                    if isinstance(self.actor_module, FSDP):
-                        self.actor_module.clip_grad_norm_(max_norm=self.config.grad_clip)
-
-                    # After backward pass, iterate through components to collect their respective gradients
-                    for component_name, component_module in components_to_analyze.items():
-                        with FSDP.summon_full_params(component_module, writeback=False, rank0_only=True, with_grads=True):
-                            if rank == 0:
-                                grad_dict = {}
-                                # Iterate over the main model's params to get the correct FQN and check against the component's param IDs
-                                for fqn, p in self.actor_module.named_parameters():
-                                    if id(p) in component_param_ids[component_name]:
-                                        if p.grad is not None:
-                                            clean_fqn = fqn.replace('_fsdp_wrapped_module.', '').replace('._fsdp_wrapped_module', '')
-                                            grad_dict[clean_fqn] = p.grad.clone().cpu()
-                                if grad_dict:
-                                    collected_grads[component_name].append(grad_dict)
-
-                # After all micro-batches, send the collected gradients to the analyzer
-                if rank == 0:
-                    for component_name, per_micro_batch_grads in collected_grads.items():
-                        if per_micro_batch_grads:
-                            print(f"[Fisher Debug] Finished collecting grads for {component_name}. Sending {len(per_micro_batch_grads)} to analyzer.")
-                            current_lr = self.actor_optimizer.param_groups[0]['lr']
-                            self.fisher_info_analyzer.analyze_component_grads.remote(
-                                identifier='actor',
-                                component_name=component_name,
-                                per_micro_batch_grads=per_micro_batch_grads,
-                                original_param_shapes=self.original_param_shapes,
-                                micro_batch_size=self.config.ppo_micro_batch_size,
-                                current_lr=current_lr,
-                                global_step=self.global_steps
-                            )
-                self.actor_optimizer.zero_grad(set_to_none=True)
+        if run_fisher_analysis and rank == 0:
+            for component_name, per_mini_batch_grads in collected_grads_for_fisher.items():
+                if per_mini_batch_grads:
+                    print(f"[Fisher Debug] Finished collecting grads for {component_name}. Sending {len(per_mini_batch_grads)} mini-batch grads to analyzer.")
+                    current_lr = self.actor_optimizer.param_groups[0]['lr']
+                    self.fisher_info_analyzer.analyze_component_grads.remote(
+                        identifier='actor',
+                        component_name=component_name,
+                        per_micro_batch_grads=per_mini_batch_grads, 
+                        original_param_shapes=self.original_param_shapes,
+                        micro_batch_size=self.config.ppo_mini_batch_size, 
+                        current_lr=current_lr,
+                        global_step=self.global_steps
+                    )
 
         rank = dist.get_rank() if dist.is_available() and dist.is_initialized() else 0
         is_fsdp = isinstance(self.actor_module, FSDP)
         zero_grad_stats = None
 
-        # To prevent OOM, we aggressively clear the CUDA cache on rank 0 before summoning full gradients.
+        if self.grad_analyzer is not None and self.global_steps % self.config.get("redo_analysis_freq", 1) == 0:
+            if rank == 0:
+                print(f"[INFO][Actor][Step {self.global_steps}] Resetting remote gradient analyzer state.")
+                ray.get(self.grad_analyzer.reset.remote(identifier='actor'))
+
+            components_to_analyze = {
+                "embed_tokens": self.actor_module.model.embed_tokens,
+                "final_norm": self.actor_module.model.norm,
+                "lm_head": self.actor_module.lm_head,
+            }
+            for i, layer in enumerate(self.actor_module.model.layers):
+                components_to_analyze[f"layer_{i}"] = layer
+
+            component_param_ids = {name: {id(p) for p in module.parameters()} for name, module in components_to_analyze.items()}
+            for component_name, component_module in components_to_analyze.items():
+                if rank == 0:
+                    self.logger.info(f"--- Analyzing component: {component_name} ---")
+
+                with FSDP.summon_full_params(component_module, writeback=False, rank0_only=True, with_grads=True):
+                    if rank == 0:
+                        grad_state_dict = {
+                            f"model.{fqn.replace('._fsdp_wrapped_module', '')}": param.grad.cpu()
+                            for fqn, param in self.actor_module.model.named_parameters()
+                            if id(param) in component_param_ids[component_name] and param.grad is not None
+                        }
+
+                        if grad_state_dict:
+                            self.grad_analyzer.analyze_component_gradients.remote(
+                                identifier='actor',
+                                component_name=component_name,
+                                gradients=grad_state_dict,
+                                original_param_shapes=self.original_param_shapes,
+                                tau=self.redo_tau,
+                                verbose=True
+                            )
+                        else:
+                            print(f"[INFO][Actor][Step {self.global_steps}] No gradients found for component {component_name}.")
+                    
         if rank == 0:
             print(f"[INFO][Actor][Step {self.global_steps}] Clearing CUDA cache on Rank 0 to free memory for gradient gathering.")
             torch.cuda.empty_cache()

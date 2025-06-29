@@ -115,6 +115,7 @@ class FisherInfoAnalyzer:
                 # The trace of the full Fisher matrix F = J.T @ J is the sum of its eigenvalues.
                 # The non-zero eigenvalues of F are the same as the non-zero eigenvalues of the reduced matrix F_tilde.
                 trace_F = torch.sum(non_zero_eigenvalues)
+                print(f"[DEBUG][Fisher] Param '{name}': trace_F={trace_F:.6g}")
                 l_k = (current_lr / micro_batch_size) * torch.sqrt(trace_F)
 
                 param_stats = {
@@ -124,7 +125,7 @@ class FisherInfoAnalyzer:
                     'sigma_max': sigma_max.item(),
                     'sigma_min': sigma_min.item(),
                 }
-                print(f"[FisherInfo] Param '{name}': c_k={param_stats['c_k']:.4f}, l_k={param_stats['l_k']:.4f}")
+                print(f"[FisherInfo] Param '{name}': c_k={param_stats['c_k']:.4f}, l_k={param_stats['l_k']:.6g}")
                 component_stats[name] = param_stats
 
             except torch.linalg.LinAlgError as e:

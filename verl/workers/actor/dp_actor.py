@@ -326,7 +326,7 @@ class DataParallelPPOActor(BasePPOActor):
             data = {'actor/grad_norm': grad_norm.detach().item()}
             append_to_dict(metrics, data)
 
-            # --- Fisher Information Matrix Analysis ---
+            # Fisher Information Matrix Analysis
             if self.fisher_info_analyzer and self.global_steps % self.fisher_analysis_freq == 0:
                 rank = dist.get_rank()
                 if rank == 0:
@@ -334,24 +334,20 @@ class DataParallelPPOActor(BasePPOActor):
                 if isinstance(self.actor_module, FSDP):
                     dist.barrier()
 
-                # Define components to analyze. This must match the model architecture and be identical to GradientAnalyzer.
                 components_to_analyze = {
                     "embed_tokens": self.actor_module.model.embed_tokens,
                     "final_norm": self.actor_module.model.norm,
                     "lm_head": self.actor_module.lm_head,
                 }
-                # Add all transformer layers.
-                if hasattr(self.actor_module, 'model') and hasattr(self.actor_module.model, 'layers'):
-                    for i, layer in enumerate(self.actor_module.model.layers):
-                        components_to_analyze[f"layer_{i}"] = layer
+                for i, layer in enumerate(self.actor_module.model.layers):
+                    components_to_analyze[f"layer_{i}"] = layer
 
                 for component_name, component_module in components_to_analyze.items():
-                    # Get the set of parameter IDs for the current component for efficient lookup.
                     component_param_ids = {id(p) for p in component_module.parameters()}
                     per_micro_batch_grads = []
-                    
+
                     # We must re-calculate gradients for each component analysis pass
-                    for data in micro_batches:
+                    for i, data in enumerate(micro_batches):
                         data = data.cuda()
                         self.actor_optimizer.zero_grad(set_to_none=True)
                         with torch.enable_grad():
@@ -365,26 +361,38 @@ class DataParallelPPOActor(BasePPOActor):
                             policy_loss = pg_loss - entropy_loss * self.config.entropy_coeff
                             policy_loss.backward()
 
+                        if isinstance(self.actor_module, FSDP):
+                            self.actor_module.clip_grad_norm_(max_norm=self.config.grad_clip)
+
                         with FSDP.summon_full_params(component_module, writeback=False, rank0_only=True, with_grads=True):
                             if rank == 0:
-                                # Correctly collect gradients by iterating over the full model's parameters
-                                # and filtering by parameter ID. This is the robust way to handle FSDP.
-                                grad_dict = {
-                                    fqn.replace('._fsdp_wrapped_module', ''): p.grad.clone().cpu()
-                                    for fqn, p in self.actor_module.named_parameters()
-                                    if id(p) in component_param_ids and p.grad is not None
-                                }
+                                print(f"--- [Fisher Debug] Micro-batch {i+1}/{len(micro_batches)} for component {component_name} ---")
+                                grad_dict = {}
+                                for fqn, p in self.actor_module.named_parameters():
+                                    if id(p) in component_param_ids:
+                                        if p.grad is not None:
+                                            clean_fqn = fqn.replace('_fsdp_wrapped_module.', '').replace('._fsdp_wrapped_module', '')
+                                            grad_dict[clean_fqn] = p.grad.clone().cpu()
+                                        else:
+                                            # This is the key debug information we need.
+                                            print(f"  [!!] Grad is None for {fqn}")
+
                                 if grad_dict:
                                     per_micro_batch_grads.append(grad_dict)
+                                    print(f"  ==> Appended grads. List size now {len(per_micro_batch_grads)}")
+                                else:
+                                    print(f"  ==> grad_dict is empty. Not appending.")
                         if isinstance(self.actor_module, FSDP):
                             dist.barrier()
 
                     if rank == 0 and per_micro_batch_grads:
+                        print(f"[Fisher Debug] Finished collecting grads for {component_name}. Sending {len(per_micro_batch_grads)} to analyzer.")
                         current_lr = self.actor_optimizer.param_groups[0]['lr']
                         self.fisher_info_analyzer.analyze_component_grads.remote(
                             identifier='actor',
                             component_name=component_name,
                             per_micro_batch_grads=per_micro_batch_grads,
+                            original_param_shapes=self.original_param_shapes,
                             micro_batch_size=self.config.ppo_micro_batch_size,
                             current_lr=current_lr,
                             global_step=self.global_steps

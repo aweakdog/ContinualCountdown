@@ -39,7 +39,7 @@ class FisherInfoAnalyzer:
         self.cumulative_L[identifier] = 0.0
         print(f"[FisherInfoAnalyzer] Statistics reset for identifier: '{identifier}'.")
 
-    def analyze_component_grads(self, identifier: str, component_name: str, per_micro_batch_grads: List[Dict[str, torch.Tensor]], micro_batch_size: int, current_lr: float, global_step: int):
+    def analyze_component_grads(self, identifier: str, component_name: str, per_micro_batch_grads: List[Dict[str, torch.Tensor]], original_param_shapes: Dict[str, torch.Size], micro_batch_size: int, current_lr: float, global_step: int):
         """
         Analyzes gradients for a specific model component to compute EFIM metrics for each parameter.
         """
@@ -60,11 +60,35 @@ class FisherInfoAnalyzer:
 
         component_stats = {}
         print(f"[DEBUG][Fisher] Analyzing {len(grads_by_param)} params for component '{component_name}': {list(grads_by_param.keys())}")
+        if original_param_shapes:
+            print(f"[DEBUG][Fisher] Received original_param_shapes with {len(original_param_shapes)} entries. Keys: {list(original_param_shapes.keys())[:5]}...")
+
         for name, grads in grads_by_param.items():
             try:
                 print(f"[DEBUG][Fisher] Param '{name}': processing {len(grads)} gradients.")
-                # Stack gradients to form the Jacobian for this parameter
-                jacobian = torch.stack([g.flatten().cuda() for g in grads])
+                
+                original_shape = original_param_shapes.get(name)
+                if not original_shape:
+                    print(f"[DEBUG][Fisher] Param '{name}': No original shape found. Skipping.")
+                    continue
+
+                # Per user instruction, reshape the flattened gradients before stacking them into the Jacobian.
+                # This mimics the GradientAnalyzer's behavior.
+                reshaped_then_flattened_grads = []
+                for g in grads:
+                    # Ensure the number of elements matches before reshaping
+                    if g.numel() == original_shape.numel():
+                        g_reshaped = g.reshape(original_shape)
+                        reshaped_then_flattened_grads.append(g_reshaped.flatten().cuda())
+                    else:
+                        # If shape mismatch, just flatten what we have.
+                        reshaped_then_flattened_grads.append(g.flatten().cuda())
+
+                if not reshaped_then_flattened_grads:
+                    print(f"[DEBUG][Fisher] Param '{name}': No valid gradients to stack after reshape/flatten. Skipping.")
+                    continue
+
+                jacobian = torch.stack(reshaped_then_flattened_grads)
                 print(f"[DEBUG][Fisher] Param '{name}': Jacobian shape: {jacobian.shape}")
                 
                 # Compute reduced Fisher matrix: F_tilde = J @ J.T

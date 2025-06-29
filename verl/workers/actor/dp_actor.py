@@ -334,11 +334,16 @@ class DataParallelPPOActor(BasePPOActor):
                 if isinstance(self.actor_module, FSDP):
                     dist.barrier()
 
-                # Determine which components to analyze
-                if self.fisher_components_to_analyze:
-                    components_to_analyze = {name: self.actor_module.get_submodule(fqn) for name, fqn in self.fisher_components_to_analyze.items()}
-                else: # Fallback to all layers if not specified
-                    components_to_analyze = {f"layer_{i}": layer for i, layer in enumerate(self.actor_module.model.layers)}
+                # Define components to analyze. This must match the model architecture and be identical to GradientAnalyzer.
+                components_to_analyze = {
+                    "embed_tokens": self.actor_module.model.embed_tokens,
+                    "final_norm": self.actor_module.model.norm,
+                    "lm_head": self.actor_module.lm_head,
+                }
+                # Add all transformer layers.
+                if hasattr(self.actor_module, 'model') and hasattr(self.actor_module.model, 'layers'):
+                    for i, layer in enumerate(self.actor_module.model.layers):
+                        components_to_analyze[f"layer_{i}"] = layer
 
                 for component_name, component_module in components_to_analyze.items():
                     per_micro_batch_grads = []

@@ -444,26 +444,26 @@ class ActorRolloutRefWorker(Worker):
         # ... (rest of the function)
 
         # After backward pass (i.e., after self.actor.update_policy)
-        with self.ulysses_sharding_manager:
-            data = self.ulysses_sharding_manager.preprocess_data(data=data)
-            metrics = {}
-            with Timer(name='update_policy', logger=None) as timer:
-                metrics.update(self.actor.update_policy(data=data))
-            delta_time = timer.last
-            global_num_tokens = data.meta_info['global_token_num']
-            estimated_flops, promised_flops = self.flops_counter.estimate_flops(global_num_tokens, delta_time)
-            metrics['mfu/actor'] = estimated_flops * self.config.actor.ppo_epochs / promised_flops / self.world_size
-
-            self.actor_lr_scheduler.step()
-            lr = self.actor_lr_scheduler.get_last_lr()[0]
-            metrics['actor/lr'] = lr
-
-  # logic matches analyzer
-
-            log_gpu_memory_usage('After update policy', logger=logger)
-
-            # TODO: here, we should return all metrics
-            output = DataProto(meta_info={'metrics': metrics})
+        # with self.ulysses_sharding_manager:
+        #     data = self.ulysses_sharding_manager.preprocess_data(data=data)
+        #     metrics = {}
+        #     with Timer(name='update_policy', logger=None) as timer:
+        #         metrics.update(self.actor.update_policy(data=data))
+        #     delta_time = timer.last
+        #     global_num_tokens = data.meta_info['global_token_num']
+        #     estimated_flops, promised_flops = self.flops_counter.estimate_flops(global_num_tokens, delta_time)
+        #     metrics['mfu/actor'] = estimated_flops * self.config.actor.ppo_epochs / promised_flops / self.world_size
+        #
+        #     self.actor_lr_scheduler.step()
+        #     lr = self.actor_lr_scheduler.get_last_lr()[0]
+        #     metrics['actor/lr'] = lr
+        #
+        #  # logic matches analyzer
+        #
+        #     log_gpu_memory_usage('After update policy', logger=logger)
+        #
+        #     # TODO: here, we should return all metrics
+        #     output = DataProto(meta_info={'metrics': metrics})
 
         assert self._is_actor
         if self._is_offload_param:

@@ -378,6 +378,7 @@ class DataParallelPPOActor(BasePPOActor):
                 ray.get(analysis_tasks) # Ensure all component analyses are done
                 fisher_stats_ref = self.fisher_info_analyzer.get_aggregated_stats.remote(identifier='actor')
                 fisher_stats = ray.get(fisher_stats_ref)
+                print(f"[DP Actor Debug] Received Fisher Stats: {fisher_stats}")
                 if fisher_stats:
                     metrics.update(fisher_stats)
 

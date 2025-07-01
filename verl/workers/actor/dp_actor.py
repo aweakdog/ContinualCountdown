@@ -272,7 +272,8 @@ class DataParallelPPOActor(BasePPOActor):
         if run_fisher_analysis:
             rank = dist.get_rank()
             if rank == 0:
-                ray.get(self.fisher_info_analyzer.reset.remote(identifier='actor'))
+                # The history is intentionally not reset here to allow C_K and L_K to accumulate across steps.
+                pass
             if isinstance(self.actor_module, FSDP):
                 dist.barrier()
 
@@ -344,7 +345,7 @@ class DataParallelPPOActor(BasePPOActor):
             if self.lr_scheduler is not None:
                 self.lr_scheduler.step()
                 new_lr = self.actor_optimizer.param_groups[0]['lr']
-                # print(f"[DP Actor Debug] LR for next step is: {new_lr}")
+                print(f"[DP Actor Debug] LR for next step is: {new_lr}")
 
             with torch.no_grad():
                 metrics['actor/pg_loss'] = pg_loss.item()

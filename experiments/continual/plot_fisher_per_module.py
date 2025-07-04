@@ -116,9 +116,11 @@ def plot_performance_curves(df):
             agg_df['std'] = agg_df['std'].fillna(0)
 
             plt.plot(agg_df['training_step'], agg_df['mean'], label=f'SFT Step {sft_step}')
+            # Clip the lower bound of the shadow at 0
+            lower_bound = np.maximum(0, agg_df['mean'] - agg_df['std'])
             plt.fill_between(
                 agg_df['training_step'],
-                agg_df['mean'] - agg_df['std'],
+                lower_bound,
                 agg_df['mean'] + agg_df['std'],
                 alpha=0.2
             )
@@ -179,7 +181,7 @@ def plot_fisher_case_study(df):
         print("No Fisher information data found for case study.")
         return
 
-    case_study_steps = [1, 25, 50, 100, 150]
+    case_study_steps = [1, 25, 50, 100, 149] # Use 149 as it's the max step with data
     modules_to_plot = [
         'self_attn.q_proj', 'self_attn.k_proj', 'self_attn.v_proj', 'self_attn.o_proj',
         'mlp.gate_proj', 'mlp.up_proj', 'mlp.down_proj',
@@ -190,6 +192,9 @@ def plot_fisher_case_study(df):
     for sft_step in sorted(fisher_df['sft_step'].unique()):
         for group_type in ['Known', 'Unknown']:
             for train_step in case_study_steps:
+                # Use data from step 149, but display it as 150
+                display_step = 150 if train_step == 149 else train_step
+                
                 step_df = fisher_df[
                     (fisher_df['sft_step'] == sft_step) &
                     (fisher_df['group_type'] == group_type) &
@@ -208,14 +213,14 @@ def plot_fisher_case_study(df):
                         if not module_df.empty:
                             plt.plot(module_df['layer'], module_df[metric], label=module, marker='o', linestyle='-')
 
-                    plt.title(f'{metric} vs Layer - SFT {sft_step} - Step {train_step} - {group_type} Group')
+                    plt.title(f'{metric} vs Layer - SFT {sft_step} - Step {display_step} - {group_type} Group')
                     plt.xlabel('Layer Number')
                     plt.ylabel(f'Average {metric}')
                     plt.yscale('log' if metric == 'L_K' else 'linear')
                     plt.legend(loc='upper left', bbox_to_anchor=(1, 1))
                     plt.grid(True, which="both", ls="--")
                     plt.tight_layout(rect=[0, 0, 0.85, 1])
-                    plt.savefig(os.path.join(PLOTS_DIR, f'case_study_{metric}_sft{sft_step}_step{train_step}_{group_type.lower()}.png'))
+                    plt.savefig(os.path.join(PLOTS_DIR, f'case_study_{metric}_sft{sft_step}_step{display_step}_{group_type.lower()}.png'))
                     plt.close()
     print("Saved all case study plots.")
 
@@ -252,14 +257,17 @@ def main():
     
     # Extract module and layer info for Fisher data
     fisher_mask = df['C_K'].notna()
-    df.loc[fisher_mask, ['layer', 'module']] = df.loc[fisher_mask, 'param_name'].apply(
-        lambda x: pd.Series(extract_module_info(x))
-    )
+    if fisher_mask.any():
+        parsed_tuples = df.loc[fisher_mask, 'param_name'].apply(extract_module_info)
+        df.loc[fisher_mask, 'layer'] = parsed_tuples.str[0]
+        df.loc[fisher_mask, 'module'] = parsed_tuples.str[1]
     
     print("Data parsing and pre-processing complete.")
     print(f"Total records: {len(df)}")
     print(f"Performance records: {df['score'].notna().sum()}")
     print(f"Fisher records: {df['C_K'].notna().sum()}")
+    if fisher_mask.any():
+        print(f"Fisher records with parsed module: {df[df['C_K'].notna()]['module'].notna().sum()}")
 
     # --- Plotting ---
     plot_performance_curves(df)

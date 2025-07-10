@@ -9,6 +9,7 @@ It performs three main tasks:
 import os
 import re
 import glob
+import shutil
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
@@ -16,6 +17,7 @@ from collections import defaultdict
 
 LOGS_DIR = './logs'
 PLOTS_DIR = './plots/plot_fisher_per_module'
+PARTIAL_PLOTS_DIR = os.path.join(PLOTS_DIR, 'partial')
 
 # Regex to capture relevant log lines
 PERFORMANCE_RE = re.compile(r'step:(\d+).*critic/score/mean:([\d.e+-]+)')
@@ -23,12 +25,13 @@ FISHER_RE = re.compile(r"\[FisherInfo\] Param '([^']+)': .*C_K=([\d.e+-]+), L_K=
 PARAM_MODULE_RE = re.compile(r'model\.layers\.(\d+)\.(.*)')
 
 
-def parse_log_file(log_path, sft_step):
+def parse_log_file(log_path, sft_step, exp_dir):
     """Parses a single log file to extract performance and Fisher info.
 
     Args:
         log_path (str): Path to the log file.
         sft_step (int): The SFT step for this experiment run.
+        exp_dir (str): The source experiment directory path.
 
     Returns:
         list: A list of dictionaries, each containing parsed data for a step.
@@ -44,6 +47,7 @@ def parse_log_file(log_path, sft_step):
                 current_step = int(perf_match.group(1))
                 score = float(perf_match.group(2))
                 data.append({
+                    'exp_dir': exp_dir,
                     'sft_step': sft_step,
                     'group_id': group_id,
                     'training_step': current_step,
@@ -59,6 +63,7 @@ def parse_log_file(log_path, sft_step):
                 c_k = float(fisher_match.group(2))
                 l_k = float(fisher_match.group(3))
                 data.append({
+                    'exp_dir': exp_dir,
                     'sft_step': sft_step,
                     'group_id': group_id,
                     'training_step': current_step,
@@ -97,7 +102,7 @@ def extract_module_info(param_name):
 
     return layer, module_name
 
-def plot_performance_curves(df):
+def plot_performance_curves(df, plots_dir):
     """Plots RLHF performance curves for Known and Unknown groups."""
     perf_df = df[df['score'].notna()].copy()
     if perf_df.empty:
@@ -130,11 +135,11 @@ def plot_performance_curves(df):
         plt.ylabel('Critic Score Mean')
         plt.legend()
         plt.grid(True)
-        plt.savefig(os.path.join(PLOTS_DIR, f'performance_{group_type.lower()}.png'))
+        plt.savefig(os.path.join(plots_dir, f'performance_{group_type.lower()}.png'))
         plt.close()
         print(f"Saved performance plot for {group_type} groups.")
 
-def plot_fisher_trends(df):
+def plot_fisher_trends(df, plots_dir):
     """Plots per-module C_K and L_K trends across training steps."""
     fisher_df = df[(df['C_K'].notna()) & (df['module'].notna())].copy()
     if fisher_df.empty:
@@ -150,10 +155,10 @@ def plot_fisher_trends(df):
 
     for group_type in ['Known', 'Unknown']:
         group_df = fisher_df[fisher_df['group_type'] == group_type]
+        
+        # Plot 1: Per-module trends for each SFT step
         for sft_step in sorted(group_df['sft_step'].unique()):
             sft_df = group_df[group_df['sft_step'] == sft_step]
-
-            # Average across layers and runs for each module and training step
             agg_df = sft_df.groupby(['training_step', 'module'])[['C_K', 'L_K']].mean().reset_index()
 
             for metric in ['C_K', 'L_K']:
@@ -170,18 +175,47 @@ def plot_fisher_trends(df):
                 plt.legend(loc='upper left', bbox_to_anchor=(1, 1))
                 plt.grid(True, which="both", ls="--")
                 plt.tight_layout(rect=[0, 0, 0.85, 1])
-                plt.savefig(os.path.join(PLOTS_DIR, f'{metric}_trend_sft{sft_step}_{group_type.lower()}.png'))
+                plt.savefig(os.path.join(plots_dir, f'{metric}_trend_sft{sft_step}_{group_type.lower()}.png'))
                 plt.close()
                 print(f"Saved {metric} trend plot for SFT {sft_step}, {group_type} group.")
 
-def plot_fisher_case_study(df):
+        # Plot 2: Average trend across all modules, comparing SFT steps
+        for metric in ['C_K', 'L_K']:
+            plt.figure(figsize=(12, 8))
+            for sft_step in sorted(group_df['sft_step'].unique()):
+                sft_df = group_df[group_df['sft_step'] == sft_step]
+                
+                # Average across all modules, layers, and runs for each training step
+                avg_metric_df = sft_df.groupby('training_step')[metric].mean().reset_index()
+
+                if not avg_metric_df.empty:
+                    plt.plot(avg_metric_df['training_step'], avg_metric_df[metric], label=f'SFT Step {sft_step}', marker='o', linestyle='-', markersize=4)
+
+            plt.title(f'Average {metric} Trend Comparison - {group_type} Group')
+            plt.xlabel('Training Step')
+            plt.ylabel(f'Average {metric} (all modules)')
+            plt.yscale('log' if metric == 'L_K' else 'linear')
+            plt.legend()
+            plt.grid(True, which="both", ls="--")
+            plt.tight_layout()
+            plt.savefig(os.path.join(plots_dir, f'{metric}_trend_average_{group_type.lower()}.png'))
+            plt.close()
+            print(f"Saved average {metric} trend plot for {group_type} group.")
+
+def plot_fisher_case_study(df, plots_dir):
     """Plots C_K/L_K across layers for specific training steps."""
     fisher_df = df[(df['C_K'].notna()) & (df['layer'] >= 0)].copy() # Exclude lm_head
     if fisher_df.empty:
         print("No Fisher information data found for case study.")
         return
 
-    case_study_steps = [1, 25, 50, 100, 149] # Use 149 as it's the max step with data
+    # Dynamically determine case study steps based on the max step in the data
+    max_step = fisher_df['training_step'].max()
+    case_study_steps = [1, 25, 50, 100]
+    if pd.notna(max_step):
+        case_study_steps.append(int(max_step))
+    case_study_steps = sorted(list(set(case_study_steps)))
+
     modules_to_plot = [
         'self_attn.q_proj', 'self_attn.k_proj', 'self_attn.v_proj', 'self_attn.o_proj',
         'mlp.gate_proj', 'mlp.up_proj', 'mlp.down_proj',
@@ -220,61 +254,134 @@ def plot_fisher_case_study(df):
                     plt.legend(loc='upper left', bbox_to_anchor=(1, 1))
                     plt.grid(True, which="both", ls="--")
                     plt.tight_layout(rect=[0, 0, 0.85, 1])
-                    plt.savefig(os.path.join(PLOTS_DIR, f'case_study_{metric}_sft{sft_step}_step{display_step}_{group_type.lower()}.png'))
+                    plt.savefig(os.path.join(plots_dir, f'case_study_{metric}_sft{sft_step}_step{display_step}_{group_type.lower()}.png'))
                     plt.close()
     print("Saved all case study plots.")
 
+def get_max_step_from_log(log_path):
+    """Extracts the maximum training step from a log file."""
+    max_step = -1
+    with open(log_path, 'r') as f:
+        for line in f:
+            match = PERFORMANCE_RE.search(line)
+            if match:
+                max_step = max(max_step, int(match.group(1)))
+    return max_step
+
 def main():
-    """Main function to orchestrate parsing and plotting."""
-    os.makedirs(PLOTS_DIR, exist_ok=True)
+    """Main function to orchestrate parsing and plotting for complete and partial runs."""
+    # Clean and create directories
+    if os.path.exists(PLOTS_DIR):
+        shutil.rmtree(PLOTS_DIR)
+    os.makedirs(PLOTS_DIR)
+    os.makedirs(PARTIAL_PLOTS_DIR, exist_ok=True)
 
     exp_dirs = glob.glob(os.path.join(LOGS_DIR, '*sft_global_step_*'))
     if not exp_dirs:
         print(f"Error: No experiment directories found in {LOGS_DIR}")
         return
 
-    all_data = []
+    complete_data = []
+    partial_data = []
+
     for exp_dir in exp_dirs:
+        # --- Classify Experiment ---
+        all_log_files = glob.glob(os.path.join(exp_dir, 'Group*.log'))
+
+        # Ignore if there are not enough logs to compare
+        if len(all_log_files) <= 1:
+            print(f"Ignoring experiment (not enough group logs to compare): {exp_dir}")
+            continue
+
+        group0_log = next((f for f in all_log_files if 'Group0' in os.path.basename(f)), None)
+
+        # 1. Group0 must exist and have steps.
+        if not group0_log:
+            print(f"Ignoring experiment (missing Group0 log): {exp_dir}")
+            continue
+        
+        ref_step = get_max_step_from_log(group0_log)
+        if ref_step == -1:
+            print(f"Ignoring experiment (Group0 has no steps): {exp_dir}")
+            continue
+
+        # 2. Check for step consistency against Group0.
+        is_consistent = True
+        max_steps = {0: ref_step}
+        for log_file in all_log_files:
+            if log_file == group0_log:
+                continue
+            match = re.search(r'Group(\d+)', os.path.basename(log_file))
+            if match:
+                gid = int(match.group(1))
+                g_step = get_max_step_from_log(log_file)
+                max_steps[gid] = g_step
+                if g_step != ref_step:
+                    is_consistent = False
+        
+        is_run_complete = is_consistent and ref_step >= 149
+
+        # --- Parse and Assign Data ---
         try:
             sft_step = int(re.search(r'global_step_(\d+)', exp_dir).group(1))
         except (AttributeError, ValueError):
             print(f"Could not parse SFT step from directory name: {exp_dir}")
             continue
+
+        current_exp_data = []
+        for log_file in all_log_files:
+            current_exp_data.extend(parse_log_file(log_file, sft_step, exp_dir))
+
+        if not current_exp_data:
+            continue
+
+        if is_run_complete:
+            print(f"Found complete experiment: {exp_dir}")
+            complete_data.extend(current_exp_data)
+        else:
+            print(f"Found partial experiment: {exp_dir} (Steps: {max_steps})")
+            partial_data.extend(current_exp_data)
+
+    # --- Helper function for processing and plotting ---
+    def _process_and_plot(data, data_type, plots_dir):
+        if not data:
+            print(f"\nNo data for {data_type} experiments to process.")
+            return
+
+        print(f"\n--- Processing {data_type} Data ---")
+        df = pd.DataFrame(data)
+
+        # For partial data, truncate to the minimum common step for each experiment
+        if data_type == "Partial":
+            max_steps = df.groupby(['exp_dir', 'group_id'])['training_step'].max()
+            truncation_steps = max_steps.groupby('exp_dir').min().rename('truncation_step')
+            df = df.merge(truncation_steps, on='exp_dir')
+            df = df[df['training_step'] <= df['truncation_step']].drop(columns=['truncation_step'])
+
+        # Pre-processing
+        df['group_type'] = df['group_id'].apply(lambda x: 'Known' if x == 0 else 'Unknown')
+        fisher_mask = df['C_K'].notna()
+        if fisher_mask.any():
+            parsed_tuples = df.loc[fisher_mask, 'param_name'].apply(extract_module_info)
+            df.loc[fisher_mask, 'layer'] = parsed_tuples.str[0]
+            df.loc[fisher_mask, 'module'] = parsed_tuples.str[1]
         
-        log_files = glob.glob(os.path.join(exp_dir, 'Group*.log'))
-        print(f"Found {len(log_files)} log files in {exp_dir} for SFT step {sft_step}")
-        for log_file in log_files:
-            all_data.extend(parse_log_file(log_file, sft_step))
+        print(f"Total records: {len(df)}")
+        print(f"Performance records: {df['score'].notna().sum()}")
+        print(f"Fisher records: {df['C_K'].notna().sum()}")
 
-    if not all_data:
-        print("Error: No data could be parsed from any log files.")
-        return
+        # Plotting
+        plot_performance_curves(df, plots_dir)
+        plot_fisher_trends(df, plots_dir)
+        plot_fisher_case_study(df, plots_dir)
+        print(f"\nAll {data_type} plots saved to {plots_dir}")
 
-    df = pd.DataFrame(all_data)
+    # --- Process and plot COMPLETE data ---
+    _process_and_plot(complete_data, "Complete", PLOTS_DIR)
 
-    # --- Data Pre-processing ---
-    df['group_type'] = df['group_id'].apply(lambda x: 'Known' if x == 0 else 'Unknown')
-    
-    # Extract module and layer info for Fisher data
-    fisher_mask = df['C_K'].notna()
-    if fisher_mask.any():
-        parsed_tuples = df.loc[fisher_mask, 'param_name'].apply(extract_module_info)
-        df.loc[fisher_mask, 'layer'] = parsed_tuples.str[0]
-        df.loc[fisher_mask, 'module'] = parsed_tuples.str[1]
-    
-    print("Data parsing and pre-processing complete.")
-    print(f"Total records: {len(df)}")
-    print(f"Performance records: {df['score'].notna().sum()}")
-    print(f"Fisher records: {df['C_K'].notna().sum()}")
-    if fisher_mask.any():
-        print(f"Fisher records with parsed module: {df[df['C_K'].notna()]['module'].notna().sum()}")
-
-    # --- Plotting ---
-    plot_performance_curves(df)
-    plot_fisher_trends(df)
-    plot_fisher_case_study(df)
-
-    print(f"\nAll plots saved to {PLOTS_DIR}")
+    # --- Process and plot PARTIAL data ---
+    if partial_data:
+        _process_and_plot(partial_data, "Partial", PARTIAL_PLOTS_DIR)
 
 if __name__ == '__main__':
     main()

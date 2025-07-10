@@ -115,7 +115,7 @@ for group in 0 1 2 3; do
     data.val_batch_size=256 \
     data.max_response_length=1024 \
     ++data.curriculum_learning=true \
-    ++data.epochs_per_group=15 \
+    ++data.epochs_per_group=30 \
     ++data.total_rounds=1 \
     ++data.train_sample_size="$TRAIN_SAMPLE_SIZE" \
     actor_rollout_ref.model.path=$BASE_MODEL \

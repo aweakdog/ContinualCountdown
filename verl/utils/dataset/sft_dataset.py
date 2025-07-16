@@ -18,7 +18,9 @@ SFT dataset
 Each parquet file contains
 """
 
-from typing import List, Union
+from typing import List, Dict, Optional, Union
+from omegaconf import ListConfig
+from omegaconf import ListConfig
 
 import pandas as pd
 
@@ -48,10 +50,10 @@ class SFTDataset(Dataset):
         assert truncation in ['error', 'left', 'right']
         self.truncation = truncation
 
-        if not isinstance(parquet_files, List):
-            parquet_files = [parquet_files]
-
-        self.parquet_files = parquet_files
+        if isinstance(parquet_files, str):
+            self.parquet_files = [parquet_files]
+        else:
+            self.parquet_files = list(parquet_files)
         if isinstance(tokenizer, str):
             tokenizer = hf_tokenizer(tokenizer)
         self.tokenizer: PreTrainedTokenizer = tokenizer
@@ -63,12 +65,12 @@ class SFTDataset(Dataset):
 
         self.max_length = max_length
 
-        self._download()
-        self._read_files_and_tokenize()
+        processed_files = []
+        for parquet_file in self.parquet_files:
+            processed_files.append(copy_local_path_from_hdfs(parquet_file, verbose=True))
+        self.parquet_files = processed_files
 
-    def _download(self):
-        for i, parquet_file in enumerate(self.parquet_files):
-            self.parquet_files[i] = copy_local_path_from_hdfs(parquet_file, verbose=True)
+        self._read_files_and_tokenize()
 
     def _read_files_and_tokenize(self):
 

@@ -5,14 +5,17 @@ import random
 from typing import List, Dict, Tuple
 from datasets import Dataset
 import sys
-sys.path.append('.')
+import os
+# Add project root to Python path
+project_root = '/cpfs04/user/liyuanhang.p/src/ContinualCountdown'
+sys.path.insert(0, project_root)
 from examples.data_preprocess.countdown_directly import CountDownDirectly
 from examples.data_preprocess.countdown_reverse import CountDownReverse
 from tqdm import tqdm
 from rich import print as rprint
 
 
-def make_prefix(dp, operators, template_type='base'):
+def make_prefix(dp, operators, template_type='llama'):
     target = dp['target']
     numbers = dp['nums']
     # NOTE: also need to change reward_score/countdown.py
@@ -84,7 +87,7 @@ class DataGenerator:
                                    candidate_operators=candidate_operators, 
                                    neccessary_operators=neccessary_operators,
                                    distinct=self.distinct)
-                target, nums, solution = cd.generate()
+                target, nums, solution, full_expr = cd.generate()
                 rating = 1.0
                 samples.append({
                     "target": target,

@@ -61,9 +61,18 @@ class FSDPSFTTrainer(object):
         self.config = config
         self.device_mesh = device_mesh
         # build tokenizer first
-        local_model_path = copy_local_path_from_hdfs(src=self.config.model.partial_pretrain, verbose=True)
+        local_model_path = self.config.model.name_or_path
+        if not os.path.exists(local_model_path):
+            local_model_path = copy_local_path_from_hdfs(src=self.config.model.name_or_path, verbose=True)
         from verl.utils import hf_tokenizer
-        self.tokenizer = hf_tokenizer(local_model_path, trust_remote_code=self.config.model.trust_remote_code)
+        self.tokenizer = hf_tokenizer(local_model_path, 
+                                      use_fast=config.model.get('use_fast_tokenizer', False),
+                                      trust_remote_code=True,
+                                     )
+
+        if self.tokenizer.chat_template is None:
+            self.tokenizer.chat_template = "{% set loop_messages = messages %}{% for message in loop_messages %}{% set content = '' + message['content'] %}{% if message['role'] == 'system' %}{% set content = '<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\n' + content | trim + '<|eot_id|>' %}{% elif message['role'] == 'user' %}{% set content = '<|start_header_id|>user<|end_header_id|>\n\n' + content | trim + '<|eot_id|>' %}{% elif message['role'] == 'assistant' %}{% set content = '<|start_header_id|>assistant<|end_header_id|>\n\n' + content | trim + '<|eot_id|>' %}{% endif %}{{ content }}{% endfor %}{% if add_generation_prompt %}{{ '<|start_header_id|>assistant<|end_header_id|>\n\n' }}{% endif %}"
+
         if self.config.data.chat_template is not None:
             raise ValueError('Apply Chat template from config is not supported yet.')
 
@@ -140,7 +149,9 @@ class FSDPSFTTrainer(object):
         # TODO (zhangchi.usc1992):
         # 1. support pretrain from random weights
         # 2. support init directly from sharded weights
-        local_model_path = copy_local_path_from_hdfs(src=self.config.model.partial_pretrain, verbose=True)
+        if self.config.model.name_or_path:
+            local_model_path = copy_local_path_from_hdfs(src=self.config.model.name_or_path, verbose=True)
+            self.config.model.name_or_path = local_model_path
 
         if self.config.model.get('external_lib', None) is not None:
             # This is used to import external_lib into the huggingface systems

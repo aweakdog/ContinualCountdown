@@ -2,7 +2,7 @@
 This script analyzes and plots experiment results from log files for a continual learning experiment.
 It performs three main tasks:
 1.  Plots RLHF performance curves (critic/score/mean) for different SFT steps.
-2.  Plots per-module Fisher information metrics (C_K, L_K) trends over training.
+2.  Plots per-module Fisher information metrics (C_K, L_K, sigma_max, sigma_min) trends over training.
 3.  Plots case studies of how Fisher metrics change across layers at specific training steps.
 """
 
@@ -21,7 +21,7 @@ PARTIAL_PLOTS_DIR = os.path.join(PLOTS_DIR, 'partial')
 
 # Regex to capture relevant log lines
 PERFORMANCE_RE = re.compile(r'step:(\d+).*critic/score/mean:([\d.e+-]+)')
-FISHER_RE = re.compile(r"\[FisherInfo\] Param '([^']+)': .*C_K=([\d.e+-]+), L_K=([\d.e+-]+)")
+FISHER_RE = re.compile(r"\[FisherInfo\] Param '([^']+)': .*C_K=([\d.e+-]+), L_K=([\d.e+-]+), sigma_max=([\d.e+-]+), sigma_min=([\d.e+-]+)")
 PARAM_MODULE_RE = re.compile(r'model\.layers\.(\d+)\.(.*)')
 
 
@@ -55,6 +55,8 @@ def parse_log_file(log_path, sft_step, exp_dir):
                     'param_name': 'performance_metric',
                     'C_K': np.nan,
                     'L_K': np.nan,
+                    'sigma_max': np.nan,
+                    'sigma_min': np.nan,
                 })
 
             fisher_match = FISHER_RE.search(line)
@@ -62,6 +64,8 @@ def parse_log_file(log_path, sft_step, exp_dir):
                 param_name = fisher_match.group(1)
                 c_k = float(fisher_match.group(2))
                 l_k = float(fisher_match.group(3))
+                sigma_max = float(fisher_match.group(4))
+                sigma_min = float(fisher_match.group(5))
                 data.append({
                     'exp_dir': exp_dir,
                     'sft_step': sft_step,
@@ -71,6 +75,8 @@ def parse_log_file(log_path, sft_step, exp_dir):
                     'param_name': param_name,
                     'C_K': c_k,
                     'L_K': l_k,
+                    'sigma_max': sigma_max,
+                    'sigma_min': sigma_min,
                 })
     return data
 
@@ -140,7 +146,7 @@ def plot_performance_curves(df, plots_dir):
         print(f"Saved performance plot for {group_type} groups.")
 
 def plot_fisher_trends(df, plots_dir):
-    """Plots per-module C_K and L_K trends across training steps."""
+    """Plots per-module C_K, L_K, sigma_max, and sigma_min trends across training steps."""
     fisher_df = df[(df['C_K'].notna()) & (df['module'].notna())].copy()
     if fisher_df.empty:
         print("No Fisher information data found to plot trends.")
@@ -153,15 +159,17 @@ def plot_fisher_trends(df, plots_dir):
     ]
     fisher_df = fisher_df[fisher_df['module'].isin(modules_to_plot)]
 
+    metrics_to_plot = ['C_K', 'L_K', 'sigma_max', 'sigma_min']
+
     for group_type in ['Known', 'Unknown']:
         group_df = fisher_df[fisher_df['group_type'] == group_type]
         
         # Plot 1: Per-module trends for each SFT step
         for sft_step in sorted(group_df['sft_step'].unique()):
             sft_df = group_df[group_df['sft_step'] == sft_step]
-            agg_df = sft_df.groupby(['training_step', 'module'])[['C_K', 'L_K']].mean().reset_index()
+            agg_df = sft_df.groupby(['training_step', 'module'])[metrics_to_plot].mean().reset_index()
 
-            for metric in ['C_K', 'L_K']:
+            for metric in metrics_to_plot:
                 plt.figure(figsize=(15, 10))
                 for module in modules_to_plot:
                     module_df = agg_df[agg_df['module'] == module]
@@ -180,7 +188,7 @@ def plot_fisher_trends(df, plots_dir):
                 print(f"Saved {metric} trend plot for SFT {sft_step}, {group_type} group.")
 
         # Plot 2: Average trend across all modules, comparing SFT steps
-        for metric in ['C_K', 'L_K']:
+        for metric in metrics_to_plot:
             plt.figure(figsize=(12, 8))
             for sft_step in sorted(group_df['sft_step'].unique()):
                 sft_df = group_df[group_df['sft_step'] == sft_step]
@@ -203,7 +211,7 @@ def plot_fisher_trends(df, plots_dir):
             print(f"Saved average {metric} trend plot for {group_type} group.")
 
 def plot_fisher_case_study(df, plots_dir):
-    """Plots C_K/L_K across layers for specific training steps."""
+    """Plots C_K/L_K/sigma_max/sigma_min across layers for specific training steps."""
     fisher_df = df[(df['C_K'].notna()) & (df['layer'] >= 0)].copy() # Exclude lm_head
     if fisher_df.empty:
         print("No Fisher information data found for case study.")
@@ -222,6 +230,7 @@ def plot_fisher_case_study(df, plots_dir):
         'input_layernorm', 'post_attention_layernorm'
     ]
     fisher_df = fisher_df[fisher_df['module'].isin(modules_to_plot)]
+    metrics_to_plot = ['C_K', 'L_K', 'sigma_max', 'sigma_min']
 
     for sft_step in sorted(fisher_df['sft_step'].unique()):
         for group_type in ['Known', 'Unknown']:
@@ -238,9 +247,9 @@ def plot_fisher_case_study(df, plots_dir):
                     continue
 
                 # Average across runs for each layer and module
-                agg_df = step_df.groupby(['layer', 'module'])[['C_K', 'L_K']].mean().reset_index()
+                agg_df = step_df.groupby(['layer', 'module'])[metrics_to_plot].mean().reset_index()
 
-                for metric in ['C_K', 'L_K']:
+                for metric in metrics_to_plot:
                     plt.figure(figsize=(15, 10))
                     for module in modules_to_plot:
                         module_df = agg_df[agg_df['module'] == module].sort_values('layer')

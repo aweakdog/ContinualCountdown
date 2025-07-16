@@ -19,9 +19,15 @@ def extract_solution(solution_str):
         solution_str = solution_str.split("Assistant:", 1)[1]
     elif "<|im_start|>assistant" in solution_str:
         solution_str = solution_str.split("<|im_start|>assistant", 1)[1]
+    #else:
+    #    return None
+    #solution_str = solution_str.split('\n')[-1]
+    #solution_str = solution_str.split('\n')[1:]
+    lines = solution_str.splitlines()
+    if len(lines) > 2:
+        solution_str = "\n".join(lines[2:])
     else:
-        return None
-    solution_str = solution_str.split('\n')[-1]
+        solution_str = "\n".join(lines)
 
     answer_pattern = r'<answer>(.*?)</answer>'
     match = re.finditer(answer_pattern, solution_str)
@@ -227,7 +233,8 @@ def compute_score(solution_str, ground_truth, method='strict', format_score=0.1,
     thoughts = extract_thought(solution_str=solution_str)
     if do_print:
         print('extracted thoughts:',thoughts)
-    format_score = estimate_thought_reward(thoughts, numbers, do_print)
+    thought_score = estimate_thought_reward(thoughts, numbers, do_print)
+
     #format_score = 0
 
     #if equation is None:
@@ -238,13 +245,13 @@ def compute_score(solution_str, ground_truth, method='strict', format_score=0.1,
     if equation is None:
         if do_print:
             print(f"No equation found")
-        return format_score * 0.5 # no answer punishment
+        return format_score * 0.0 # no answer punishment
     
     # Validate equation uses correct numbers
     if not validate_equation(equation, numbers):
         if do_print:
             print(f"Invalid equation")
-        return format_score
+        return max(format_score*0.50,thought_score)
         
     # Evaluate equation
     try:

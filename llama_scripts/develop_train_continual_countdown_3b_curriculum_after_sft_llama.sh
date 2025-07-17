@@ -60,7 +60,7 @@ if [ ! -f "$BASE_MODEL/config.json" ]; then
 fi
 
 # Create a unique subdirectory for this experiment's logs
-EXP_LOG_DIR=./logs/continual_countdown3b_llama_sft_${SFT_CHECKPOINT}
+EXP_LOG_DIR=./logs/develop_continual_countdown3b_llama_sft_${SFT_CHECKPOINT}
 mkdir -p "$EXP_LOG_DIR"
 cp tmp/monitor_master.sh "$EXP_LOG_DIR/"
 MASTER_LOG_FILE="$EXP_LOG_DIR/experiment_master.log"
@@ -70,13 +70,13 @@ if [ -f "$MASTER_LOG_FILE" ]; then
 fi
 
 # Loop over each group and record logs in the experiment log directory
-for group in 0; do
+for group in 0 1 1; do
   TRAIN_FILES_STR="[\"./data/continual/${group}/train.parquet\"]"
   VAL_FILES_STR="[\"./data/continual/${group}/test.parquet\"]"
   TRAIN_SAMPLE_SIZE="[2560]"
   RUN_NAME="Group${group}_SFT_${SFT_CHECKPOINT}_$(date +%Y%m%d_%H%M%S)"
   LOG_FILE="$EXP_LOG_DIR/${RUN_NAME}.log"
-  echo "Training group $group with SFT model from size $SFT_TRAIN_SIZE" | tee -a "$LOG_FILE" | tee -a "$MASTER_LOG_FILE"
+  echo "Developing group $group with SFT model from checkpoint $SFT_CHECKPOINT" | tee -a "$LOG_FILE" | tee -a "$MASTER_LOG_FILE"
   echo "Train files: $TRAIN_FILES_STR" | tee -a "$LOG_FILE" | tee -a "$MASTER_LOG_FILE"
   echo "Val files: $VAL_FILES_STR" | tee -a "$LOG_FILE" | tee -a "$MASTER_LOG_FILE"
   
@@ -88,7 +88,7 @@ for group in 0; do
     data.val_batch_size=256 \
     data.max_response_length=1024 \
     ++data.curriculum_learning=true \
-    ++data.epochs_per_group=20 \
+    ++data.epochs_per_group=15 \
     ++data.total_rounds=1 \
     ++data.train_sample_size="$TRAIN_SAMPLE_SIZE" \
     actor_rollout_ref.model.path=$BASE_MODEL \

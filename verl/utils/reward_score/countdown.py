@@ -17,17 +17,19 @@ def extract_solution(solution_str):
     # Remove everything before the first "Assistant:"
     if "Assistant:" in solution_str:
         solution_str = solution_str.split("Assistant:", 1)[1]
+        solution_str = solution_str.split('\n')[-1]
     elif "<|im_start|>assistant" in solution_str:
         solution_str = solution_str.split("<|im_start|>assistant", 1)[1]
-    #else:
-    #    return None
+        solution_str = solution_str.split('\n')[-1]
+    else:
+        lines = solution_str.splitlines()
+        if len(lines) > 2:
+            solution_str = "\n".join(lines[2:])
+        else:
+            solution_str = "\n".join(lines)
     #solution_str = solution_str.split('\n')[-1]
     #solution_str = solution_str.split('\n')[1:]
-    lines = solution_str.splitlines()
-    if len(lines) > 2:
-        solution_str = "\n".join(lines[2:])
-    else:
-        solution_str = "\n".join(lines)
+    
 
     answer_pattern = r'<answer>(.*?)</answer>'
     match = re.finditer(answer_pattern, solution_str)
@@ -230,7 +232,7 @@ def compute_score(solution_str, ground_truth, method='strict', format_score=0.1,
         print(f"Extracted equation: {equation}")
         print(f"Solution string: {solution_str}")
 
-    thoughts = extract_thought(solution_str=solution_str)
+    thoughts = extract_thought(solution_str=solution_str, number_of_numbers=len(numbers))
     if do_print:
         print('extracted thoughts:',thoughts)
     thought_score = estimate_thought_reward(thoughts, numbers, do_print)

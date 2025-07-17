@@ -297,10 +297,13 @@ def main():
         # --- Classify Experiment ---
         all_log_files = glob.glob(os.path.join(exp_dir, 'Group*.log'))
 
-        # Ignore if there are not enough logs to compare
-        if len(all_log_files) <= 1:
-            print(f"Ignoring experiment (not enough group logs to compare): {exp_dir}")
+        # Process even if there's only one log file
+        if len(all_log_files) == 0:
+            print(f"No log files found in experiment: {exp_dir}")
             continue
+        
+        if len(all_log_files) == 1:
+            print(f"Processing experiment with single group log: {exp_dir}")
 
         group0_log = next((f for f in all_log_files if 'Group0' in os.path.basename(f)), None)
 
@@ -314,7 +317,7 @@ def main():
             print(f"Ignoring experiment (Group0 has no steps): {exp_dir}")
             continue
 
-        # 2. Check for step consistency against Group0.
+        # 2. Check for step consistency against Group0. (DISABLED - treat all as complete)
         is_consistent = True
         max_steps = {0: ref_step}
         for log_file in all_log_files:
@@ -325,10 +328,11 @@ def main():
                 gid = int(match.group(1))
                 g_step = get_max_step_from_log(log_file)
                 max_steps[gid] = g_step
-                if g_step != ref_step:
-                    is_consistent = False
+                # if g_step != ref_step:
+                #     is_consistent = False
         
-        is_run_complete = is_consistent and ref_step >= 149
+        # is_run_complete = is_consistent and ref_step >= 149
+        is_run_complete = True  # Treat all experiments as complete
 
         # --- Parse and Assign Data ---
         try:
@@ -360,6 +364,9 @@ def main():
         print(f"\n--- Processing {data_type} Data ---")
         df = pd.DataFrame(data)
 
+        # Truncate all data to maximum 150 steps
+        df = df[df['training_step'] <= 150]
+        
         # For partial data, truncate to the minimum common step for each experiment
         if data_type == "Partial":
             max_steps = df.groupby(['exp_dir', 'group_id'])['training_step'].max()
@@ -388,9 +395,9 @@ def main():
     # --- Process and plot COMPLETE data ---
     _process_and_plot(complete_data, "Complete", PLOTS_DIR)
 
-    # --- Process and plot PARTIAL data ---
-    if partial_data:
-        _process_and_plot(partial_data, "Partial", PARTIAL_PLOTS_DIR)
+    # --- Process and plot PARTIAL data --- (DISABLED)
+    # if partial_data:
+    #     _process_and_plot(partial_data, "Partial", PARTIAL_PLOTS_DIR)
 
 if __name__ == '__main__':
     main()

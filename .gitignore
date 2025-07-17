@@ -133,3 +133,5 @@ tests/e2e/toy_examples/deepspeed/synchronous/output.txt
 /logs_grama/*
 
 nohup.out
+data_back/
+log_back/

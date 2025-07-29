@@ -378,14 +378,27 @@ class ActorRolloutRefWorker(Worker):
                 
             # Initialize Gradient Analyzer
             self.grad_analyzer = None
-            if self.config.actor.get("fsdp_grad_metric_enabled", False):
+            
+            # Debug: Check configuration values
+            fsdp_grad_metric_enabled = self.config.actor.get("fsdp_grad_metric_enabled", False)
+            print(f"[DEBUG] Gradient Analyzer config check: fsdp_grad_metric_enabled={fsdp_grad_metric_enabled}")
+            print(f"[DEBUG] Available actor config keys: {list(self.config.actor.keys()) if hasattr(self.config, 'actor') else 'No actor config'}")
+            
+            # Also check if it's in the root config
+            root_fsdp_grad_metric = self.config.get("fsdp_grad_metric_enabled", False)
+            print(f"[DEBUG] Root config fsdp_grad_metric_enabled: {root_fsdp_grad_metric}")
+            
+            if fsdp_grad_metric_enabled or root_fsdp_grad_metric:
                 from verl.utils.redo_utils.gradient_analyzer import GradientAnalyzer
                 # Use separate GPU for Gradient Analyzer (will use next available GPU after training GPUs)
-                print("[INFO] Initializing GradientAnalyzer with dedicated GPU (separate from training GPUs 0-3)")
+                print("[INFO] ✅ Initializing GradientAnalyzer with dedicated GPU (separate from training GPUs 0-3)")
                 self.grad_analyzer = GradientAnalyzer.options(
                     num_gpus=1,
                     num_cpus=1
                 ).remote()
+                print(f"[INFO] ✅ GradientAnalyzer initialized successfully: {self.grad_analyzer}")
+            else:
+                print("[WARNING] ❌ GradientAnalyzer NOT initialized - fsdp_grad_metric_enabled is False")
 
             self.fisher_info_analyzer = None
             if self.config.actor.get("fisher_analysis_enabled", True):

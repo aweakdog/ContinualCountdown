@@ -19,6 +19,12 @@ export VLLM_ATTENTION_BACKEND=${VLLM_ATTENTION_BACKEND:-XFORMERS}
 export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0,1,2,3,4,5,6,7}
 export NCCL_DEBUG=${NCCL_DEBUG:-INFO}
 
+# GPU Resource Allocation Configuration for 8 A100 setup
+# Training: GPUs 0-3, Analyzers: GPUs 4-7
+export RAY_ANALYZER_GPU_START=${RAY_ANALYZER_GPU_START:-4}  # Start analyzer GPUs from GPU 4
+export RAY_ANALYZER_GPU_COUNT=${RAY_ANALYZER_GPU_COUNT:-4}  # Use 4 GPUs for analyzers (4-7)
+echo "[GPU Config] Training will use GPUs 0-3, Analyzers will use GPUs 4-7"
+
 
 # Set up logging with backup
 LOG_FILE="./llama_logs/ContinualCountdown3B_Llama_Curriculum.log"

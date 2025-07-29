@@ -380,7 +380,43 @@ class DataParallelPPOActor(BasePPOActor):
                 fisher_stats = ray.get(fisher_stats_ref)
                 print(f"[DP Actor Debug] Received Fisher Stats: {fisher_stats}")
                 if fisher_stats:
+                    # Add detailed Fisher Info logging
+                    self.logger.info(f"--- 📈 Fisher Information Analysis Results (Step {self.global_steps}) ---")
+                    
+                    # Log global Fisher Info metrics
+                    global_fisher = fisher_stats.get('global', {})
+                    if global_fisher:
+                        self.logger.info(f"Global Fisher Metrics:")
+                        for metric_name, value in global_fisher.items():
+                            if isinstance(value, (int, float)):
+                                self.logger.info(f"  - {metric_name}: {value:.6g}")
+                    
+                    # Log per-component Fisher Info metrics
+                    components_fisher = fisher_stats.get('components', {})
+                    if components_fisher:
+                        self.logger.info(f"--- Per-Component Fisher Info Breakdown ---")
+                        for component_name, comp_stats in sorted(components_fisher.items()):
+                            self.logger.info(f"  - Component: {component_name}")
+                            params_stats = comp_stats.get('params', {})
+                            if params_stats:
+                                for param_name, param_metrics in sorted(params_stats.items()):
+                                    short_name = '.'.join(param_name.split('.')[-3:])
+                                    c_k = param_metrics.get('c_k', 0.0)
+                                    l_k = param_metrics.get('l_k', 0.0)
+                                    sigma_max = param_metrics.get('sigma_max', 0.0)
+                                    sigma_min = param_metrics.get('sigma_min', 0.0)
+                                    self.logger.info(f"    - {short_name:<40} | c_k: {c_k:.4f} | l_k: {l_k:.6g} | σ_max: {sigma_max:.6g} | σ_min: {sigma_min:.6g}")
+                    
+                    self.logger.info("-" * 60)
+                    
+                    # Update metrics for logging/tracking
                     metrics.update(fisher_stats)
+                    
+                    # Add summary Fisher metrics to main metrics dict
+                    if global_fisher:
+                        for key, value in global_fisher.items():
+                            if isinstance(value, (int, float)):
+                                metrics[f'actor/fisher_{key}'] = value
 
         rank = dist.get_rank() if dist.is_available() and dist.is_initialized() else 0
         is_fsdp = isinstance(self.actor_module, FSDP)

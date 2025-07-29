@@ -378,13 +378,23 @@ class ActorRolloutRefWorker(Worker):
                 self.grad_analyzer = None
             if self.config.actor.get("fsdp_grad_metric_enabled", False):
                 from verl.utils.redo_utils.gradient_analyzer import GradientAnalyzer
-                self.grad_analyzer = GradientAnalyzer.options(num_gpus=1).remote()
+                # Use separate GPU for Gradient Analyzer (will use next available GPU after training GPUs)
+                print("[INFO] Initializing GradientAnalyzer with dedicated GPU (separate from training GPUs 0-3)")
+                self.grad_analyzer = GradientAnalyzer.options(
+                    num_gpus=1,
+                    num_cpus=1
+                ).remote()
 
             self.fisher_info_analyzer = None
             if self.config.actor.get("fisher_analysis_enabled", True):
                 if self.config.actor.get('fsdp_component_analysis', {}).get('run_fisher_info_analysis', True):
                     from verl.utils.redo_utils.fisher_info_analyzer import FisherInfoAnalyzer
-                    self.fisher_info_analyzer = FisherInfoAnalyzer.remote(self.config)
+                    # Use separate GPU for Fisher Info Analyzer
+                    print("[INFO] Initializing FisherInfoAnalyzer with dedicated GPU (separate from training GPUs 0-3)")
+                    self.fisher_info_analyzer = FisherInfoAnalyzer.options(
+                        num_gpus=1,
+                        num_cpus=1
+                    ).remote(self.config)
 
             self.actor = DataParallelPPOActor(
                 config=self.config.actor,

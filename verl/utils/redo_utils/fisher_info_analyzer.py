@@ -126,8 +126,8 @@ class FisherInfoAnalyzer:
                 C_K_param = np.mean(param_hist['c_k_history'])
                 L_K_param = np.sum(param_hist['l_k_history'])
 
-                print(f"[FisherInfo] Param '{name}': c_k={param_stats['c_k']:.4f}, l_k={param_stats['l_k']:.6g}, C_K={C_K_param:.4f}, L_K={L_K_param:.6g}, sigma_max={param_stats['sigma_max']:.6g}, sigma_min={param_stats['sigma_min']:.6g}")
-                print('[FisherInfo] fisher_tilde:', fisher_tilde)
+                # print(f"[FisherInfo] Param '{name}': c_k={param_stats['c_k']:.4f}, l_k={param_stats['l_k']:.6g}, C_K={C_K_param:.4f}, L_K={L_K_param:.6g}, sigma_max={param_stats['sigma_max']:.6g}, sigma_min={param_stats['sigma_min']:.6g}")
+                # print('[FisherInfo] fisher_tilde:', fisher_tilde)
                 component_stats[name] = param_stats
 
             except torch.linalg.LinAlgError as e:

@@ -470,13 +470,19 @@ class DataParallelPPOActor(BasePPOActor):
             dist.barrier()
 
         with torch.no_grad():
+            # Debug: Check Gradient Analyzer conditions
+            print(f"[DEBUG][Actor][Step {self.global_steps}] Gradient Analyzer check: grad_analyzer={self.grad_analyzer is not None}, freq_check={self.global_steps % self.config.get('redo_analysis_freq', 1) == 0}, redo_analysis_freq={self.config.get('redo_analysis_freq', 1)}")
+            
             if self.grad_analyzer is not None and self.global_steps % self.config.get("redo_analysis_freq", 1) == 0:
+                print(f"[INFO][Actor][Step {self.global_steps}] 🚀 STARTING Gradient Analysis workflow")
                 # --- Component-wise Gradient Analysis to Avoid OOM ---
                 # Step 1: Reset the state of the remote analyzer on rank 0.
                 if rank == 0:
                     print(f"[INFO][Actor][Step {self.global_steps}] Resetting remote gradient analyzer state.")
                     # Use ray.get to ensure reset is complete before proceeding.
                     ray.get(self.grad_analyzer.reset.remote(identifier='actor'))
+            else:
+                print(f"[INFO][Actor][Step {self.global_steps}] ❌ SKIPPING Gradient Analysis - conditions not met")
 
                 # Synchronize all ranks to ensure reset is complete before analysis begins.
                 if is_fsdp:
@@ -537,7 +543,7 @@ class DataParallelPPOActor(BasePPOActor):
 
                 # Step 3: Get the final aggregated results from the analyzer on rank 0.
                 if rank == 0:
-                    final_stats = ray.get(self.grad_analyzer.get_aggregated_stats.remote(identifier='actor', verbose=False))
+                    final_stats = ray.get(self.grad_analyzer.get_aggregated_stats.remote(identifier='actor', verbose=True))
                     
                     if not final_stats:
                         self.logger.warning(f"[Actor][Step {self.global_steps}] Failed to get zero-grad analysis results.")

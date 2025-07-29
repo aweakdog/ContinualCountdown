@@ -375,7 +375,9 @@ class ActorRolloutRefWorker(Worker):
                     print("[INFO] Initializing remote GradientAnalyzer actor with fractional GPU (1) request...")
                 # The new GradientAnalyzer class is decorated with @ray.remote, which defines its own resources.
                 # We simply call .remote() to instantiate it with the specified fractional resources.
-                self.grad_analyzer = None
+                
+            # Initialize Gradient Analyzer
+            self.grad_analyzer = None
             if self.config.actor.get("fsdp_grad_metric_enabled", False):
                 from verl.utils.redo_utils.gradient_analyzer import GradientAnalyzer
                 # Use separate GPU for Gradient Analyzer (will use next available GPU after training GPUs)

@@ -149,12 +149,22 @@ class GradientAnalyzer:
                 s_i = row_norms / (avg_row_norm + 1e-9)
                 num_dormant_neurons = (s_i < tau).sum().item()
                 matrix_ratio = num_dormant_neurons / H
+                
+                # Additional debugging info
+                s_i_min = s_i.min().item()
+                s_i_max = s_i.max().item()
+                s_i_mean = s_i.mean().item()
+                below_tau_count = (s_i < tau).sum().item()
+                
+                if verbose: 
+                    print(f"        -> Analysis: {num_dormant_neurons}/{H} dormant ({matrix_ratio:.2%}). Norms (min/avg/max): {min_row_norm:.4e} / {avg_row_norm:.4e} / {max_row_norm:.4e}")
+                    print(f"        -> s_i stats (min/mean/max): {s_i_min:.4f} / {s_i_mean:.4f} / {s_i_max:.4f}, tau={tau}, below_tau={below_tau_count}")
             else:
                 min_row_norm, max_row_norm, avg_row_norm = torch.tensor(0.0), torch.tensor(0.0), torch.tensor(0.0)
                 num_dormant_neurons = 0
                 matrix_ratio = 0.0
-
-            if verbose: print(f"        -> Analysis: {num_dormant_neurons}/{H} dormant ({matrix_ratio:.2%}). Norms (min/avg/max): {min_row_norm:.4e} / {avg_row_norm:.4e} / {max_row_norm:.4e}")
+                
+                if verbose: print(f"        -> Analysis: {num_dormant_neurons}/{H} dormant (empty matrix)")
 
             # Store per-matrix stats
             per_matrix_stats[name] = {

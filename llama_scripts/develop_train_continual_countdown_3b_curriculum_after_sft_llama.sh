@@ -1,6 +1,6 @@
 #!/bin/bash
 
-SFT_CHECKPOINT=global_step_15
+SFT_CHECKPOINT=global_step_0
 
 # Activate conda environment
 # Use a more cautious approach to Git configuration
@@ -21,9 +21,9 @@ export NCCL_DEBUG=${NCCL_DEBUG:-INFO}
 
 
 # Set up logging with backup
-LOG_FILE="./logs/ContinualCountdown3B_Llama_Curriculum.log"
+LOG_FILE="./llama_logs/ContinualCountdown3B_Llama_Curriculum.log"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-BACKUP_DIR="./logs/run"
+BACKUP_DIR="./llama_logs/run"
 
 # Create backup of existing log if it exists
 if [ -f "$LOG_FILE" ]; then
@@ -37,8 +37,8 @@ rm -rf ${CHECKPOINT_BASE_DIR}
 # Clean up current log and wandb
 rm -f "$LOG_FILE"
 rm -rf ./wandb/*
-chmod -R 755 ./logs
-chmod -R 755 ./logs/run
+chmod -R 755 ./llama_logs
+chmod -R 755 ./llama_logs/run
 
 # Set FSDP gradient metric flag (set to true to enable FSDP gradient metrics)
 export FSDP_GRAD_METRIC_ENABLED=true
@@ -59,8 +59,8 @@ if [ ! -f "$BASE_MODEL/config.json" ]; then
     exit 1
 fi
 
-# Create a unique subdirectory for this experiment's logs
-EXP_LOG_DIR=./logs/develop_continual_countdown3b_llama_sft_${SFT_CHECKPOINT}
+# Create a unique subdirectory for this experiment's llama_logs
+EXP_LOG_DIR=./llama_logs/develop_continual_countdown3b_llama_sft_${SFT_CHECKPOINT}
 mkdir -p "$EXP_LOG_DIR"
 cp tmp/monitor_master.sh "$EXP_LOG_DIR/"
 MASTER_LOG_FILE="$EXP_LOG_DIR/experiment_master.log"
@@ -69,7 +69,7 @@ if [ -f "$MASTER_LOG_FILE" ]; then
   rm "$MASTER_LOG_FILE"
 fi
 
-# Loop over each group and record logs in the experiment log directory
+# Loop over each group and record llama_logs in the experiment log directory
 for group in 0 1 1; do
   TRAIN_FILES_STR="[\"./data/continual/${group}/train.parquet\"]"
   VAL_FILES_STR="[\"./data/continual/${group}/test.parquet\"]"

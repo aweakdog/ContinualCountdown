@@ -77,6 +77,16 @@ class DataGenerator:
                     {'weight': 0.25, 'candidate': ['+', '/'], 'necessary': ['+', '/'], 'start_size': 3},
                     {'weight': 0.25, 'candidate': ['-', '/'], 'necessary': ['-', '/'], 'start_size': 3}
                 ]
+            },
+            # Group 2: division-based operations  
+            {
+                'name': '2',
+                'distributions': [
+                    {'weight': 0.25, 'candidate': ['+', '*', '/'], 'necessary': ['+', '*', '/'], 'start_size': 4},
+                    {'weight': 0.25, 'candidate': ['-', '*', '/'], 'necessary': ['-', '*', '/'], 'start_size': 4},
+                    {'weight': 0.25, 'candidate': ['*', '/'], 'necessary': ['*', '/'], 'start_size': 3},
+                    {'weight': 0.25, 'candidate': ['*', '/'], 'necessary': ['*', '/'], 'start_size': 3}
+                ]
             }
         ]
         self.distinct = True

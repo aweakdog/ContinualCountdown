@@ -11,9 +11,9 @@ fi
 
 # Configuration - Set environment variables from docker-compose.yml if not already set
 export NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-all}
-export CHECKPOINT_BASE_DIR=${CHECKPOINT_BASE_DIR:-/cpfs04/user/liyuanhang.p/tmp/checkpoints/continual_countdown3b}
-SFT_CHECKPOINT=global_step_10
-export BASE_MODEL=${BASE_MODEL:-"/cpfs04/user/liyuanhang.p/tmp/sft_model/${SFT_CHECKPOINT}"}  # Path to mounted Qwen model
+export CHECKPOINT_BASE_DIR=${CHECKPOINT_BASE_DIR:-/nas/shared/sys2/yuanhangli/tmp/checkpoints/continual_countdown3b}
+SFT_CHECKPOINT=global_step_1
+export BASE_MODEL=${BASE_MODEL:-"/nas/shared/sys2/yuanhangli/tmp/qwen_sft_model/${SFT_CHECKPOINT}"}  # Path to mounted Qwen model
 export N_GPUS=${N_GPUS:-4}  # Using 4 A800 GPUs
 export ROLLOUT_TP_SIZE=${ROLLOUT_TP_SIZE:-1}  # Tensor parallel size optimized for 4 GPUs
 export WANDB_MODE=${WANDB_MODE:-offline}  # Run WandB in offline mode
@@ -23,9 +23,9 @@ export NCCL_DEBUG=${NCCL_DEBUG:-INFO}
 
 
 # Set up logging with backup
-LOG_FILE="./logs/ContinualCountdown3B_SingleRun.log"
+LOG_FILE="./qwen_logs/ContinualCountdown3B_SingleRun.log"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-BACKUP_DIR="./logs/run"
+BACKUP_DIR="./qwen_logs/run"
 
 # Create backup of existing log if it exists
 if [ -f "$LOG_FILE" ]; then
@@ -50,8 +50,8 @@ fi
 rm -f "$LOG_FILE"
 rm -rf ./wandb/*
 #chmod -R 755 ./checkpoints/continual_countdown3b
-chmod -R 755 ./logs
-chmod -R 755 ./logs/run
+chmod -R 755 ./qwen_logs
+chmod -R 755 ./qwen_logs/run
 
 # Set FSDP gradient metric flag (set to true to enable FSDP gradient metrics)
 export FSDP_GRAD_METRIC_ENABLED=true
@@ -75,7 +75,7 @@ fi
 
 # Run single training process
 WANDB_RUN_NAME="ContinualCountdown3B_SingleRun"
-log_file="./logs/${WANDB_RUN_NAME}.log"
+log_file="./qwen_logs/${WANDB_RUN_NAME}.log"
 
 # Print develop info
 echo "Starting ContinualCountdown3B training at $(date)" | tee -a "$log_file"
@@ -86,8 +86,8 @@ echo "Training configuration:" | tee -a "$log_file"
 echo "  Model: $TRAINED_MODEL" | tee -a "$log_file"
 echo "  GPUs: $N_GPUS" | tee -a "$log_file"
 
-# Create a unique subdirectory for this experiment's logs
-EXP_LOG_DIR=./logs/develop_continual_countdown3b_sft_${SFT_CHECKPOINT}
+# Create a unique subdirectory for this experiment's qwen_logs
+EXP_LOG_DIR=./qwen_logs/develop_continual_countdown3b_sft_${SFT_CHECKPOINT}
 mkdir -p "$EXP_LOG_DIR"
 cp tmp/monitor_master.sh "$EXP_LOG_DIR/"
 MASTER_LOG_FILE="$EXP_LOG_DIR/experiment_master.log"
@@ -96,8 +96,8 @@ if [ -f "$MASTER_LOG_FILE" ]; then
   rm "$MASTER_LOG_FILE"
 fi
 
-# Loop over each group and record logs in the experiment log directory
-for group in 0; do
+# Loop over each group and record qwen_logs in the experiment log directory
+for group in 0 1 1; do
   TRAIN_FILES_STR="[\"./data/continual/${group}/train.parquet\"]"
   VAL_FILES_STR="[\"./data/continual/${group}/test.parquet\"]"
   TRAIN_SAMPLE_SIZE="[2560]"
@@ -115,7 +115,7 @@ for group in 0; do
     data.val_batch_size=256 \
     data.max_response_length=1024 \
     ++data.curriculum_learning=true \
-    ++data.epochs_per_group=0 \
+    ++data.epochs_per_group=15 \
     ++data.total_rounds=1 \
     ++data.train_sample_size="$TRAIN_SAMPLE_SIZE" \
     actor_rollout_ref.model.path=$BASE_MODEL \

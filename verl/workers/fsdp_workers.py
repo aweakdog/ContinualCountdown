@@ -373,8 +373,9 @@ class ActorRolloutRefWorker(Worker):
             self.grad_analyzer = None
             
             # Debug: Check configuration values
-            fsdp_grad_metric_enabled = self.config.actor.get("fsdp_grad_metric_enabled", False)
-            root_fsdp_grad_metric = self.config.get("fsdp_grad_metric_enabled", False)
+            # Default to True to enable gradient analysis by default
+            fsdp_grad_metric_enabled = self.config.actor.get("fsdp_grad_metric_enabled", True)
+            root_fsdp_grad_metric = self.config.get("fsdp_grad_metric_enabled", True)
             
             print(f"[DEBUG] Gradient Analyzer config check:")
             print(f"[DEBUG]   - actor.fsdp_grad_metric_enabled: {fsdp_grad_metric_enabled}")

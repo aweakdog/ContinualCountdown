@@ -105,21 +105,15 @@ def main(config):
         print(f"[Ray Init] Detected {num_gpus} GPUs available for Ray cluster")
         print(f"[Ray Init] CUDA_VISIBLE_DEVICES: {os.environ.get('CUDA_VISIBLE_DEVICES', 'Not set')}")
         
-        # Configure Ray with explicit GPU separation
-        # Training uses GPUs 0-3, Analyzers use GPUs 4-7
-        training_gpus = 4  # First 4 GPUs for training
-        analyzer_gpus = max(0, num_gpus - 4)  # Remaining GPUs for analyzers
-        
-        print(f"[Ray Init] GPU allocation: GPUs 0-3 for training, GPUs 4-7 for analyzers")
-        print(f"[Ray Init] Training GPUs: {training_gpus}, Analyzer GPUs: {analyzer_gpus}")
+        # Configure Ray with all GPUs available
+        # Training will use placement groups (GPUs 0-3), analyzers use remaining GPUs
+        print(f"[Ray Init] Configuring Ray with all {num_gpus} GPUs available")
+        print(f"[Ray Init] Training will use placement groups, analyzers use fractional allocation")
         
         ray_config = {
             "log_to_driver": True,
             "address": os.environ.get("RAY_ADDRESS"),
-            "num_gpus": training_gpus,  # Only expose first 4 GPUs to Ray for training
-            "resources": {
-                "analyzer_gpu": analyzer_gpus  # Custom resource for analyzers
-            },
+            "num_gpus": num_gpus,  # All GPUs available to Ray
             "runtime_env": {
                 'env_vars': {
                     'TOKENIZERS_PARALLELISM': 'true',

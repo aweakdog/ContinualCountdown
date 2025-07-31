@@ -144,17 +144,17 @@ def main(config):
         except Exception as e:
             print(f"[Ray Init] Could not get cluster resources: {e}")
 
-    from ray.util.concurrency import Event
+    import threading
 
-    # Create a Ray Event for synchronizing named actor creation
+    # Create a threading Event for synchronizing named actor creation
     # This prevents race conditions where workers try to get an actor before it's created.
-    actor_creation_event = Event()
+    actor_creation_event = threading.Event()
 
     ray.get(main_task.remote(config, actor_creation_event))
 
 
 @ray.remote
-def main_task(config: dict, actor_creation_event: "Event"):
+def main_task(config: dict, actor_creation_event: "threading.Event"):
     from verl.utils.fs import copy_local_path_from_hdfs
     from transformers import AutoTokenizer
 

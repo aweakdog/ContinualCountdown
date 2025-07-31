@@ -69,11 +69,10 @@ class ActorRolloutRefWorker(Worker):
     or a hybrid engine based on the config.rollout
     """
 
-    def __init__(self, config: DictConfig, role: str, actor_creation_event=None):
+    def __init__(self, config: DictConfig, role: str):
         super().__init__()
         self.config = config
         self.role = role
-        self.actor_creation_event = actor_creation_event
         self.local_rank = -1
         import torch.distributed
         if not torch.distributed.is_initialized():
@@ -408,10 +407,10 @@ class ActorRolloutRefWorker(Worker):
                         print(f"[ERROR] Failed to initialize GradientAnalyzer: {e}")
                         self.grad_analyzer = None
                 else:
-                    # Other ranks wait for the event and then get the actor.
+                    # Other ranks wait a bit and then get the actor.
                     print(f"[INFO] Rank {getattr(self, 'local_rank', 'unknown')} waiting for GradientAnalyzer to be created...")
-                    if self.actor_creation_event:
-                        self.actor_creation_event.wait()
+                    import time
+                    time.sleep(5)  # Give rank 0 time to create the actor
                     try:
                         self.grad_analyzer = ray.get_actor("global_gradient_analyzer")
                         print(f"[INFO] Rank {getattr(self, 'local_rank', 'unknown')} got GradientAnalyzer handle: {self.grad_analyzer}")
@@ -437,21 +436,16 @@ class ActorRolloutRefWorker(Worker):
                             print(f"[ERROR] Failed to initialize FisherInfoAnalyzer: {e}")
                             self.fisher_info_analyzer = None
                     else:
-                        # Other ranks wait for the event and then get the actor.
+                        # Other ranks wait a bit and then get the actor.
                         print(f"[INFO] Rank {getattr(self, 'local_rank', 'unknown')} waiting for FisherInfoAnalyzer to be created...")
-                        if self.actor_creation_event:
-                            self.actor_creation_event.wait()
+                        import time
+                        time.sleep(5)  # Give rank 0 time to create the actor
                         try:
                             self.fisher_info_analyzer = ray.get_actor("global_fisher_info_analyzer")
                             print(f"[INFO] Rank {getattr(self, 'local_rank', 'unknown')} got FisherInfoAnalyzer handle: {self.fisher_info_analyzer}")
                         except Exception as e:
                             print(f"[ERROR] Rank {getattr(self, 'local_rank', 'unknown')} failed to get FisherInfoAnalyzer: {e}")
                             self.fisher_info_analyzer = None
-
-            # Rank 0 sets the event after attempting to create all actors.
-            if is_rank_0 and self.actor_creation_event:
-                print("[INFO] Rank 0 signaling that all named actors have been created.")
-                self.actor_creation_event.set()
 
             self.actor = DataParallelPPOActor(
                 config=self.config.actor,

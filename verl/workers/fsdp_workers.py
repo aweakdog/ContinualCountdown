@@ -386,11 +386,10 @@ class ActorRolloutRefWorker(Worker):
             if fsdp_grad_metric_enabled or root_fsdp_grad_metric:
                 try:
                     from verl.utils.redo_utils.gradient_analyzer import GradientAnalyzer
-                    print("[INFO] ✅ Initializing GradientAnalyzer with dedicated GPU 4 (separate from training GPUs 0-3)")
+                    print("[INFO] ✅ Initializing GradientAnalyzer with dedicated GPU (separate from training GPUs 0-3)")
                     self.grad_analyzer = GradientAnalyzer.options(
                         num_gpus=1,
-                        num_cpus=1,
-                        resources={"GPU_4": 1}  # Use dedicated GPU 4 for Gradient Analyzer
+                        num_cpus=1
                     ).remote()
                     print(f"[INFO] ✅ GradientAnalyzer initialized successfully: {self.grad_analyzer}")
                 except Exception as e:
@@ -403,12 +402,11 @@ class ActorRolloutRefWorker(Worker):
             if self.config.actor.get("fisher_analysis_enabled", True):
                 if self.config.actor.get('fsdp_component_analysis', {}).get('run_fisher_info_analysis', True):
                     from verl.utils.redo_utils.fisher_info_analyzer import FisherInfoAnalyzer
-                    # Use dedicated GPU 5 for Fisher Info Analyzer
-                    print("[INFO] Initializing FisherInfoAnalyzer with dedicated GPU 5 (separate from training GPUs 0-3)")
+                    # Use dedicated GPU for Fisher Info Analyzer
+                    print("[INFO] Initializing FisherInfoAnalyzer with dedicated GPU (separate from training GPUs 0-3)")
                     self.fisher_info_analyzer = FisherInfoAnalyzer.options(
                         num_gpus=1,
-                        num_cpus=1,
-                        resources={"GPU_5": 1}  # Use dedicated GPU 5 for Fisher Info Analyzer
+                        num_cpus=1
                     ).remote(self.config)
 
             self.actor = DataParallelPPOActor(

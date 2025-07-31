@@ -69,11 +69,12 @@ class ActorRolloutRefWorker(Worker):
     or a hybrid engine based on the config.rollout
     """
 
-    def __init__(self, config: DictConfig, role: str):
+    def __init__(self, config: DictConfig, role: str, actor_creation_event=None):
         super().__init__()
-        self.actor_update_step = 0
-        self.critic_update_step = 0
         self.config = config
+        self.role = role
+        self.actor_creation_event = actor_creation_event
+        self.local_rank = -1
         import torch.distributed
         if not torch.distributed.is_initialized():
             torch.distributed.init_process_group(backend="nccl")
@@ -391,50 +392,66 @@ class ActorRolloutRefWorker(Worker):
             print(f"[DEBUG]   - self._is_actor: {self._is_actor}")
             print(f"[DEBUG]   - Available actor config keys: {list(self.config.actor.keys()) if hasattr(self.config, 'actor') else 'No actor config'}")
 
-            if (fsdp_grad_metric_enabled or root_fsdp_grad_metric) and is_rank_0:
-                try:
-                    from verl.utils.redo_utils.gradient_analyzer import GradientAnalyzer
-                    # Use named actor to ensure a single instance across all processes.
-                    self.grad_analyzer = ray.get_actor("global_gradient_analyzer")
-                    print(f"[INFO] Re-using existing GradientAnalyzer singleton: {self.grad_analyzer}")
-                except ValueError:
-                    # Actor doesn't exist, create it.
-                    print("[INFO] Creating GradientAnalyzer singleton (named actor)...")
-                    self.grad_analyzer = GradientAnalyzer.options(
-                        name="global_gradient_analyzer",
-                        num_gpus=2,
-                        num_cpus=1
-                    ).remote()
-                    print(f"[INFO] GradientAnalyzer singleton created: {self.grad_analyzer}")
-                except Exception as e:
-                    print(f"[ERROR] Failed to initialize GradientAnalyzer: {e}")
-                    self.grad_analyzer = None
-            else:
-                if not is_rank_0:
-                    print(f"[INFO] Skipping GradientAnalyzer initialization on rank {getattr(self, 'local_rank', 'unknown')} (only rank 0 initializes)")
-                else:
-                    print("[WARNING] GradientAnalyzer NOT initialized - fsdp_grad_metric_enabled is False")
-
-            self.fisher_info_analyzer = None
-            if self.config.actor.get("fisher_analysis_enabled", True) and is_rank_0:
-                if self.config.actor.get('fsdp_component_analysis', {}).get('run_fisher_info_analysis', True):
+            if fsdp_grad_metric_enabled or root_fsdp_grad_metric:
+                if is_rank_0:
                     try:
-                        from verl.utils.redo_utils.fisher_info_analyzer import FisherInfoAnalyzer
-                        self.fisher_info_analyzer = ray.get_actor("global_fisher_info_analyzer")
-                        print(f"[INFO] Re-using existing FisherInfoAnalyzer singleton: {self.fisher_info_analyzer}")
-                    except ValueError:
-                        print("[INFO] Creating FisherInfoAnalyzer singleton (named actor)...")
-                        self.fisher_info_analyzer = FisherInfoAnalyzer.options(
-                            name="global_fisher_info_analyzer",
+                        # Rank 0 creates the actor.
+                        print("[INFO] Rank 0 creating GradientAnalyzer singleton (named actor)...")
+                        from verl.utils.redo_utils.gradient_analyzer import GradientAnalyzer
+                        self.grad_analyzer = GradientAnalyzer.options(
+                            name="global_gradient_analyzer",
                             num_gpus=2,
                             num_cpus=1
-                        ).remote(self.config)
-                        print(f"[INFO] FisherInfoAnalyzer singleton created: {self.fisher_info_analyzer}")
+                        ).remote()
+                        print(f"[INFO] GradientAnalyzer singleton created: {self.grad_analyzer}")
                     except Exception as e:
-                        print(f"[ERROR] Failed to initialize FisherInfoAnalyzer: {e}")
-                        self.fisher_info_analyzer = None
-            elif not is_rank_0:
-                print(f"[INFO] Skipping FisherInfoAnalyzer initialization on rank {getattr(self, 'local_rank', 'unknown')} (only rank 0 initializes)")
+                        print(f"[ERROR] Failed to initialize GradientAnalyzer: {e}")
+                        self.grad_analyzer = None
+                else:
+                    # Other ranks wait for the event and then get the actor.
+                    print(f"[INFO] Rank {getattr(self, 'local_rank', 'unknown')} waiting for GradientAnalyzer to be created...")
+                    if self.actor_creation_event:
+                        self.actor_creation_event.wait()
+                    try:
+                        self.grad_analyzer = ray.get_actor("global_gradient_analyzer")
+                        print(f"[INFO] Rank {getattr(self, 'local_rank', 'unknown')} got GradientAnalyzer handle: {self.grad_analyzer}")
+                    except Exception as e:
+                        print(f"[ERROR] Rank {getattr(self, 'local_rank', 'unknown')} failed to get GradientAnalyzer: {e}")
+                        self.grad_analyzer = None
+
+            self.fisher_info_analyzer = None
+            if self.config.actor.get("fisher_analysis_enabled", True):
+                if self.config.actor.get('fsdp_component_analysis', {}).get('run_fisher_info_analysis', True):
+                    if is_rank_0:
+                        try:
+                            # Rank 0 creates the actor.
+                            print("[INFO] Rank 0 creating FisherInfoAnalyzer singleton (named actor)...")
+                            from verl.utils.redo_utils.fisher_info_analyzer import FisherInfoAnalyzer
+                            self.fisher_info_analyzer = FisherInfoAnalyzer.options(
+                                name="global_fisher_info_analyzer",
+                                num_gpus=2,
+                                num_cpus=1
+                            ).remote(self.config)
+                            print(f"[INFO] FisherInfoAnalyzer singleton created: {self.fisher_info_analyzer}")
+                        except Exception as e:
+                            print(f"[ERROR] Failed to initialize FisherInfoAnalyzer: {e}")
+                            self.fisher_info_analyzer = None
+                    else:
+                        # Other ranks wait for the event and then get the actor.
+                        print(f"[INFO] Rank {getattr(self, 'local_rank', 'unknown')} waiting for FisherInfoAnalyzer to be created...")
+                        if self.actor_creation_event:
+                            self.actor_creation_event.wait()
+                        try:
+                            self.fisher_info_analyzer = ray.get_actor("global_fisher_info_analyzer")
+                            print(f"[INFO] Rank {getattr(self, 'local_rank', 'unknown')} got FisherInfoAnalyzer handle: {self.fisher_info_analyzer}")
+                        except Exception as e:
+                            print(f"[ERROR] Rank {getattr(self, 'local_rank', 'unknown')} failed to get FisherInfoAnalyzer: {e}")
+                            self.fisher_info_analyzer = None
+
+            # Rank 0 sets the event after attempting to create all actors.
+            if is_rank_0 and self.actor_creation_event:
+                print("[INFO] Rank 0 signaling that all named actors have been created.")
+                self.actor_creation_event.set()
 
             self.actor = DataParallelPPOActor(
                 config=self.config.actor,

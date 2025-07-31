@@ -481,14 +481,10 @@ class DataParallelPPOActor(BasePPOActor):
                     print(f"[INFO][Actor][Step {self.global_steps}] Resetting remote gradient analyzer state.")
                     # Use ray.get to ensure reset is complete before proceeding.
                     ray.get(self.grad_analyzer.reset.remote(identifier='actor'))
-            else:
-                print(f"[INFO][Actor][Step {self.global_steps}] ❌ SKIPPING Gradient Analysis - conditions not met")
 
                 # Synchronize all ranks to ensure reset is complete before analysis begins.
                 if is_fsdp:
                     dist.barrier()
-
-
 
                 # Define components to analyze. This must match the model architecture.
                 # Assumes a standard HuggingFace transformer structure like Llama/Qwen.
@@ -547,9 +543,12 @@ class DataParallelPPOActor(BasePPOActor):
                     
                     if not final_stats:
                         self.logger.warning(f"[Actor][Step {self.global_steps}] Failed to get zero-grad analysis results.")
+                        zero_gradspace_ratio_avg = 0.0
                     else:
                         global_stats = final_stats.get('__global__', {})
                         global_ratio = global_stats.get('ratio', 0.0)
+                        zero_gradspace_ratio_avg = global_ratio
+                        
                         self.logger.info(f"--- 📊 Gradient Analysis Results (Step {self.global_steps}, Tau: {self.redo_tau}) ---")
                         self.logger.info(f"Global Dormant Neuron Ratio: {global_ratio:.4%}")
                         
@@ -569,16 +568,19 @@ class DataParallelPPOActor(BasePPOActor):
                                         max_norm = mat_stats.get('max_row_norm', 0.0)
                                         self.logger.info(f"    - {short_name:<40} | Ratio: {mat_stats.get('ratio', 0.0):.4%} | Norms (min/avg/max): {min_norm:.4e} / {avg_norm:.4e} / {max_norm:.4e}")
                         self.logger.info("-" * 60)
-
-            # Correctly extract the global ratio for any downstream use.
-            if rank == 0:
-                zero_gradspace_ratio_avg = final_stats.get('__global__', {}).get('ratio', 0.0) if final_stats else 0.0
+                    
+                    # Set the metrics with the correct value
+                    metrics['actor/zero_gradspace_ratio'] = zero_gradspace_ratio_avg
+                    print(f"[ZeroGradV2-Metrics][After Optim Step][Step {self.global_steps}] Aggregated Zero Grad Space Ratio: {zero_gradspace_ratio_avg:.4f}")
+                else:
+                    # Non-rank 0 processes set zero
+                    metrics['actor/zero_gradspace_ratio'] = 0.0
             else:
-                zero_gradspace_ratio_avg = 0.0
-
-            if rank == 0:
-                metrics['actor/zero_gradspace_ratio'] = zero_gradspace_ratio_avg
-                print(f"[ZeroGradV2-Metrics][After Optim Step][Step {self.global_steps}] Aggregated Zero Grad Space Ratio: {zero_gradspace_ratio_avg:.4f}")
+                # When gradient analysis is not performed, set zero
+                print(f"[INFO][Actor][Step {self.global_steps}] ❌ SKIPPING Gradient Analysis - conditions not met")
+                if rank == 0:
+                    metrics['actor/zero_gradspace_ratio'] = 0.0
+                    print(f"[ZeroGradV2-Metrics][After Optim Step][Step {self.global_steps}] Aggregated Zero Grad Space Ratio: 0.0000")
         # --- END FSDP analysis/reset ---
 
         self.actor_optimizer.zero_grad()

@@ -70,13 +70,18 @@ class DataParallelPPOActor(BasePPOActor):
         # Initialize unified analyzer metrics storage
         try:
             from verl.utils.analyzer_metrics_storage import AnalyzerMetricsStorage
-            experiment_name = f"actor_analysis_{int(time.time())}"
+            import os
+            
+            # Use RUN_NAME from environment if available, otherwise generate timestamp-based name
+            run_name = os.environ.get('RUN_NAME', f"actor_analysis_{int(time.time())}")
+            
             self.analyzer_storage = AnalyzerMetricsStorage(
-                base_dir="./analyzer_metrics",
-                experiment_name=experiment_name,
-                enable_wandb=True
+                base_dir="./analyzer_metrics",  # This will be auto-detected and changed
+                experiment_name=run_name,
+                enable_wandb=True,
+                auto_detect_script_type=True  # Enable automatic path detection
             )
-            print(f"[DataParallelPPOActor] Initialized analyzer metrics storage: {experiment_name}")
+            print(f"[DataParallelPPOActor] Initialized analyzer metrics storage: {run_name}")
         except Exception as e:
             print(f"[DataParallelPPOActor] Warning: Failed to initialize analyzer storage: {e}")
             self.analyzer_storage = None 

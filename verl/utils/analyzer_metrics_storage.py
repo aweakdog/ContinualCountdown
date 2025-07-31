@@ -31,7 +31,8 @@ class AnalyzerMetricsStorage:
     def __init__(self, 
                  base_dir: str = "./analyzer_metrics",
                  experiment_name: str = "default_experiment",
-                 enable_wandb: bool = True):
+                 enable_wandb: bool = True,
+                 auto_detect_script_type: bool = True):
         """
         Initialize the analyzer metrics storage system.
         
@@ -40,14 +41,19 @@ class AnalyzerMetricsStorage:
             experiment_name: Name of the current experiment
             enable_wandb: Whether to also log to WandB
         """
-        self.base_dir = base_dir
         self.experiment_name = experiment_name
         self.enable_wandb = enable_wandb
         
+        # Auto-detect script type and set appropriate base directory
+        if auto_detect_script_type:
+            self.base_dir = self._detect_and_set_storage_path(base_dir, experiment_name)
+        else:
+            self.base_dir = base_dir
+        
         # Create storage directories
-        os.makedirs(base_dir, exist_ok=True)
-        self.metrics_file = os.path.join(base_dir, f"{experiment_name}_analyzer_metrics.jsonl")
-        self.summary_file = os.path.join(base_dir, f"{experiment_name}_analyzer_summary.json")
+        os.makedirs(self.base_dir, exist_ok=True)
+        self.metrics_file = os.path.join(self.base_dir, f"{experiment_name}_analyzer_metrics.jsonl")
+        self.summary_file = os.path.join(self.base_dir, f"{experiment_name}_analyzer_summary.json")
         
         # Thread lock for safe concurrent access
         self._lock = threading.Lock()
@@ -62,9 +68,49 @@ class AnalyzerMetricsStorage:
             "last_updated": None
         }
         
-        print(f"[AnalyzerMetricsStorage] Initialized storage at: {base_dir}")
+        print(f"[AnalyzerMetricsStorage] Initialized storage at: {self.base_dir}")
         print(f"[AnalyzerMetricsStorage] Metrics file: {self.metrics_file}")
         print(f"[AnalyzerMetricsStorage] Summary file: {self.summary_file}")
+    
+    def _detect_and_set_storage_path(self, default_base_dir: str, experiment_name: str) -> str:
+        """
+        Auto-detect script type and determine appropriate storage path.
+        
+        Returns:
+            str: The appropriate base directory path
+        """
+        import sys
+        import os
+        
+        # Get the command line arguments to detect script type
+        cmdline_args = ' '.join(sys.argv)
+        current_dir = os.getcwd()
+        
+        # Check if we're running from llama_scripts
+        if 'llama_scripts' in cmdline_args or '/llama_scripts/' in current_dir:
+            # Extract RUN_NAME from environment or generate one
+            run_name = os.environ.get('RUN_NAME', experiment_name)
+            base_path = os.path.join('.', 'llama_logs', run_name)
+            print(f"[AnalyzerMetricsStorage] Detected llama_scripts → storing in: {base_path}")
+            return base_path
+        
+        # Check if we're running from scripts (qwen)
+        elif 'scripts' in cmdline_args or '/scripts/' in current_dir or 'qwen' in experiment_name.lower():
+            # Extract experiment name or generate one
+            run_name = os.environ.get('RUN_NAME', experiment_name)
+            base_path = os.path.join('.', 'qwen_logs', run_name)
+            print(f"[AnalyzerMetricsStorage] Detected scripts (qwen) → storing in: {base_path}")
+            return base_path
+        
+        # Check environment variables for explicit paths
+        analyzer_log_dir = os.environ.get('ANALYZER_LOG_DIR')
+        if analyzer_log_dir:
+            print(f"[AnalyzerMetricsStorage] Using ANALYZER_LOG_DIR: {analyzer_log_dir}")
+            return analyzer_log_dir
+        
+        # Default fallback
+        print(f"[AnalyzerMetricsStorage] Using default path: {default_base_dir}")
+        return default_base_dir
     
     def store_gradient_metrics(self, 
                              step: int, 

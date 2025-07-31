@@ -388,35 +388,51 @@ class ActorRolloutRefWorker(Worker):
             print(f"[DEBUG]   - self._is_actor: {self._is_actor}")
             print(f"[DEBUG]   - Available actor config keys: {list(self.config.actor.keys()) if hasattr(self.config, 'actor') else 'No actor config'}")
             
-            if (fsdp_grad_metric_enabled or root_fsdp_grad_metric) and is_rank_0:
-                try:
-                    from verl.utils.redo_utils.gradient_analyzer import GradientAnalyzer
-                    print("[INFO] Initializing GradientAnalyzer on rank 0 worker only")
-                    self.grad_analyzer = GradientAnalyzer.options(
-                        num_gpus=2,     # Use two GPUs for analyzer
-                        num_cpus=1      # Standard CPU allocation
-                    ).remote()
-                    print(f"[INFO] GradientAnalyzer initialized successfully: {self.grad_analyzer}")
-                except Exception as e:
-                    print(f"[ERROR] Failed to initialize GradientAnalyzer: {e}")
-                    self.grad_analyzer = None
-            else:
-                if not is_rank_0:
-                    print(f"[INFO] Skipping GradientAnalyzer initialization on rank {getattr(self, 'local_rank', 'unknown')} (only rank 0 initializes)")
-                else:
-                    print("[WARNING] GradientAnalyzer NOT initialized - fsdp_grad_metric_enabled is False")
+# Global singleton handles for analyzers
+from typing import Optional
+if not hasattr(__builtins__, '_global_grad_analyzer'):
+    __builtins__._global_grad_analyzer: Optional[object] = None
+if not hasattr(__builtins__, '_global_fisher_info_analyzer'):
+    __builtins__._global_fisher_info_analyzer: Optional[object] = None
 
-            self.fisher_info_analyzer = None
-            if self.config.actor.get("fisher_analysis_enabled", True) and is_rank_0:
-                if self.config.actor.get('fsdp_component_analysis', {}).get('run_fisher_info_analysis', True):
-                    from verl.utils.redo_utils.fisher_info_analyzer import FisherInfoAnalyzer
-                    print("[INFO] Initializing FisherInfoAnalyzer on rank 0 worker only")
-                    self.fisher_info_analyzer = FisherInfoAnalyzer.options(
-                        num_gpus=2,     # Use two GPUs for analyzer
-                        num_cpus=1      # Standard CPU allocation
-                    ).remote(self.config)
-            elif not is_rank_0:
-                print(f"[INFO] Skipping FisherInfoAnalyzer initialization on rank {getattr(self, 'local_rank', 'unknown')} (only rank 0 initializes)")
+if (fsdp_grad_metric_enabled or root_fsdp_grad_metric) and is_rank_0:
+    try:
+        from verl.utils.redo_utils.gradient_analyzer import GradientAnalyzer
+        print("[INFO] Initializing GradientAnalyzer singleton (global)")
+        if __builtins__._global_grad_analyzer is None:
+            __builtins__._global_grad_analyzer = GradientAnalyzer.options(
+                num_gpus=2,     # Use two GPUs for analyzer
+                num_cpus=1      # Standard CPU allocation
+            ).remote()
+            print(f"[INFO] GradientAnalyzer singleton created: {__builtins__._global_grad_analyzer}")
+        else:
+            print(f"[INFO] GradientAnalyzer singleton reused: {__builtins__._global_grad_analyzer}")
+        self.grad_analyzer = __builtins__._global_grad_analyzer
+    except Exception as e:
+        print(f"[ERROR] Failed to initialize GradientAnalyzer: {e}")
+        self.grad_analyzer = None
+else:
+    if not is_rank_0:
+        print(f"[INFO] Skipping GradientAnalyzer initialization on rank {getattr(self, 'local_rank', 'unknown')} (only rank 0 initializes)")
+    else:
+        print("[WARNING] GradientAnalyzer NOT initialized - fsdp_grad_metric_enabled is False")
+
+self.fisher_info_analyzer = None
+if self.config.actor.get("fisher_analysis_enabled", True) and is_rank_0:
+    if self.config.actor.get('fsdp_component_analysis', {}).get('run_fisher_info_analysis', True):
+        from verl.utils.redo_utils.fisher_info_analyzer import FisherInfoAnalyzer
+        print("[INFO] Initializing FisherInfoAnalyzer singleton (global)")
+        if __builtins__._global_fisher_info_analyzer is None:
+            __builtins__._global_fisher_info_analyzer = FisherInfoAnalyzer.options(
+                num_gpus=2,     # Use two GPUs for analyzer
+                num_cpus=1      # Standard CPU allocation
+            ).remote(self.config)
+            print(f"[INFO] FisherInfoAnalyzer singleton created: {__builtins__._global_fisher_info_analyzer}")
+        else:
+            print(f"[INFO] FisherInfoAnalyzer singleton reused: {__builtins__._global_fisher_info_analyzer}")
+        self.fisher_info_analyzer = __builtins__._global_fisher_info_analyzer
+elif not is_rank_0:
+    print(f"[INFO] Skipping FisherInfoAnalyzer initialization on rank {getattr(self, 'local_rank', 'unknown')} (only rank 0 initializes)")
 
             self.actor = DataParallelPPOActor(
                 config=self.config.actor,

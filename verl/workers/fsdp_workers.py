@@ -59,11 +59,8 @@ from codetiming import Timer
 logger = logging.getLogger(__file__)
 logger.setLevel(os.getenv('VERL_PPO_LOGGING_LEVEL', 'WARN'))
 
-# Global singleton handles for analyzers, using module-level globals for safety in Ray.
-from typing import Optional
-
-_global_grad_analyzer: Optional[object] = None
-_global_fisher_info_analyzer: Optional[object] = None
+# Note: Singleton implementation for analyzers now uses Ray's named actors
+# to ensure a single instance across all distributed processes.
 
 
 class ActorRolloutRefWorker(Worker):
@@ -397,17 +394,18 @@ class ActorRolloutRefWorker(Worker):
             if (fsdp_grad_metric_enabled or root_fsdp_grad_metric) and is_rank_0:
                 try:
                     from verl.utils.redo_utils.gradient_analyzer import GradientAnalyzer
-                    print("[INFO] Initializing GradientAnalyzer singleton (global)")
-                    global _global_grad_analyzer
-                    if _global_grad_analyzer is None:
-                        _global_grad_analyzer = GradientAnalyzer.options(
-                            num_gpus=2,     # Use two GPUs for analyzer
-                            num_cpus=1      # Standard CPU allocation
-                        ).remote()
-                        print(f"[INFO] GradientAnalyzer singleton created: {_global_grad_analyzer}")
-                    else:
-                        print(f"[INFO] GradientAnalyzer singleton reused: {_global_grad_analyzer}")
-                    self.grad_analyzer = _global_grad_analyzer
+                    # Use named actor to ensure a single instance across all processes.
+                    self.grad_analyzer = ray.get_actor("global_gradient_analyzer")
+                    print(f"[INFO] Re-using existing GradientAnalyzer singleton: {self.grad_analyzer}")
+                except ValueError:
+                    # Actor doesn't exist, create it.
+                    print("[INFO] Creating GradientAnalyzer singleton (named actor)...")
+                    self.grad_analyzer = GradientAnalyzer.options(
+                        name="global_gradient_analyzer",
+                        num_gpus=2,
+                        num_cpus=1
+                    ).remote()
+                    print(f"[INFO] GradientAnalyzer singleton created: {self.grad_analyzer}")
                 except Exception as e:
                     print(f"[ERROR] Failed to initialize GradientAnalyzer: {e}")
                     self.grad_analyzer = None
@@ -420,18 +418,21 @@ class ActorRolloutRefWorker(Worker):
             self.fisher_info_analyzer = None
             if self.config.actor.get("fisher_analysis_enabled", True) and is_rank_0:
                 if self.config.actor.get('fsdp_component_analysis', {}).get('run_fisher_info_analysis', True):
-                    from verl.utils.redo_utils.fisher_info_analyzer import FisherInfoAnalyzer
-                    print("[INFO] Initializing FisherInfoAnalyzer singleton (global)")
-                    global _global_fisher_info_analyzer
-                    if _global_fisher_info_analyzer is None:
-                        _global_fisher_info_analyzer = FisherInfoAnalyzer.options(
-                            num_gpus=2,     # Use two GPUs for analyzer
-                            num_cpus=1      # Standard CPU allocation
+                    try:
+                        from verl.utils.redo_utils.fisher_info_analyzer import FisherInfoAnalyzer
+                        self.fisher_info_analyzer = ray.get_actor("global_fisher_info_analyzer")
+                        print(f"[INFO] Re-using existing FisherInfoAnalyzer singleton: {self.fisher_info_analyzer}")
+                    except ValueError:
+                        print("[INFO] Creating FisherInfoAnalyzer singleton (named actor)...")
+                        self.fisher_info_analyzer = FisherInfoAnalyzer.options(
+                            name="global_fisher_info_analyzer",
+                            num_gpus=2,
+                            num_cpus=1
                         ).remote(self.config)
-                        print(f"[INFO] FisherInfoAnalyzer singleton created: {_global_fisher_info_analyzer}")
-                    else:
-                        print(f"[INFO] FisherInfoAnalyzer singleton reused: {_global_fisher_info_analyzer}")
-                    self.fisher_info_analyzer = _global_fisher_info_analyzer
+                        print(f"[INFO] FisherInfoAnalyzer singleton created: {self.fisher_info_analyzer}")
+                    except Exception as e:
+                        print(f"[ERROR] Failed to initialize FisherInfoAnalyzer: {e}")
+                        self.fisher_info_analyzer = None
             elif not is_rank_0:
                 print(f"[INFO] Skipping FisherInfoAnalyzer initialization on rank {getattr(self, 'local_rank', 'unknown')} (only rank 0 initializes)")
 

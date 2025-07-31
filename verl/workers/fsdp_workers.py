@@ -393,7 +393,7 @@ class ActorRolloutRefWorker(Worker):
                     from verl.utils.redo_utils.gradient_analyzer import GradientAnalyzer
                     print("[INFO] Initializing GradientAnalyzer on rank 0 worker only")
                     self.grad_analyzer = GradientAnalyzer.options(
-                        num_gpus=2,     # Use full GPU since only one instance
+                        num_gpus=1,     # Use full GPU since only one instance
                         num_cpus=4      # Standard CPU allocation
                     ).remote()
                     print(f"[INFO] GradientAnalyzer initialized successfully: {self.grad_analyzer}")
@@ -412,7 +412,7 @@ class ActorRolloutRefWorker(Worker):
                     from verl.utils.redo_utils.fisher_info_analyzer import FisherInfoAnalyzer
                     print("[INFO] Initializing FisherInfoAnalyzer on rank 0 worker only")
                     self.fisher_info_analyzer = FisherInfoAnalyzer.options(
-                        num_gpus=2,     # Use full GPU since only one instance
+                        num_gpus=1,     # Use full GPU since only one instance
                         num_cpus=4      # Standard CPU allocation
                     ).remote(self.config)
             elif not is_rank_0:

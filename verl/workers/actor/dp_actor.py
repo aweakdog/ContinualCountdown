@@ -21,6 +21,8 @@ import torch
 from torch import nn
 import torch.distributed as dist
 import ray
+import logging
+import time
 
 from verl import DataProto
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
@@ -60,9 +62,24 @@ class DataParallelPPOActor(BasePPOActor):
         self.fsdp_grad_metric_enabled = True  
         print("[DEBUG][Actor] Config keys at init:", list(config.keys()) if hasattr(config, 'keys') else type(config))
         print("[DEBUG][Actor] fsdp_grad_metric_enabled in config:", getattr(config, "fsdp_grad_metric_enabled", None))
+        self.logger = logging.getLogger(__name__)
         self.actor_module = actor_module
         self.actor_optimizer = actor_optimizer
-        self.original_param_shapes = original_param_shapes 
+        self.original_param_shapes = original_param_shapes
+        
+        # Initialize unified analyzer metrics storage
+        try:
+            from verl.utils.analyzer_metrics_storage import AnalyzerMetricsStorage
+            experiment_name = f"actor_analysis_{int(time.time())}"
+            self.analyzer_storage = AnalyzerMetricsStorage(
+                base_dir="./analyzer_metrics",
+                experiment_name=experiment_name,
+                enable_wandb=True
+            )
+            print(f"[DataParallelPPOActor] Initialized analyzer metrics storage: {experiment_name}")
+        except Exception as e:
+            print(f"[DataParallelPPOActor] Warning: Failed to initialize analyzer storage: {e}")
+            self.analyzer_storage = None 
         self.grad_analyzer = grad_analyzer
         self.fisher_info_analyzer = fisher_info_analyzer
         
@@ -629,6 +646,22 @@ class DataParallelPPOActor(BasePPOActor):
                                     self.logger.info(f"--- 📊 Gradient Analysis Results (Step {self.global_steps}, Tau: {self.redo_tau}) ---")
                                     self.logger.info(f"Global Dormant Neuron Ratio: {global_ratio:.4%}")
                                     
+                                    # Store detailed metrics to unified storage
+                                    if self.analyzer_storage:
+                                        try:
+                                            self.analyzer_storage.store_gradient_metrics(
+                                                step=self.global_steps,
+                                                gradient_stats=final_stats,
+                                                tau=self.redo_tau,
+                                                additional_info={
+                                                    "rank": rank,
+                                                    "device": str(self.device) if hasattr(self, 'device') else "unknown"
+                                                }
+                                            )
+                                            print(f"[INFO][Storage] Gradient metrics saved to JSON for step {self.global_steps}")
+                                        except Exception as e:
+                                            print(f"[ERROR][Storage] Failed to save gradient metrics: {e}")
+                                    
                                     component_stats = final_stats.get('components', {})
                                     if component_stats:
                                         self.logger.info(f"--- Per-Component & Per-Matrix Breakdown ---")
@@ -650,7 +683,27 @@ class DataParallelPPOActor(BasePPOActor):
                                 fisher_stats = result
                                 if fisher_stats:
                                     self.logger.info(f"--- 📈 Fisher Information Analysis Results (Step {self.global_steps}) ---")
-                                    # Add Fisher analysis logging here if needed
+                                    
+                                    # Store detailed Fisher metrics to unified storage
+                                    if self.analyzer_storage:
+                                        try:
+                                            self.analyzer_storage.store_fisher_metrics(
+                                                step=self.global_steps,
+                                                fisher_stats=fisher_stats,
+                                                additional_info={
+                                                    "rank": rank,
+                                                    "device": str(self.device) if hasattr(self, 'device') else "unknown"
+                                                }
+                                            )
+                                            print(f"[INFO][Storage] Fisher metrics saved to JSON for step {self.global_steps}")
+                                        except Exception as e:
+                                            print(f"[ERROR][Storage] Failed to save Fisher metrics: {e}")
+                                    
+                                    # Log detailed Fisher statistics
+                                    for key, value in fisher_stats.items():
+                                        if isinstance(value, (int, float)):
+                                            self.logger.info(f"  {key}: {value:.6f}")
+                                    
                                     print(f"[INFO][Parallel Analysis][Step {self.global_steps}] ✅ Fisher analysis completed successfully")
                                 else:
                                     self.logger.warning(f"[Actor][Step {self.global_steps}] Failed to get Fisher analysis results.")

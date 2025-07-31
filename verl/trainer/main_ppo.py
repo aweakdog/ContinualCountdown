@@ -105,15 +105,26 @@ def main(config):
         print(f"[Ray Init] Detected {num_gpus} GPUs available for Ray cluster")
         print(f"[Ray Init] CUDA_VISIBLE_DEVICES: {os.environ.get('CUDA_VISIBLE_DEVICES', 'Not set')}")
         
-        # Configure Ray with explicit resource specification
+        # Configure Ray with explicit GPU separation
+        # Training uses GPUs 0-3, Analyzers use GPUs 4-7
+        training_gpus = 4  # First 4 GPUs for training
+        analyzer_gpus = max(0, num_gpus - 4)  # Remaining GPUs for analyzers
+        
+        print(f"[Ray Init] GPU allocation: GPUs 0-3 for training, GPUs 4-7 for analyzers")
+        print(f"[Ray Init] Training GPUs: {training_gpus}, Analyzer GPUs: {analyzer_gpus}")
+        
         ray_config = {
             "log_to_driver": True,
             "address": os.environ.get("RAY_ADDRESS"),
-            "num_gpus": num_gpus,  # Tell Ray total GPUs available
+            "num_gpus": training_gpus,  # Only expose first 4 GPUs to Ray for training
+            "resources": {
+                "analyzer_gpu": analyzer_gpus  # Custom resource for analyzers
+            },
             "runtime_env": {
                 'env_vars': {
                     'TOKENIZERS_PARALLELISM': 'true',
                     'NCCL_DEBUG': 'WARN',
+                    'CUDA_VISIBLE_DEVICES': '0,1,2,3,4,5,6,7',  # All GPUs visible to processes
                 }
             }
         }

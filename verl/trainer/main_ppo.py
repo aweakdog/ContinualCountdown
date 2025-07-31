@@ -98,6 +98,13 @@ import hydra
 
 @hydra.main(config_path='config', config_name='ppo_trainer', version_base=None)
 def main(config):
+    # Force Ray cluster restart to apply new configuration
+    if ray.is_initialized():
+        print("[Ray Init] Shutting down existing Ray cluster to apply new configuration...")
+        ray.shutdown()
+        import time
+        time.sleep(2)  # Wait for cleanup
+    
     if not ray.is_initialized():
         # Configure Ray with explicit GPU resource detection
         import torch

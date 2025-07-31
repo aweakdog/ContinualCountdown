@@ -17,7 +17,7 @@ import torch
 import collections
 from typing import Dict
 
-@ray.remote(num_gpus=1, num_cpus=1)
+@ray.remote(num_gpus=2, num_cpus=1)
 class GradientAnalyzer:
     """
     A stateful Ray actor that analyzes gradients component-wise to avoid OOM errors.

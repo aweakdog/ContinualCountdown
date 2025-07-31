@@ -386,10 +386,10 @@ class ActorRolloutRefWorker(Worker):
             if fsdp_grad_metric_enabled or root_fsdp_grad_metric:
                 try:
                     from verl.utils.redo_utils.gradient_analyzer import GradientAnalyzer
-                    print("[INFO] ✅ Initializing GradientAnalyzer with fractional GPU allocation")
+                    print("[INFO] ✅ Initializing GradientAnalyzer with full GPU allocation")
                     self.grad_analyzer = GradientAnalyzer.options(
-                        num_gpus=0.5,  # Use fractional GPU to avoid placement group conflicts
-                        num_cpus=4      # Increase CPU allocation
+                        num_gpus=1,  # Use full GPU for better performance
+                        num_cpus=4   # Increase CPU allocation
                     ).remote()
                     print(f"[INFO] ✅ GradientAnalyzer initialized successfully: {self.grad_analyzer}")
                 except Exception as e:
@@ -403,10 +403,10 @@ class ActorRolloutRefWorker(Worker):
                 if self.config.actor.get('fsdp_component_analysis', {}).get('run_fisher_info_analysis', True):
                     from verl.utils.redo_utils.fisher_info_analyzer import FisherInfoAnalyzer
                     # Use optimized GPUs for Fisher Info Analyzer to fit resource constraints
-                    print("[INFO] Initializing FisherInfoAnalyzer with fractional GPU allocation")
+                    print("[INFO] Initializing FisherInfoAnalyzer with full GPU allocation")
                     self.fisher_info_analyzer = FisherInfoAnalyzer.options(
-                        num_gpus=0.5,  # Use fractional GPU to avoid placement group conflicts
-                        num_cpus=4      # Increase CPU allocation
+                        num_gpus=1,  # Use full GPU for better performance
+                        num_cpus=4   # Increase CPU allocation
                     ).remote(self.config)
 
             self.actor = DataParallelPPOActor(

@@ -139,6 +139,7 @@ echo "Val files: $VAL_FILES_STR" | tee -a "$LOG_FILE" | tee -a "$MASTER_LOG_FILE
     actor_rollout_ref.actor.optim.lr=1e-6 \
     actor_rollout_ref.actor.ppo_mini_batch_size=32 \
     actor_rollout_ref.actor.ppo_micro_batch_size=8 \
+    critic.ppo_mini_batch_size=32 \
     actor_rollout_ref.rollout.log_prob_micro_batch_size=8 \
     actor_rollout_ref.rollout.tensor_model_parallel_size=$ROLLOUT_TP_SIZE \
     actor_rollout_ref.rollout.gpu_memory_utilization=0.6 \

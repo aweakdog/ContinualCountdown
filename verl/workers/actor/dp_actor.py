@@ -572,19 +572,19 @@ class DataParallelPPOActor(BasePPOActor):
                     fisher_analysis_future = self.fisher_info_analyzer.get_aggregated_stats.remote(identifier='actor')
                 
                 # Step 4: Get aggregated results from gradient analyzer (if enabled)
+                # Step 5: Start parallel analysis aggregation
                 grad_stats_future = None
-                if should_analyze_gradients and rank == 0:
-                    print(f"[INFO][Actor][Step {self.global_steps}] Getting aggregated gradient analysis results.")
-                    grad_stats_future = self.grad_analyzer.get_aggregated_stats.remote(identifier='actor')
+                fisher_stats_future = None
                 
                 if rank == 0:
                     print(f"[INFO][Parallel Analysis][Step {self.global_steps}] 🚀 Starting parallel execution of Gradient and Fisher analyzers")
                     
-                    # Start gradient analysis aggregation (non-blocking)
-                    grad_stats_future = self.grad_analyzer.get_aggregated_stats.remote(identifier='actor', verbose=True)
+                    # Start gradient analysis aggregation (non-blocking) if enabled
+                    if should_analyze_gradients:
+                        print(f"[INFO][Actor][Step {self.global_steps}] Getting aggregated gradient analysis results.")
+                        grad_stats_future = self.grad_analyzer.get_aggregated_stats.remote(identifier='actor', verbose=True)
                     
                     # Start Fisher analysis in parallel if enabled
-                    fisher_stats_future = None
                     if run_fisher_analysis and analysis_tasks:
                         print(f"[INFO][Parallel Analysis][Step {self.global_steps}] 🔄 Starting Fisher analysis in parallel")
                         # Wait for Fisher component analyses to complete

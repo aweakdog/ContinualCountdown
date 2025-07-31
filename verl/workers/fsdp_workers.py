@@ -404,7 +404,7 @@ class ActorRolloutRefWorker(Worker):
                         from verl.utils.redo_utils.gradient_analyzer import GradientAnalyzer
                         self.grad_analyzer = GradientAnalyzer.options(
                             name="global_gradient_analyzer",
-                            num_gpus=4,  # 使用所有空闲GPU (4-7)
+                            num_gpus=2,  # 使用所有空闲GPU (4-7)
                             num_cpus=8   # 增加CPU资源用于并行处理
                         ).remote()
                         print(f"[INFO] GradientAnalyzer singleton created: {self.grad_analyzer}")
@@ -446,7 +446,7 @@ class ActorRolloutRefWorker(Worker):
                             from verl.utils.redo_utils.fisher_info_analyzer import FisherInfoAnalyzer
                             self.fisher_info_analyzer = FisherInfoAnalyzer.options(
                                 name="global_fisher_info_analyzer",
-                                num_gpus=4,  # 使用所有空闲GPU (4-7)
+                                num_gpus=2,  # 使用所有空闲GPU (4-7)
                                 num_cpus=8   # 增加CPU资源用于并行处理
                             ).remote(self.config)
                             print(f"[INFO] FisherInfoAnalyzer singleton created: {self.fisher_info_analyzer}")

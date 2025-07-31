@@ -228,8 +228,7 @@ def main_task(config: dict):
                             resource_pool_manager=resource_pool_manager,
                             ray_worker_group_cls=ray_worker_group_cls,
                             reward_fn=reward_fn,
-                            val_reward_fn=val_reward_fn,
-                            actor_creation_event=actor_creation_event)
+                            val_reward_fn=val_reward_fn)
     trainer.init_workers()
     trainer.fit()
 

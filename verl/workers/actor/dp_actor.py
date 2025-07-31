@@ -536,9 +536,24 @@ class DataParallelPPOActor(BasePPOActor):
                     if is_fsdp:
                         dist.barrier()
 
-                # Step 3: Get the final aggregated results from the analyzer on rank 0.
+                # Step 3: Execute both analyzers in parallel to maximize GPU utilization
                 if rank == 0:
-                    final_stats = ray.get(self.grad_analyzer.get_aggregated_stats.remote(identifier='actor', verbose=True))
+                    print(f"[INFO][Parallel Analysis][Step {self.global_steps}] 🚀 Starting parallel execution of Gradient and Fisher analyzers")
+                    
+                    # Start gradient analysis aggregation (non-blocking)
+                    grad_stats_future = self.grad_analyzer.get_aggregated_stats.remote(identifier='actor', verbose=True)
+                    
+                    # Start Fisher analysis in parallel if enabled
+                    fisher_stats_future = None
+                    if run_fisher_analysis and analysis_tasks:
+                        print(f"[INFO][Parallel Analysis][Step {self.global_steps}] 🔄 Starting Fisher analysis in parallel")
+                        # Wait for Fisher component analyses to complete
+                        ray.get(analysis_tasks)
+                        # Start Fisher aggregation in parallel with gradient analysis
+                        fisher_stats_future = self.fisher_info_analyzer.get_aggregated_stats.remote(identifier='actor')
+                    
+                    # Wait for gradient analysis to complete and process results
+                    final_stats = ray.get(grad_stats_future)
                     
                     if not final_stats:
                         self.logger.warning(f"[Actor][Step {self.global_steps}] Failed to get zero-grad analysis results.")
@@ -568,9 +583,19 @@ class DataParallelPPOActor(BasePPOActor):
                                         self.logger.info(f"    - {short_name:<40} | Ratio: {mat_stats.get('ratio', 0.0):.4%} | Norms (min/avg/max): {min_norm:.4e} / {avg_norm:.4e} / {max_norm:.4e}")
                         self.logger.info("-" * 60)
                     
+                    # Process Fisher analysis results if they were started
+                    if fisher_stats_future is not None:
+                        print(f"[INFO][Parallel Analysis][Step {self.global_steps}] ⏳ Waiting for Fisher analysis to complete")
+                        fisher_stats = ray.get(fisher_stats_future)
+                        if fisher_stats:
+                            self.logger.info(f"--- 📈 Fisher Information Analysis Results (Step {self.global_steps}) ---")
+                            # Add Fisher analysis logging here if needed
+                            print(f"[INFO][Parallel Analysis][Step {self.global_steps}] ✅ Fisher analysis completed successfully")
+                    
                     # Set the metrics with the correct value
                     metrics['actor/zero_gradspace_ratio'] = zero_gradspace_ratio_avg
                     print(f"[ZeroGradV2-Metrics][After Optim Step][Step {self.global_steps}] Aggregated Zero Grad Space Ratio: {zero_gradspace_ratio_avg:.4f}")
+                    print(f"[INFO][Parallel Analysis][Step {self.global_steps}] 🎉 Parallel analysis execution completed")
                 else:
                     # Non-rank 0 processes set zero
                     metrics['actor/zero_gradspace_ratio'] = 0.0

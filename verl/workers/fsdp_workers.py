@@ -405,6 +405,7 @@ class ActorRolloutRefWorker(Worker):
                             num_cpus=1
                         ).remote()
                         print(f"[INFO] GradientAnalyzer singleton created: {self.grad_analyzer}")
+                        print(f"[DEBUG] GradientAnalyzer type: {type(self.grad_analyzer)}")
                     except Exception as e:
                         print(f"[ERROR] Failed to initialize GradientAnalyzer: {e}")
                         self.grad_analyzer = None
@@ -412,13 +413,25 @@ class ActorRolloutRefWorker(Worker):
                     # Other ranks wait a bit and then get the actor.
                     print(f"[INFO] Rank {getattr(self, 'local_rank', 'unknown')} waiting for GradientAnalyzer to be created...")
                     import time
-                    time.sleep(5)  # Give rank 0 time to create the actor
-                    try:
-                        self.grad_analyzer = ray.get_actor("global_gradient_analyzer")
-                        print(f"[INFO] Rank {getattr(self, 'local_rank', 'unknown')} got GradientAnalyzer handle: {self.grad_analyzer}")
-                    except Exception as e:
-                        print(f"[ERROR] Rank {getattr(self, 'local_rank', 'unknown')} failed to get GradientAnalyzer: {e}")
-                        self.grad_analyzer = None
+                    time.sleep(10)  # Increase wait time to 10 seconds
+                    
+                    # Retry logic for getting the actor
+                    max_retries = 3
+                    for attempt in range(max_retries):
+                        try:
+                            self.grad_analyzer = ray.get_actor("global_gradient_analyzer")
+                            print(f"[INFO] Rank {getattr(self, 'local_rank', 'unknown')} got GradientAnalyzer handle: {self.grad_analyzer}")
+                            print(f"[DEBUG] GradientAnalyzer type: {type(self.grad_analyzer)}")
+                            break
+                        except Exception as e:
+                            print(f"[ERROR] Rank {getattr(self, 'local_rank', 'unknown')} failed to get GradientAnalyzer (attempt {attempt + 1}/{max_retries}): {e}")
+                            if attempt < max_retries - 1:
+                                time.sleep(5)  # Wait before retry
+                            else:
+                                self.grad_analyzer = None
+            else:
+                print(f"[INFO] Gradient analysis disabled - fsdp_grad_metric_enabled={fsdp_grad_metric_enabled}, root_fsdp_grad_metric={root_fsdp_grad_metric}")
+                self.grad_analyzer = None
 
             self.fisher_info_analyzer = None
             if self.config.actor.get("fisher_analysis_enabled", True):
@@ -441,13 +454,21 @@ class ActorRolloutRefWorker(Worker):
                         # Other ranks wait a bit and then get the actor.
                         print(f"[INFO] Rank {getattr(self, 'local_rank', 'unknown')} waiting for FisherInfoAnalyzer to be created...")
                         import time
-                        time.sleep(5)  # Give rank 0 time to create the actor
-                        try:
-                            self.fisher_info_analyzer = ray.get_actor("global_fisher_info_analyzer")
-                            print(f"[INFO] Rank {getattr(self, 'local_rank', 'unknown')} got FisherInfoAnalyzer handle: {self.fisher_info_analyzer}")
-                        except Exception as e:
-                            print(f"[ERROR] Rank {getattr(self, 'local_rank', 'unknown')} failed to get FisherInfoAnalyzer: {e}")
-                            self.fisher_info_analyzer = None
+                        time.sleep(10)  # Give rank 0 time to create the actor
+                        
+                        # Retry logic for getting the Fisher analyzer
+                        max_retries = 3
+                        for attempt in range(max_retries):
+                            try:
+                                self.fisher_info_analyzer = ray.get_actor("global_fisher_info_analyzer")
+                                print(f"[INFO] Rank {getattr(self, 'local_rank', 'unknown')} got FisherInfoAnalyzer handle: {self.fisher_info_analyzer}")
+                                break
+                            except Exception as e:
+                                print(f"[ERROR] Rank {getattr(self, 'local_rank', 'unknown')} failed to get FisherInfoAnalyzer (attempt {attempt + 1}/{max_retries}): {e}")
+                                if attempt < max_retries - 1:
+                                    time.sleep(5)  # Wait before retry
+                                else:
+                                    self.fisher_info_analyzer = None
 
             self.actor = DataParallelPPOActor(
                 config=self.config.actor,

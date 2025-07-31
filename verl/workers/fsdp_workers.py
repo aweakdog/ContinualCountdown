@@ -369,7 +369,12 @@ class ActorRolloutRefWorker(Worker):
             OmegaConf.set_struct(self.config.actor, True)
             with open_dict(self.config.actor):
                 self.config.actor.use_remove_padding = use_remove_padding
-            # Initialize Gradient Analyzer
+            
+            # Initialize Gradient Analyzer only on rank 0 to avoid multiple instances
+            # Check if this is the first worker (rank 0) to avoid resource conflicts
+            is_rank_0 = getattr(self, 'local_rank', 0) == 0
+            print(f"[DEBUG] Worker rank check: local_rank={getattr(self, 'local_rank', 'unknown')}, is_rank_0={is_rank_0}")
+            
             self.grad_analyzer = None
             
             # Debug: Check configuration values
@@ -383,31 +388,35 @@ class ActorRolloutRefWorker(Worker):
             print(f"[DEBUG]   - self._is_actor: {self._is_actor}")
             print(f"[DEBUG]   - Available actor config keys: {list(self.config.actor.keys()) if hasattr(self.config, 'actor') else 'No actor config'}")
             
-            if fsdp_grad_metric_enabled or root_fsdp_grad_metric:
+            if (fsdp_grad_metric_enabled or root_fsdp_grad_metric) and is_rank_0:
                 try:
                     from verl.utils.redo_utils.gradient_analyzer import GradientAnalyzer
-                    print("[INFO] ✅ Initializing GradientAnalyzer with full GPU allocation")
+                    print("[INFO] Initializing GradientAnalyzer on rank 0 worker only")
                     self.grad_analyzer = GradientAnalyzer.options(
-                        num_gpus=1,  # Use full GPU for better performance
-                        num_cpus=4   # Increase CPU allocation
+                        num_gpus=2,     # Use full GPU since only one instance
+                        num_cpus=4      # Standard CPU allocation
                     ).remote()
-                    print(f"[INFO] ✅ GradientAnalyzer initialized successfully: {self.grad_analyzer}")
+                    print(f"[INFO] GradientAnalyzer initialized successfully: {self.grad_analyzer}")
                 except Exception as e:
-                    print(f"[ERROR] ❌ Failed to initialize GradientAnalyzer: {e}")
+                    print(f"[ERROR] Failed to initialize GradientAnalyzer: {e}")
                     self.grad_analyzer = None
             else:
-                print("[WARNING] ❌ GradientAnalyzer NOT initialized - fsdp_grad_metric_enabled is False")
+                if not is_rank_0:
+                    print(f"[INFO] Skipping GradientAnalyzer initialization on rank {getattr(self, 'local_rank', 'unknown')} (only rank 0 initializes)")
+                else:
+                    print("[WARNING] GradientAnalyzer NOT initialized - fsdp_grad_metric_enabled is False")
 
             self.fisher_info_analyzer = None
-            if self.config.actor.get("fisher_analysis_enabled", True):
+            if self.config.actor.get("fisher_analysis_enabled", True) and is_rank_0:
                 if self.config.actor.get('fsdp_component_analysis', {}).get('run_fisher_info_analysis', True):
                     from verl.utils.redo_utils.fisher_info_analyzer import FisherInfoAnalyzer
-                    # Use optimized GPUs for Fisher Info Analyzer to fit resource constraints
-                    print("[INFO] Initializing FisherInfoAnalyzer with full GPU allocation")
+                    print("[INFO] Initializing FisherInfoAnalyzer on rank 0 worker only")
                     self.fisher_info_analyzer = FisherInfoAnalyzer.options(
-                        num_gpus=1,  # Use full GPU for better performance
-                        num_cpus=4   # Increase CPU allocation
+                        num_gpus=2,     # Use full GPU since only one instance
+                        num_cpus=4      # Standard CPU allocation
                     ).remote(self.config)
+            elif not is_rank_0:
+                print(f"[INFO] Skipping FisherInfoAnalyzer initialization on rank {getattr(self, 'local_rank', 'unknown')} (only rank 0 initializes)")
 
             self.actor = DataParallelPPOActor(
                 config=self.config.actor,

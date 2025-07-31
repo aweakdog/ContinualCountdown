@@ -386,10 +386,10 @@ class ActorRolloutRefWorker(Worker):
             if fsdp_grad_metric_enabled or root_fsdp_grad_metric:
                 try:
                     from verl.utils.redo_utils.gradient_analyzer import GradientAnalyzer
-                    print("[INFO] ✅ Initializing GradientAnalyzer with dedicated GPU (2 GPUs for high-performance analysis)")
+                    print("[INFO] ✅ Initializing GradientAnalyzer with optimized GPU allocation (1.5 GPUs to fit resource constraints)")
                     self.grad_analyzer = GradientAnalyzer.options(
-                        num_gpus=2,  # Use 2 GPUs for high-performance gradient analysis
-                        num_cpus=2
+                        num_gpus=1.5,  # Use 1.5 GPUs to allow better resource scheduling
+                        num_cpus=4     # Increase CPU to compensate
                     ).remote()
                     print(f"[INFO] ✅ GradientAnalyzer initialized successfully: {self.grad_analyzer}")
                 except Exception as e:
@@ -402,11 +402,11 @@ class ActorRolloutRefWorker(Worker):
             if self.config.actor.get("fisher_analysis_enabled", True):
                 if self.config.actor.get('fsdp_component_analysis', {}).get('run_fisher_info_analysis', True):
                     from verl.utils.redo_utils.fisher_info_analyzer import FisherInfoAnalyzer
-                    # Use dedicated GPUs for Fisher Info Analyzer to maximize performance
-                    print("[INFO] Initializing FisherInfoAnalyzer with dedicated GPU (2 GPUs for high-performance analysis)")
+                    # Use optimized GPUs for Fisher Info Analyzer to fit resource constraints
+                    print("[INFO] Initializing FisherInfoAnalyzer with optimized GPU allocation (1.5 GPUs to fit resource constraints)")
                     self.fisher_info_analyzer = FisherInfoAnalyzer.options(
-                        num_gpus=2,  # Use 2 GPUs for high-performance Fisher analysis
-                        num_cpus=2
+                        num_gpus=1.5,  # Use 1.5 GPUs to allow better resource scheduling
+                        num_cpus=4     # Increase CPU to compensate
                     ).remote(self.config)
 
             self.actor = DataParallelPPOActor(

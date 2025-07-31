@@ -71,6 +71,8 @@ class ActorRolloutRefWorker(Worker):
 
     def __init__(self, config: DictConfig, role: str):
         super().__init__()
+        self.actor_update_step = 0
+        self.critic_update_step = 0
         self.config = config
         self.role = role
         self.local_rank = -1

@@ -345,7 +345,6 @@ class DataParallelPPOActor(BasePPOActor):
             if self.lr_scheduler is not None:
                 self.lr_scheduler.step()
                 new_lr = self.actor_optimizer.param_groups[0]['lr']
-                print(f"[DP Actor Debug] LR for next step is: {new_lr}")
 
             with torch.no_grad():
                 metrics['actor/pg_loss'] = pg_loss.item()

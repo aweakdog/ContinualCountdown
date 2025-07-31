@@ -12,18 +12,23 @@ fi
 export NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-all}
 export CHECKPOINT_BASE_DIR=${CHECKPOINT_BASE_DIR:-/nas/shared/sys2/yuanhangli/tmp/checkpoints/continual_countdown3b_llama_curriculum}
 export BASE_MODEL=${BASE_MODEL:-"/nas/shared/sys2/yuanhangli/tmp/llama_sft_model/${SFT_CHECKPOINT}"}  # Path to mounted Llama SFT model
-export N_GPUS=${N_GPUS:-4}  # Using 8 A100 GPUs
-export ROLLOUT_TP_SIZE=${ROLLOUT_TP_SIZE:-1}  # Tensor parallel size optimized for 8 GPUs
+export N_GPUS=${N_GPUS:-4}  # Using 4 GPUs for training
+export ROLLOUT_TP_SIZE=${ROLLOUT_TP_SIZE:-1}  # Tensor parallel size optimized for 4 GPUs
 export WANDB_MODE=${WANDB_MODE:-offline}  # Run WandB in offline mode
 export VLLM_ATTENTION_BACKEND=${VLLM_ATTENTION_BACKEND:-XFORMERS}
-export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0,1,2,3,4,5,6,7}  # Limit training to GPUs 0-3, reserve 4-7 for analyzers
+
+# GPU Resource Allocation Strategy:
+# - Training processes: Only see GPUs 0-3 (via CUDA_VISIBLE_DEVICES)
+# - Ray/Analyzers: See all GPUs 0-7, but training occupies 0-3, so Ray uses 4-7
+export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0,1,2,3,4,5,6,7}  # All GPUs visible to Ray
+export TRAINING_CUDA_DEVICES="0,1,2,3"  # Only training GPUs
 export NCCL_DEBUG=${NCCL_DEBUG:-INFO}
 
 # GPU Resource Allocation Configuration for 8 A100 setup
 # Training: GPUs 0-3, Analyzers: GPUs 4-7
 export RAY_ANALYZER_GPU_START=${RAY_ANALYZER_GPU_START:-4}  # Start analyzer GPUs from GPU 4
 export RAY_ANALYZER_GPU_COUNT=${RAY_ANALYZER_GPU_COUNT:-4}  # Use 4 GPUs for analyzers (4-7)
-echo "[GPU Config] Training will use GPUs 0-3, Analyzers will use GPUs 4-7"
+echo "[GPU Config] Training will use GPUs 0-3, Ray/Analyzers will use GPUs 4-7"
 
 
 # Set up logging with backup

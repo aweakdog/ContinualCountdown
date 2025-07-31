@@ -99,16 +99,41 @@ import hydra
 @hydra.main(config_path='config', config_name='ppo_trainer', version_base=None)
 def main(config):
     if not ray.is_initialized():
-        ray.init(
-            log_to_driver=True,
-            address=os.environ.get("RAY_ADDRESS"),  # Use the exported address
-            runtime_env={
+        # Configure Ray with explicit GPU resource detection
+        import torch
+        num_gpus = torch.cuda.device_count() if torch.cuda.is_available() else 0
+        print(f"[Ray Init] Detected {num_gpus} GPUs available for Ray cluster")
+        print(f"[Ray Init] CUDA_VISIBLE_DEVICES: {os.environ.get('CUDA_VISIBLE_DEVICES', 'Not set')}")
+        
+        # Configure Ray with explicit resource specification
+        ray_config = {
+            "log_to_driver": True,
+            "address": os.environ.get("RAY_ADDRESS"),
+            "num_gpus": num_gpus,  # Tell Ray total GPUs available
+            "runtime_env": {
                 'env_vars': {
                     'TOKENIZERS_PARALLELISM': 'true',
                     'NCCL_DEBUG': 'WARN',
                 }
             }
-        )
+        }
+        
+        # If no external Ray cluster, configure resources explicitly
+        if not os.environ.get("RAY_ADDRESS"):
+            print(f"[Ray Init] Starting local Ray cluster with {num_gpus} GPUs")
+            ray_config["_system_config"] = {
+                "object_store_memory": 1000000000,  # 1GB
+                "automatic_object_store_memory_fallback": False,
+            }
+        
+        ray.init(**ray_config)
+        
+        # Debug: Print Ray cluster resources after initialization
+        try:
+            cluster_resources = ray.cluster_resources()
+            print(f"[Ray Init] Cluster resources after initialization: {cluster_resources}")
+        except Exception as e:
+            print(f"[Ray Init] Could not get cluster resources: {e}")
 
     ray.get(main_task.remote(config))
 

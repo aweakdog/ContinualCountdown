@@ -369,34 +369,31 @@ class ActorRolloutRefWorker(Worker):
             OmegaConf.set_struct(self.config.actor, True)
             with open_dict(self.config.actor):
                 self.config.actor.use_remove_padding = use_remove_padding
-            grad_analyzer = None
-            if self.config.actor.get("use_gradient_analyzer", True):
-                if self.rank == 0:
-                    print("[INFO] Initializing remote GradientAnalyzer actor with fractional GPU (1) request...")
-                # The new GradientAnalyzer class is decorated with @ray.remote, which defines its own resources.
-                # We simply call .remote() to instantiate it with the specified fractional resources.
-                
             # Initialize Gradient Analyzer
             self.grad_analyzer = None
             
             # Debug: Check configuration values
             fsdp_grad_metric_enabled = self.config.actor.get("fsdp_grad_metric_enabled", False)
-            print(f"[DEBUG] Gradient Analyzer config check: fsdp_grad_metric_enabled={fsdp_grad_metric_enabled}")
-            print(f"[DEBUG] Available actor config keys: {list(self.config.actor.keys()) if hasattr(self.config, 'actor') else 'No actor config'}")
-            
-            # Also check if it's in the root config
             root_fsdp_grad_metric = self.config.get("fsdp_grad_metric_enabled", False)
-            print(f"[DEBUG] Root config fsdp_grad_metric_enabled: {root_fsdp_grad_metric}")
+            
+            print(f"[DEBUG] Gradient Analyzer config check:")
+            print(f"[DEBUG]   - actor.fsdp_grad_metric_enabled: {fsdp_grad_metric_enabled}")
+            print(f"[DEBUG]   - root.fsdp_grad_metric_enabled: {root_fsdp_grad_metric}")
+            print(f"[DEBUG]   - self._is_actor: {self._is_actor}")
+            print(f"[DEBUG]   - Available actor config keys: {list(self.config.actor.keys()) if hasattr(self.config, 'actor') else 'No actor config'}")
             
             if fsdp_grad_metric_enabled or root_fsdp_grad_metric:
-                from verl.utils.redo_utils.gradient_analyzer import GradientAnalyzer
-                # Use separate GPU for Gradient Analyzer (will use next available GPU after training GPUs)
-                print("[INFO] ✅ Initializing GradientAnalyzer with dedicated GPU (separate from training GPUs 0-3)")
-                self.grad_analyzer = GradientAnalyzer.options(
-                    num_gpus=1,
-                    num_cpus=1
-                ).remote()
-                print(f"[INFO] ✅ GradientAnalyzer initialized successfully: {self.grad_analyzer}")
+                try:
+                    from verl.utils.redo_utils.gradient_analyzer import GradientAnalyzer
+                    print("[INFO] ✅ Initializing GradientAnalyzer with dedicated GPU (separate from training GPUs 0-3)")
+                    self.grad_analyzer = GradientAnalyzer.options(
+                        num_gpus=1,
+                        num_cpus=1
+                    ).remote()
+                    print(f"[INFO] ✅ GradientAnalyzer initialized successfully: {self.grad_analyzer}")
+                except Exception as e:
+                    print(f"[ERROR] ❌ Failed to initialize GradientAnalyzer: {e}")
+                    self.grad_analyzer = None
             else:
                 print("[WARNING] ❌ GradientAnalyzer NOT initialized - fsdp_grad_metric_enabled is False")
 

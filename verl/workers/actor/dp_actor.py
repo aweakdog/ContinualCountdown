@@ -526,14 +526,17 @@ class DataParallelPPOActor(BasePPOActor):
 
                             if grad_state_dict:
                                 # Fire-and-forget the analysis for this component.
-                                self.grad_analyzer.analyze_component_gradients.remote(
-                                    identifier='actor',
-                                    component_name=component_name,
-                                    gradients=grad_state_dict,
-                                    original_param_shapes=self.original_param_shapes,
-                                    tau=self.redo_tau,
-                                    verbose=True
-                                )
+                                if self.grad_analyzer is not None:
+                                    self.grad_analyzer.analyze_component_gradients.remote(
+                                        identifier='actor',
+                                        component_name=component_name,
+                                        gradients=grad_state_dict,
+                                        original_param_shapes=self.original_param_shapes,
+                                        tau=self.redo_tau,
+                                        verbose=True
+                                    )
+                                else:
+                                    print(f"[ERROR] Gradient Analyzer is None! Cannot analyze component {component_name}")
                             else:
                                 print(f"[INFO][Actor][Step {self.global_steps}] No gradients found for component {component_name}.")
                     

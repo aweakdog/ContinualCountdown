@@ -388,7 +388,7 @@ class ActorRolloutRefWorker(Worker):
                     from verl.utils.redo_utils.gradient_analyzer import GradientAnalyzer
                     print("[INFO] ✅ Initializing GradientAnalyzer with optimized GPU allocation (1.5 GPUs to fit resource constraints)")
                     self.grad_analyzer = GradientAnalyzer.options(
-                        num_gpus=1.5,  # Use 1.5 GPUs to allow better resource scheduling
+                        num_gpus=1,  # Use 1.5 GPUs to allow better resource scheduling
                         num_cpus=4     # Increase CPU to compensate
                     ).remote()
                     print(f"[INFO] ✅ GradientAnalyzer initialized successfully: {self.grad_analyzer}")
@@ -405,7 +405,7 @@ class ActorRolloutRefWorker(Worker):
                     # Use optimized GPUs for Fisher Info Analyzer to fit resource constraints
                     print("[INFO] Initializing FisherInfoAnalyzer with optimized GPU allocation (1.5 GPUs to fit resource constraints)")
                     self.fisher_info_analyzer = FisherInfoAnalyzer.options(
-                        num_gpus=1.5,  # Use 1.5 GPUs to allow better resource scheduling
+                        num_gpus=1,  # Use 1.5 GPUs to allow better resource scheduling
                         num_cpus=4     # Increase CPU to compensate
                     ).remote(self.config)
 

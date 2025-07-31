@@ -127,6 +127,7 @@ echo "Val files: $VAL_FILES_STR" | tee -a "$LOG_FILE" | tee -a "$MASTER_LOG_FILE
     +critic.model.device_map=auto \
     +critic.model.attn_implementation=flash_attention_2 \
     +critic.model.use_cache=false \
+    critic.ppo_mini_batch_size=32 \
     critic.ppo_micro_batch_size=8 \
     ++actor_rollout_ref.actor.redo_enabled=true \
     ++actor_rollout_ref.actor.redo_metric_freq=1 \

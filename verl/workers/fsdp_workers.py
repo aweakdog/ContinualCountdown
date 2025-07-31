@@ -75,10 +75,13 @@ class ActorRolloutRefWorker(Worker):
         self.critic_update_step = 0
         self.config = config
         self.role = role
-        self.local_rank = -1
         import torch.distributed
         if not torch.distributed.is_initialized():
             torch.distributed.init_process_group(backend="nccl")
+        
+        # Set local_rank after distributed is initialized
+        self.local_rank = torch.distributed.get_rank()
+        print(f"[DEBUG] Worker initialized with local_rank: {self.local_rank}")
 
         # build device mesh for FSDP
         world_size = torch.distributed.get_world_size()

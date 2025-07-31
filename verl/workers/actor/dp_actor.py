@@ -65,6 +65,14 @@ class DataParallelPPOActor(BasePPOActor):
         self.original_param_shapes = original_param_shapes 
         self.grad_analyzer = grad_analyzer
         self.fisher_info_analyzer = fisher_info_analyzer
+        
+        # Debug: Print analyzer status at initialization
+        print(f"[DEBUG][DataParallelPPOActor] Initialized with grad_analyzer: {self.grad_analyzer is not None} (type: {type(self.grad_analyzer)})")
+        print(f"[DEBUG][DataParallelPPOActor] Initialized with fisher_info_analyzer: {self.fisher_info_analyzer is not None} (type: {type(self.fisher_info_analyzer)})")
+        if self.grad_analyzer is not None:
+            print(f"[DEBUG][DataParallelPPOActor] GradientAnalyzer handle: {self.grad_analyzer}")
+        if self.fisher_info_analyzer is not None:
+            print(f"[DEBUG][DataParallelPPOActor] FisherInfoAnalyzer handle: {self.fisher_info_analyzer}")
         self.fisher_analysis_freq = self.config.get("fisher_analysis_freq", 1)
         self.fisher_components_to_analyze = self.config.get("fisher_components_to_analyze", None)
         self.use_remove_padding = self.config.get('use_remove_padding', False)

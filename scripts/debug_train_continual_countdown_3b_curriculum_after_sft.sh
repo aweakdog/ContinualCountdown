@@ -111,6 +111,7 @@ TRAIN_FILES_STR="[\"./data/continual/${group}/train.parquet\"]"
 VAL_FILES_STR="[\"./data/continual/${group}/test.parquet\"]"
 TRAIN_SAMPLE_SIZE="[2560]"
 RUN_NAME="Phase1_Group${group}_$(date +%Y%m%d_%H%M%S)"
+export RUN_NAME
 LOG_FILE="$EXP_LOG_DIR/${RUN_NAME}.log"
 echo "Training group $group" | tee -a "$LOG_FILE" | tee -a "$MASTER_LOG_FILE"
 echo "Train files: $TRAIN_FILES_STR" | tee -a "$LOG_FILE" | tee -a "$MASTER_LOG_FILE"

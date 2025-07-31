@@ -86,6 +86,7 @@ for group in 0 1 1; do
   VAL_FILES_STR="[\"./data/continual/${group}/test.parquet\"]"
   TRAIN_SAMPLE_SIZE="[2560]"
   RUN_NAME="Group${group}_SFT_${SFT_CHECKPOINT}_$(date +%Y%m%d_%H%M%S)"
+  export RUN_NAME
   LOG_FILE="$EXP_LOG_DIR/${RUN_NAME}.log"
   echo "Developing group $group with SFT model from checkpoint $SFT_CHECKPOINT" | tee -a "$LOG_FILE" | tee -a "$MASTER_LOG_FILE"
   echo "Train files: $TRAIN_FILES_STR" | tee -a "$LOG_FILE" | tee -a "$MASTER_LOG_FILE"

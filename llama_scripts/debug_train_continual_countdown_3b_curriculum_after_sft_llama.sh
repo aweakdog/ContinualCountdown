@@ -84,6 +84,7 @@ TRAIN_FILES_STR="[\"./data/continual/${group}/train.parquet\"]"
 VAL_FILES_STR="[\"./data/continual/${group}/test.parquet\"]"
 TRAIN_SAMPLE_SIZE="[2560]"
 RUN_NAME="Phase1_Group${group}_SFT_${SFT_CHECKPOINT}_$(date +%Y%m%d_%H%M%S)"
+export RUN_NAME
 LOG_FILE="$EXP_LOG_DIR/${RUN_NAME}.log"
 echo "Training group $group with SFT model from checkpoint $SFT_CHECKPOINT" | tee -a "$LOG_FILE" | tee -a "$MASTER_LOG_FILE"
 echo "Train files: $TRAIN_FILES_STR" | tee -a "$LOG_FILE" | tee -a "$MASTER_LOG_FILE"
@@ -164,6 +165,7 @@ TRAIN_FILES_STR="[\"./data/continual/1/train.parquet\", \"./data/continual/2/tra
 VAL_FILES_STR="[\"./data/continual/1/test.parquet\", \"./data/continual/2/test.parquet\"]"
 TRAIN_SAMPLE_SIZE="[2560, 2560]"  # Sample sizes for group1 and group2
 RUN_NAME="Phase2_Group1and2_SFT_${SFT_CHECKPOINT}_$(date +%Y%m%d_%H%M%S)"
+export RUN_NAME
 LOG_FILE="$EXP_LOG_DIR/${RUN_NAME}.log"
 echo "Training groups 1 and 2 sequentially with SFT model from checkpoint $SFT_CHECKPOINT" | tee -a "$LOG_FILE" | tee -a "$MASTER_LOG_FILE"
 echo "Train files: $TRAIN_FILES_STR" | tee -a "$LOG_FILE" | tee -a "$MASTER_LOG_FILE"

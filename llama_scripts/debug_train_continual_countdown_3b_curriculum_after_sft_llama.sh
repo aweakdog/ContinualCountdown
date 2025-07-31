@@ -201,6 +201,8 @@ python3 -m verl.trainer.main_ppo \
   actor_rollout_ref.model.enable_gradient_checkpointing=True \
   critic.model.enable_gradient_checkpointing=True \
   critic.optim.lr=1e-5 \
+  critic.ppo_mini_batch_size=32 \
+  critic.ppo_micro_batch_size=8 \
   critic.model.path=$BASE_MODEL \
   +critic.model.trust_remote_code=true \
   +critic.model.torch_dtype=bfloat16 \

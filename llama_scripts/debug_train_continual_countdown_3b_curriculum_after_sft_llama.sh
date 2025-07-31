@@ -1,6 +1,6 @@
 #!/bin/bash
 
-SFT_CHECKPOINT=global_step_20
+SFT_CHECKPOINT=global_step_5
 
 # Activate conda environment
 # Use a more cautious approach to Git configuration

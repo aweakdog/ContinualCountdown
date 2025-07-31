@@ -121,10 +121,7 @@ def main(config):
         # If no external Ray cluster, configure resources explicitly
         if not os.environ.get("RAY_ADDRESS"):
             print(f"[Ray Init] Starting local Ray cluster with {num_gpus} GPUs")
-            ray_config["_system_config"] = {
-                "object_store_memory": 1000000000,  # 1GB
-                "automatic_object_store_memory_fallback": False,
-            }
+            ray_config["object_store_memory"] = 1000000000  # 1GB object store
         
         ray.init(**ray_config)
         

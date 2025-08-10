@@ -1,6 +1,6 @@
 #!/bin/bash
 
-SFT_CHECKPOINT=global_step_0
+SFT_CHECKPOINT=global_step_15
 
 # Phase repetition control parameters
 export PHASE1_REPEAT_COUNT=${PHASE1_REPEAT_COUNT:-1}  # Default: run Phase 1 once

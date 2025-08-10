@@ -1,5 +1,14 @@
 #!/bin/bash
 
+# Phase repetition control parameters
+export PHASE1_REPEAT_COUNT=${PHASE1_REPEAT_COUNT:-1}  # Default: run Phase 1 once
+export PHASE2_REPEAT_COUNT=${PHASE2_REPEAT_COUNT:-2}  # Default: run Phase 2 twice
+export PHASE3_REPEAT_COUNT=${PHASE3_REPEAT_COUNT:-2}  # Default: run Phase 3 twice
+
+echo "[Phase Config] Phase 1 will run $PHASE1_REPEAT_COUNT time(s)"
+echo "[Phase Config] Phase 2 will run $PHASE2_REPEAT_COUNT time(s)"
+echo "[Phase Config] Phase 3 will run $PHASE3_REPEAT_COUNT time(s)"
+
 # Activate conda environment
 # Use a more cautious approach to Git configuration
 if ! git config --global --get-all safe.directory | grep -q "."; then
@@ -12,7 +21,7 @@ fi
 # Configuration - Set environment variables from docker-compose.yml if not already set
 export NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-all}
 export CHECKPOINT_BASE_DIR=${CHECKPOINT_BASE_DIR:-/nas/shared/sys2/yuanhangli/tmp/checkpoints/continual_countdown3b}
-SFT_CHECKPOINT=global_step_1
+SFT_CHECKPOINT=global_step_5
 export BASE_MODEL=${BASE_MODEL:-"/nas/shared/sys2/yuanhangli/tmp/qwen_sft_model/${SFT_CHECKPOINT}"}  # Path to mounted Qwen model
 export N_GPUS=${N_GPUS:-4}  # Using 4 A800 GPUs
 export ROLLOUT_TP_SIZE=${ROLLOUT_TP_SIZE:-1}  # Tensor parallel size optimized for 4 GPUs

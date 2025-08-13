@@ -352,6 +352,7 @@ class DataParallelPPOActor(BasePPOActor):
                 loss = policy_loss / self.gradient_accumulation
                 loss.backward()
 
+            # Fisher梯度收集：在梯度裁剪之前收集原始梯度用于Fisher分析
             if run_fisher_analysis:
                 for component_name, component_module in components_to_analyze.items():
                     with FSDP.summon_full_params(component_module, writeback=False, rank0_only=True, with_grads=True):
@@ -361,16 +362,14 @@ class DataParallelPPOActor(BasePPOActor):
                                 if id(p) in component_param_ids[component_name]:
                                     if p.grad is not None:
                                         clean_fqn = fqn.replace('_fsdp_wrapped_module.', '').replace('._fsdp_wrapped_module', '')
-                                        grad_dict[clean_fqn] = p.grad.clone().cpu()
+                                        grad_dict[clean_fqn] = p.grad.clone().cpu()  # 收集每个mini-batch的梯度
                             if grad_dict:
                                 collected_grads_for_fisher[component_name].append(grad_dict)
 
-            # Capture the learning rate that will be used for this optimizer step.
-            # This is critical because some schedulers might update the LR after the step.
-            current_lr = self.actor_optimizer.param_groups[0]['lr']
-
+            # Apply gradient clipping after all micro-batches
             if isinstance(self.actor_module, FSDP):
                 self.actor_module.clip_grad_norm_(max_norm=self.config.grad_clip)
+
             self.actor_optimizer.step()
             if self.lr_scheduler is not None:
                 self.lr_scheduler.step()
@@ -383,6 +382,70 @@ class DataParallelPPOActor(BasePPOActor):
                 metrics['actor/ppo_kl'] = ppo_kl.item()
                 if kl_loss is not None:
                     metrics['actor/kl_loss'] = kl_loss.item()
+
+        # AFTER ALL MINI-BATCHES: Analysis happens only once per global step
+        # Capture the learning rate that will be used for this optimizer step.
+        current_lr = self.actor_optimizer.param_groups[0]['lr']
+        
+        # Check if any analysis should be performed (only once per global step)
+        should_analyze_gradients = (self.grad_analyzer is not None and 
+                                  self.global_steps % self.config.get("redo_analysis_freq", 1) == 0)
+        should_analyze_fisher = (self.fisher_info_analyzer is not None and 
+                               self.global_steps % self.fisher_analysis_freq == 0)
+
+        # Both gradient and Fisher analysis now use clipped gradients for stability and consistency
+        if should_analyze_gradients:
+            # Define components to analyze. This must match the model architecture.
+            # Assumes a standard HuggingFace transformer structure like Llama/Qwen.
+            grad_components_to_analyze = {
+                "embed_tokens": self.actor_module.model.embed_tokens,
+                "final_norm": self.actor_module.model.norm,
+                "lm_head": self.actor_module.lm_head,
+            }
+            # Add all transformer layers.
+            for i, layer in enumerate(self.actor_module.model.layers):
+                grad_components_to_analyze[f"layer_{i}"] = layer
+
+            print(f"[INFO][Actor][Step {self.global_steps}] Starting gradient analysis for {len(grad_components_to_analyze)} components (ONCE per global step)")
+            
+            # Analyze each component using clipped gradients
+            for component_name, component_module in grad_components_to_analyze.items():
+                if rank == 0:
+                    self.logger.info(f"--- Analyzing component: {component_name} (clipped gradients) ---")
+
+                # Get the set of parameter IDs for the current component for efficient lookup.
+                component_param_ids_grad = {id(p) for p in component_module.parameters()}
+
+                # Summon gradients for only this component. This is memory-safe.
+                with FSDP.summon_full_params(component_module, writeback=False, rank0_only=True, with_grads=True):
+                    if rank == 0:
+                        # We must use FQNs that match the keys in `original_param_shapes`.
+                        # We iterate over the full model's parameters to get the FQN,
+                        # but only include the ones that are part of the current component.
+                        # FSDP inserts `_fsdp_wrapped_module` into parameter names. We must remove
+                        # it. We also prepend `model.` to match the keys in `original_param_shapes`.
+                        grad_state_dict = {
+                            f"model.{fqn.replace('._fsdp_wrapped_module', '')}": param.grad.cpu()  # Now uses clipped gradients
+                            for fqn, param in self.actor_module.model.named_parameters()
+                            if id(param) in component_param_ids_grad and param.grad is not None
+                        }
+
+                        if grad_state_dict:
+                            # Fire-and-forget the analysis for this component.
+                            self.grad_analyzer.analyze_component_gradients.remote(
+                                identifier='actor',
+                                component_name=component_name,
+                                gradients=grad_state_dict,
+                                original_param_shapes=self.original_param_shapes,
+                                tau=self.redo_tau,
+                                verbose=True
+                            )
+                        else:
+                            print(f"[INFO][Actor][Step {self.global_steps}] No gradients found for component {component_name}.")
+                    
+                    # Barrier to ensure all ranks are done with a component before the next.
+                    if isinstance(self.actor_module, FSDP):
+                        dist.barrier()
 
         if run_fisher_analysis and rank == 0:
             # --- Trigger asynchronous analysis for each component ---
@@ -452,43 +515,7 @@ class DataParallelPPOActor(BasePPOActor):
         final_stats = None
         zero_grad_stats = None
 
-        if self.grad_analyzer is not None and self.global_steps % self.config.get("redo_analysis_freq", 1) == 0:
-            if rank == 0:
-                print(f"[INFO][Actor][Step {self.global_steps}] Resetting remote gradient analyzer state.")
-                ray.get(self.grad_analyzer.reset.remote(identifier='actor'))
-
-            components_to_analyze = {
-                "embed_tokens": self.actor_module.model.embed_tokens,
-                "final_norm": self.actor_module.model.norm,
-                "lm_head": self.actor_module.lm_head,
-            }
-            for i, layer in enumerate(self.actor_module.model.layers):
-                components_to_analyze[f"layer_{i}"] = layer
-
-            component_param_ids = {name: {id(p) for p in module.parameters()} for name, module in components_to_analyze.items()}
-            for component_name, component_module in components_to_analyze.items():
-                if rank == 0:
-                    self.logger.info(f"--- Analyzing component: {component_name} ---")
-
-                with FSDP.summon_full_params(component_module, writeback=False, rank0_only=True, with_grads=True):
-                    if rank == 0:
-                        grad_state_dict = {
-                            f"model.{fqn.replace('._fsdp_wrapped_module', '')}": param.grad.cpu()
-                            for fqn, param in self.actor_module.model.named_parameters()
-                            if id(param) in component_param_ids[component_name] and param.grad is not None
-                        }
-
-                        if grad_state_dict:
-                            self.grad_analyzer.analyze_component_gradients.remote(
-                                identifier='actor',
-                                component_name=component_name,
-                                gradients=grad_state_dict,
-                                original_param_shapes=self.original_param_shapes,
-                                tau=self.redo_tau,
-                                verbose=True
-                            )
-                        else:
-                            print(f"[INFO][Actor][Step {self.global_steps}] No gradients found for component {component_name}.")
+        # Gradient analysis already performed above after gradient clipping - no duplicate analysis needed
                     
         if rank == 0:
             print(f"[INFO][Actor][Step {self.global_steps}] Clearing CUDA cache on Rank 0 to free memory for gradient gathering.")
@@ -502,11 +529,7 @@ class DataParallelPPOActor(BasePPOActor):
             # Debug: Check Gradient Analyzer conditions
             print(f"[DEBUG][Actor][Step {self.global_steps}] Gradient Analyzer check: grad_analyzer={self.grad_analyzer is not None}, freq_check={self.global_steps % self.config.get('redo_analysis_freq', 1) == 0}, redo_analysis_freq={self.config.get('redo_analysis_freq', 1)}")
             
-            # Check if any analysis should be performed
-            should_analyze_gradients = (self.grad_analyzer is not None and 
-                                      self.global_steps % self.config.get("redo_analysis_freq", 1) == 0)
-            should_analyze_fisher = (self.fisher_info_analyzer is not None and 
-                                   self.global_steps % self.fisher_analysis_freq == 0)
+            # Variables already defined earlier after gradient clipping
             
             if should_analyze_gradients or should_analyze_fisher:
                 print(f"[INFO][Actor][Step {self.global_steps}] 🚀 STARTING Parallel Analysis workflow")
@@ -516,77 +539,20 @@ class DataParallelPPOActor(BasePPOActor):
                 grad_analysis_futures = []
                 fisher_analysis_future = None
                 
-                # Step 1: Reset analyzers in parallel on rank 0
+                # Step 1: Both analyzers now preserve history for accumulation
                 if rank == 0:
-                    reset_futures = []
                     if should_analyze_gradients:
-                        print(f"[INFO][Actor][Step {self.global_steps}] Resetting gradient analyzer state.")
-                        reset_futures.append(self.grad_analyzer.reset.remote(identifier='actor'))
+                        print(f"[INFO][Actor][Step {self.global_steps}] Gradient analyzer will accumulate history (no reset).")
                     if should_analyze_fisher:
-                        print(f"[INFO][Actor][Step {self.global_steps}] Resetting Fisher analyzer state.")
-                        reset_futures.append(self.fisher_info_analyzer.reset.remote(identifier='actor'))
-                    
-                    # Wait for all resets to complete
-                    if reset_futures:
-                        ray.get(reset_futures)
-                        print(f"[INFO][Actor][Step {self.global_steps}] All analyzer resets completed.")
+                        print(f"[INFO][Actor][Step {self.global_steps}] Fisher analyzer will accumulate history (no reset).")
+                        # NOTE: Both analyzers should NOT be reset as they need to accumulate history for running averages
 
                 # Synchronize all ranks to ensure reset is complete before analysis begins.
                 if is_fsdp:
                     dist.barrier()
 
-                if should_analyze_gradients:
-                    # Define components to analyze. This must match the model architecture.
-                    # Assumes a standard HuggingFace transformer structure like Llama/Qwen.
-                    components_to_analyze = {
-                        "embed_tokens": self.actor_module.model.embed_tokens,
-                        "final_norm": self.actor_module.model.norm,
-                        "lm_head": self.actor_module.lm_head,
-                    }
-                    # Add all transformer layers.
-                    for i, layer in enumerate(self.actor_module.model.layers):
-                        components_to_analyze[f"layer_{i}"] = layer
-
-                    print(f"[INFO][Actor][Step {self.global_steps}] Starting parallel component analysis for {len(components_to_analyze)} components")
-                    
-                    # Step 2: Analyze each component and collect futures for parallel execution
-                    for component_name, component_module in components_to_analyze.items():
-                        if rank == 0:
-                            self.logger.info(f"--- Analyzing component: {component_name} ---")
-
-                        # Get the set of parameter IDs for the current component for efficient lookup.
-                        component_param_ids = {id(p) for p in component_module.parameters()}
-
-                        # Summon gradients for only this component. This is memory-safe.
-                        with FSDP.summon_full_params(component_module, writeback=False, rank0_only=True, with_grads=True):
-                            if rank == 0:
-                                # We must use FQNs that match the keys in `original_param_shapes`.
-                                # We iterate over the full model's parameters to get the FQN,
-                                # but only include the ones that are part of the current component.
-                                # FSDP inserts `_fsdp_wrapped_module` into parameter names. We must remove
-                                # it. We also prepend `model.` to match the keys in `original_param_shapes`.
-                                grad_state_dict = {
-                                    f"model.{fqn.replace('._fsdp_wrapped_module', '')}": param.grad.cpu()
-                                    for fqn, param in self.actor_module.model.named_parameters()
-                                    if id(param) in component_param_ids and param.grad is not None
-                                }
-
-                                if grad_state_dict:
-                                    # Fire-and-forget the analysis for this component.
-                                    self.grad_analyzer.analyze_component_gradients.remote(
-                                        identifier='actor',
-                                        component_name=component_name,
-                                        gradients=grad_state_dict,
-                                        original_param_shapes=self.original_param_shapes,
-                                        tau=self.redo_tau,
-                                        verbose=True
-                                    )
-                                else:
-                                    print(f"[INFO][Actor][Step {self.global_steps}] No gradients found for component {component_name}.")
-                        
-                        # Barrier to ensure all ranks are done with a component before the next.
-                        if is_fsdp:
-                            dist.barrier()
+                # NOTE: Gradient analysis has been moved to happen AFTER gradient clipping
+                # for consistency with Fisher analysis and to use clipped gradients
 
                 # Step 3: Start Fisher analysis in parallel (if enabled)
                 if should_analyze_fisher and rank == 0:

@@ -26,11 +26,13 @@ class FisherInfoAnalyzer:
     """
     def __init__(self, config):
         self.config = config
-        print("[FisherInfoAnalyzer] Actor initialized.")
+        import os
+        self.actor_pid = os.getpid()
+        print(f"[FisherInfoAnalyzer] Actor initialized with PID {self.actor_pid}.")
         # self.stats stores metrics for the CURRENT analysis step
         self.stats = collections.defaultdict(lambda: {'params': {}})
         # self.global_history stores aggregated metrics from ALL past analysis steps to compute running global stats
-        self.global_history = collections.defaultdict(lambda: {'c_k_means': [], 'l_k_sums': []})
+        self.global_history = collections.defaultdict(lambda: {'c_k_normalized_history': [], 'l_k_sums': []})
         # self.param_history stores per-parameter metrics from ALL past analysis steps
         self.param_history = collections.defaultdict(lambda: {'params': collections.defaultdict(lambda: {'c_k_history': [], 'l_k_history': []})})
         # self.param_shapes stores the original shapes of parameters for normalization
@@ -38,11 +40,15 @@ class FisherInfoAnalyzer:
 
     def reset(self, identifier: str):
         """Resets all statistics and history for a given analysis identifier (e.g., 'actor')."""
+        # Debug: Check what we're about to reset
+        old_history_len = len(self.global_history.get(identifier, {}).get('c_k_normalized_history', []))
+        print(f"[DEBUG][Fisher] PID {self.actor_pid} - RESET called for '{identifier}' - clearing {old_history_len} steps of history!")
+        
         self.stats.pop(identifier, None)
         self.global_history.pop(identifier, None)
         self.param_history.pop(identifier, None)
         self.param_shapes.pop(identifier, None)
-        print(f"[FisherInfoAnalyzer] Reset all statistics and history for identifier '{identifier}'.")
+        print(f"[FisherInfoAnalyzer] PID {self.actor_pid} - Reset all statistics and history for identifier '{identifier}'.")
 
     def analyze_component_grads(self, identifier: str, component_name: str, per_micro_batch_grads: List[Dict[str, torch.Tensor]], original_param_shapes: Dict[str, torch.Size], micro_batch_size: int, current_lr: float, global_step: int):
         """
@@ -107,6 +113,15 @@ class FisherInfoAnalyzer:
                     sigma_max = torch.sqrt(non_zero_eigenvalues.max())
                     sigma_min = torch.sqrt(non_zero_eigenvalues.min())
                     c_k = sigma_max / sigma_min
+                    
+                    # Diagnostic logging for extreme condition numbers
+                    if c_k > 1000:  # Threshold for "extremely high"
+                        print(f"[WARNING][Fisher] Param '{name}': EXTREME c_k={c_k:.2f}!")
+                        print(f"  - sigma_max={sigma_max:.6g}, sigma_min={sigma_min:.6g}")
+                        print(f"  - eigenvalue_max={non_zero_eigenvalues.max():.6g}, eigenvalue_min={non_zero_eigenvalues.min():.6g}")
+                        print(f"  - num_eigenvalues={len(non_zero_eigenvalues)}, jacobian_shape={jacobian.shape}")
+                        print(f"  - gradient_norms: max={torch.stack([g.norm() for g in reshaped_then_flattened_grads]).max():.6g}, min={torch.stack([g.norm() for g in reshaped_then_flattened_grads]).min():.6g}")
+                        print(f"  - current_lr={current_lr}, micro_batch_size={micro_batch_size}")
 
                 trace_F = torch.sum(non_zero_eigenvalues)
                 l_k = (current_lr / micro_batch_size) * torch.sqrt(trace_F)
@@ -208,17 +223,25 @@ class FisherInfoAnalyzer:
             sigma_min_normalized = 0.0
 
         # 2. Update global history
-        self.global_history.setdefault(identifier, {'c_k_means': [], 'l_k_sums': []})
-        self.global_history[identifier]['c_k_means'].append(current_c_k_mean)
+        self.global_history.setdefault(identifier, {'c_k_normalized_history': [], 'l_k_sums': []})
+        self.global_history[identifier]['c_k_normalized_history'].append(c_k_normalized)
         self.global_history[identifier]['l_k_sums'].append(current_l_k_sum_for_this_step)
 
-        # 3. Calculate and return final time-aggregated metrics
-        c_k_history_list = self.global_history[identifier]['c_k_means']
+        # Debug: Print history state
+        c_k_history_list = self.global_history[identifier]['c_k_normalized_history']
         l_k_history_list = self.global_history[identifier]['l_k_sums']
+        print(f"[DEBUG][Fisher] PID {self.actor_pid} - History length for '{identifier}': {len(c_k_history_list)} steps")
+        print(f"[DEBUG][Fisher] PID {self.actor_pid} - c_k_normalized_history: {c_k_history_list[-3:] if len(c_k_history_list) > 3 else c_k_history_list}")
+        print(f"[DEBUG][Fisher] PID {self.actor_pid} - Current c_k_normalized: {c_k_normalized:.6f}")
+        print(f"[DEBUG][Fisher] PID {self.actor_pid} - Global history keys: {list(self.global_history.keys())}")
+        
+        # Check if this is the first call for this identifier
+        if len(c_k_history_list) == 1:
+            print(f"[DEBUG][Fisher] PID {self.actor_pid} - WARNING: This appears to be the first call for identifier '{identifier}' - actor may be getting recreated!")
         
         K = len(c_k_history_list) # K is the number of steps we have history for
 
-        # C_K = sigma(past c_k)/K -> This is the mean of the historical means
+        # C_K = sigma(past c_k_normalized)/K -> This is the mean of the historical normalized c_k values
         final_c_k_running_avg = np.mean(c_k_history_list)
         
         # l_k is the sum of the history l_k -> This is the sum of the historical sums

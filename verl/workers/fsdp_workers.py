@@ -388,15 +388,57 @@ class ActorRolloutRefWorker(Worker):
             # Debug: Check configuration values
             # Default to True to enable gradient analysis by default
             fsdp_grad_metric_enabled = self.config.actor.get("fsdp_grad_metric_enabled", True)
-            root_fsdp_grad_metric = self.config.get("fsdp_grad_metric_enabled", True)
+            # Debug root config reading in detail
+            print(f"[DEBUG] Root config debugging:")
+            print(f"[DEBUG]   - self.config type: {type(self.config)}")
+            print(f"[DEBUG]   - self.config keys: {list(self.config.keys()) if hasattr(self.config, 'keys') else 'No keys method'}")
+            
+            # Try different ways to access the root config
+            root_fsdp_grad_metric_direct = self.config.get("fsdp_grad_metric_enabled", "NOT_FOUND")
+            root_fsdp_grad_metric_with_default = self.config.get("fsdp_grad_metric_enabled", True)
+            
+            print(f"[DEBUG]   - Direct access (no default): {root_fsdp_grad_metric_direct}")
+            print(f"[DEBUG]   - With True default: {root_fsdp_grad_metric_with_default}")
+            
+            # Check if the key actually exists
+            key_exists = "fsdp_grad_metric_enabled" in self.config
+            print(f"[DEBUG]   - Key exists in root config: {key_exists}")
+            
+            if key_exists:
+                actual_value = self.config["fsdp_grad_metric_enabled"]
+                print(f"[DEBUG]   - Actual value in root config: {actual_value} (type: {type(actual_value)})")
+            
+            # Use the value without default to see what's really there
+            root_fsdp_grad_metric = root_fsdp_grad_metric_direct if root_fsdp_grad_metric_direct != "NOT_FOUND" else True
             
             print(f"[DEBUG] Gradient Analyzer config check:")
             print(f"[DEBUG]   - actor.fsdp_grad_metric_enabled: {fsdp_grad_metric_enabled}")
             print(f"[DEBUG]   - root.fsdp_grad_metric_enabled: {root_fsdp_grad_metric}")
             print(f"[DEBUG]   - self._is_actor: {self._is_actor}")
             print(f"[DEBUG]   - Available actor config keys: {list(self.config.actor.keys()) if hasattr(self.config, 'actor') else 'No actor config'}")
+            
+            # Check if the key exists at all in the config
+            actor_has_key = hasattr(self.config, 'actor') and 'fsdp_grad_metric_enabled' in self.config.actor
+            root_has_key = 'fsdp_grad_metric_enabled' in self.config
+            print(f"[DEBUG] Key existence check:")
+            print(f"[DEBUG]   - actor config has 'fsdp_grad_metric_enabled': {actor_has_key}")
+            print(f"[DEBUG]   - root config has 'fsdp_grad_metric_enabled': {root_has_key}")
+            
+            if actor_has_key:
+                print(f"[DEBUG]   - actor config raw value: {self.config.actor['fsdp_grad_metric_enabled']}")
+            if root_has_key:
+                print(f"[DEBUG]   - root config raw value: {self.config['fsdp_grad_metric_enabled']}")
+                
+            print(f"[DEBUG] Raw config values:")
+            print(f"[DEBUG]   - self.config.actor: {dict(self.config.actor) if hasattr(self.config.actor, 'keys') else self.config.actor}")
+            print(f"[DEBUG]   - self.config root keys: {list(self.config.keys()) if hasattr(self.config, 'keys') else type(self.config)}")
+            
+            # Show the final decision - since root config doesn't have this key, only use actor config
+            will_create_analyzer = fsdp_grad_metric_enabled  # Only use actor-level config
+            print(f"[DEBUG] Final decision: will_create_analyzer = {will_create_analyzer} (actor-only logic)")
+            print(f"[DEBUG] Note: Root config doesn't contain fsdp_grad_metric_enabled key, using actor config only")
 
-            if fsdp_grad_metric_enabled or root_fsdp_grad_metric:
+            if fsdp_grad_metric_enabled:  # Only check actor-level config
                 if is_rank_0:
                     try:
                         # Rank 0 creates the actor.
@@ -436,9 +478,36 @@ class ActorRolloutRefWorker(Worker):
                 print(f"[INFO] Gradient analysis disabled - fsdp_grad_metric_enabled={fsdp_grad_metric_enabled}, root_fsdp_grad_metric={root_fsdp_grad_metric}")
                 self.grad_analyzer = None
 
+            # Initialize Fisher analyzer to None first
             self.fisher_info_analyzer = None
-            if self.config.actor.get("fisher_analysis_enabled", True):
-                if self.config.actor.get('fsdp_component_analysis', {}).get('run_fisher_info_analysis', True):
+            
+            # Debug Fisher analyzer config values
+            fisher_analysis_enabled = self.config.actor.get("fisher_analysis_enabled", True)
+            fisher_component_analysis = self.config.actor.get('fsdp_component_analysis', {}).get('run_fisher_info_analysis', True)
+            
+            print(f"[DEBUG] Fisher Analyzer config check:")
+            print(f"[DEBUG]   - fisher_analysis_enabled: {fisher_analysis_enabled}")
+            print(f"[DEBUG]   - fisher_component_analysis: {fisher_component_analysis}")
+            print(f"[DEBUG]   - Raw fisher config: {self.config.actor.get('fsdp_component_analysis', {})}")
+            
+            # Check if Fisher keys exist in config
+            fisher_actor_has_key = hasattr(self.config, 'actor') and 'fsdp_component_analysis' in self.config.actor
+            fisher_root_has_key = 'fisher_analysis_enabled' in self.config
+            print(f"[DEBUG] Fisher key existence check:")
+            print(f"[DEBUG]   - actor config has 'fsdp_component_analysis': {fisher_actor_has_key}")
+            print(f"[DEBUG]   - root config has 'fisher_analysis_enabled': {fisher_root_has_key}")
+            
+            if fisher_actor_has_key:
+                print(f"[DEBUG]   - actor fisher config raw: {self.config.actor['fsdp_component_analysis']}")
+            if fisher_root_has_key:
+                print(f"[DEBUG]   - root fisher config raw: {self.config['fisher_analysis_enabled']}")
+                
+            # Show the final Fisher decision
+            will_create_fisher = fisher_analysis_enabled
+            print(f"[DEBUG] Final Fisher decision: will_create_fisher = {will_create_fisher}")
+            
+            if fisher_analysis_enabled:
+                if fisher_component_analysis:
                     if is_rank_0:
                         try:
                             # Rank 0 creates the actor.

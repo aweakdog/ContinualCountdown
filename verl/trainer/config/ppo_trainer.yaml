@@ -89,10 +89,6 @@ actor_rollout_ref:
     n: 1 # > 1 for grpo
 
 critic:
-  redo_enabled: false
-  redo_metric_freq: 1
-  redo_reset_freq: 1000
-  redo_tau: 0.1
   strategy: fsdp
   optim:
     lr: 1e-5

@@ -18,7 +18,7 @@ import numpy as np
 import collections
 from typing import List, Dict
 
-@ray.remote(num_gpus=2, num_cpus=1)
+@ray.remote(num_gpus=0, num_cpus=1)  # Temporarily disabled GPU allocation for GRPO training
 class FisherInfoAnalyzer:
     """
     A stateful Ray actor that computes Empirical Fisher Information Matrix (EFIM) metrics

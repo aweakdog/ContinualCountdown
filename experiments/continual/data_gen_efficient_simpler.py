@@ -64,7 +64,7 @@ class DataGenerator:
             {
                 'name': '0',
                 'distributions': [
-                    {'weight': 0.5, 'candidate': ['+', '-', '*'], 'necessary': ['+', '-', '*'], 'start_size': 4},
+                    {'weight': 0.5, 'candidate': ['+', '-', '*'], 'necessary': ['+','-','*'], 'start_size': 4},
                     {'weight': 0.25, 'candidate': ['+', '*'], 'necessary': ['+', '*'], 'start_size': 3},
                     {'weight': 0.25, 'candidate': ['-', '*'], 'necessary': ['-', '*'], 'start_size': 3}
                 ]
@@ -87,7 +87,14 @@ class DataGenerator:
                     {'weight': 0.25, 'candidate': ['*', '/'], 'necessary': ['*', '/'], 'start_size': 3},
                     {'weight': 0.25, 'candidate': ['*', '/'], 'necessary': ['*', '/'], 'start_size': 3}
                 ]
+            },
+            {
+                'name': '3',
+                'distributions': [
+                    {'weight': 1, 'candidate': ['+', '-', '*', '/'], 'necessary': [], 'start_size': 4},
+                ]
             }
+
         ]
         self.distinct = True
         os.makedirs(base_dir, exist_ok=True)

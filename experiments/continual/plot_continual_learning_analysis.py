@@ -24,7 +24,12 @@ plt.style.use('seaborn-v0_8')
 sns.set_palette("husl")
 
 # Regex patterns for parsing log files
-LOG_FILENAME_RE = re.compile(r'Phase(\d+)_Group([0-9and]+)_Iter(\d+)_SFT_global_step_(\d+)_(\d{8}_\d{6})\.log')
+# Pattern for LLAMA logs (with SFT_global_step)
+LOG_FILENAME_RE_LLAMA = re.compile(r'Phase(\d+)_Group([0-9and]+)_Iter(\d+)_SFT_global_step_(\d+)_(\d{8}_\d{6})\.log')
+# Pattern for QWEN logs (without SFT_global_step)
+LOG_FILENAME_RE_QWEN = re.compile(r'Phase(\d+)_Group([0-9and]+)_Iter(\d+)_(\d{8}_\d{6})\.log')
+# Pattern for QWEN directory names
+QWEN_DIR_RE = re.compile(r'.*_sft_global_step_(\d+)(?:_\d{8}_\d{6})?/?$')
 STEP_RE = re.compile(r'step:(\d+)')
 
 # Metric extraction patterns
@@ -78,21 +83,12 @@ def handle_outliers(y_values, method='percentile', percentile=95):
         for i in range(len(y_array)):
             # Check if current point is an outlier
             if y_array[i] < lower_bound or y_array[i] > upper_bound:
-                # Replace with mean of previous 3 values (if available)
+                # Only replace outliers if we have at least 3 previous values
                 if i >= 3:
                     # Use previous 3 values: i-1, i-2, i-3
                     replacement_value = np.mean(y_array[i-3:i])
-                elif i >= 2:
-                    # Use previous 2 values: i-1, i-2
-                    replacement_value = np.mean(y_array[i-2:i])
-                elif i >= 1:
-                    # Use previous 1 value: i-1
-                    replacement_value = y_array[i-1]
-                else:
-                    # First point, use overall mean as fallback
-                    replacement_value = np.mean(y_array)
-                
-                y_array[i] = replacement_value
+                    y_array[i] = replacement_value
+                # For early points (i < 3), don't replace - keep original values
         
         return y_array
     
@@ -122,24 +118,50 @@ def compute_derived_C_K(c_k_values):
     return C_K_derived
 
 
-def parse_log_filename(filename):
-    """Parse log filename to extract experiment metadata."""
-    match = LOG_FILENAME_RE.match(filename)
-    if not match:
-        return None
-    return {
-        'phase': int(match.group(1)),
-        'groups': match.group(2),
-        'iteration': int(match.group(3)),
-        'sft_global_step': int(match.group(4)),
-        'timestamp': match.group(5)
-    }
+def parse_log_filename(filename, parent_dir=None):
+    """Parse log filename to extract experiment metadata.
+    
+    Args:
+        filename: The log filename
+        parent_dir: Parent directory name (used for QWEN logs to extract SFT step)
+    """
+    # Try LLAMA pattern first (with SFT_global_step)
+    match = LOG_FILENAME_RE_LLAMA.match(filename)
+    if match:
+        return {
+            'phase': int(match.group(1)),
+            'groups': match.group(2),
+            'iteration': int(match.group(3)),
+            'sft_global_step': int(match.group(4)),
+            'timestamp': match.group(5)
+        }
+    
+    # Try QWEN pattern (without SFT_global_step)
+    match = LOG_FILENAME_RE_QWEN.match(filename)
+    if match:
+        # For QWEN logs, extract SFT global step from parent directory name
+        sft_global_step = 0
+        if parent_dir:
+            dir_match = QWEN_DIR_RE.match(parent_dir)
+            if dir_match:
+                sft_global_step = int(dir_match.group(1))
+        
+        return {
+            'phase': int(match.group(1)),
+            'groups': match.group(2),
+            'iteration': int(match.group(3)),
+            'sft_global_step': sft_global_step,
+            'timestamp': match.group(4)
+        }
+    
+    return None
 
 
 def parse_log_file(log_path):
     """Parse a single log file to extract all metrics."""
     filename = os.path.basename(log_path)
-    metadata = parse_log_filename(filename)
+    parent_dir = os.path.basename(os.path.dirname(log_path))
+    metadata = parse_log_filename(filename, parent_dir)
     if not metadata:
         print(f"Warning: Could not parse filename {filename}")
         return []

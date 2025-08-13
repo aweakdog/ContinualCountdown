@@ -114,9 +114,10 @@ def apply_kl_penalty(data: DataProto, kl_ctrl: core_algos.AdaptiveKLController, 
     return data, metrics
 
 
-def compute_advantage(data: DataProto, adv_estimator, gamma=1.0, lam=1.0, num_repeat=1):
+def compute_advantage(data: DataProto, adv_estimator, gamma=1.0, lam=1.0, num_repeat=1, srpo_beta=0.1, srpo_baseline_type='mean', srpo_use_whitening=True):
     # prepare response group
     # TODO: add other ways to estimate advantages
+    print(f"SRPO-DEBUG: compute_advantage called with adv_estimator='{adv_estimator}'")
     if adv_estimator == 'gae':
         values = data.batch['values']
         responses = data.batch['responses']
@@ -141,6 +142,39 @@ def compute_advantage(data: DataProto, adv_estimator, gamma=1.0, lam=1.0, num_re
         advantages, returns = core_algos.compute_grpo_outcome_advantage(token_level_rewards=token_level_rewards,
                                                                         eos_mask=response_mask,
                                                                         index=index)
+        data.batch['advantages'] = advantages
+        data.batch['returns'] = returns
+    elif adv_estimator == 'srpo':
+        print(f"SRPO-DEBUG: Entering SRPO branch, adv_estimator={adv_estimator}")
+        token_level_rewards = data.batch['token_level_rewards']
+        index = data.non_tensor_batch['uid']
+        responses = data.batch['responses']
+        response_length = responses.size(-1)
+        attention_mask = data.batch['attention_mask']
+        response_mask = attention_mask[:, -response_length:]
+        old_log_prob = data.batch['old_log_probs']
+        ref_log_prob = data.batch['ref_log_prob']
+        
+        # SRPO parameters are passed as function arguments
+        
+        out = core_algos.compute_srpo_advantage(token_level_rewards=token_level_rewards,
+                                                eos_mask=response_mask,
+                                                index=index,
+                                                old_log_prob=old_log_prob,
+                                                ref_log_prob=ref_log_prob,
+                                                beta=srpo_beta,
+                                                baseline_type=srpo_baseline_type,
+                                                debug=True,
+                                                use_whitening=srpo_use_whitening)
+        print(f"SRPO-DEBUG: compute_srpo_advantage returned type={type(out)}, len={len(out) if isinstance(out, tuple) else 'N/A'}")
+        if isinstance(out, tuple) and len(out) == 3:
+            advantages, returns, debug_info = out
+            # Stash for trainer-side printing
+            data.meta_info['srpo_debug'] = debug_info
+            print(f"SRPO-DEBUG: Set debug_info with keys: {list(debug_info.keys())}")
+        else:
+            advantages, returns = out
+            print(f"SRPO-DEBUG: No debug_info returned")
         data.batch['advantages'] = advantages
         data.batch['returns'] = returns
     else:
@@ -820,6 +854,8 @@ class RayPPOTrainer(object):
             self.use_critic = True
         elif self.config.algorithm.adv_estimator == 'grpo':
             self.use_critic = False
+        elif self.config.algorithm.adv_estimator == 'srpo':
+            self.use_critic = False
         else:
             raise NotImplementedError
 
@@ -1141,19 +1177,121 @@ class RayPPOTrainer(object):
                                 else:
                                     batch.batch['token_level_rewards'] = batch.batch['token_level_scores']
 
-                                # compute advantages, executed on the driver process
-                                batch = compute_advantage(batch,
-                                                          adv_estimator=self.config.algorithm.adv_estimator,
-                                                          gamma=self.config.algorithm.gamma,
-                                                          lam=self.config.algorithm.lam,
-                                                          num_repeat=self.config.actor_rollout_ref.rollout.n)
+                            # compute advantages, executed on the driver process
+                            batch = compute_advantage(batch,
+                                                      adv_estimator=self.config.algorithm.adv_estimator,
+                                                      gamma=self.config.algorithm.gamma,
+                                                      lam=self.config.algorithm.lam,
+                                                      num_repeat=self.config.actor_rollout_ref.rollout.n,
+                                                      srpo_beta=getattr(self.config.algorithm, 'srpo_beta', 0.1),
+                                                      srpo_baseline_type=getattr(self.config.algorithm, 'srpo_baseline_type', 'mean'),
+                                                      srpo_use_whitening=getattr(self.config.algorithm, 'srpo_use_whitening', True))
 
-                            # update critic
-                            if self.use_critic:
-                                with _timer('update_critic', timing_raw):
-                                    critic_output = self.critic_wg.update_critic(batch)
-                                critic_output_metrics = reduce_metrics(critic_output.meta_info['metrics'])
-                                metrics.update(critic_output_metrics)
+                            # SRPO per-step debug print: first sample text + per-token GRPO and MSA
+                            print("1184 SRPO-DEBUG is srpo_debug?: ", ('srpo_debug' in batch.meta_info))
+                            if self.config.algorithm.adv_estimator == 'srpo' and 'srpo_debug' in batch.meta_info:
+                                dbg = batch.meta_info['srpo_debug']
+                                msa = dbg['msa']  # (bs, T)
+                                outcome_per_token = dbg['outcome_per_token']  # (bs, T)
+                                eos_mask = dbg['eos_mask']  # (bs, T)
+                                use_whitening = dbg.get('use_whitening', False)
+                                i = 0
+                                try:
+                                    import torch as _torch
+                                    positions = _torch.where(eos_mask[i] > 0)[0]
+                                    resp_ids = batch.batch['responses'][i]
+                                    toks = resp_ids[positions].tolist()
+                                    
+                                    # Get prompt + response text
+                                    prompt_ids = batch.batch['prompts'][i]
+                                    prompt_text = self.tokenizer.decode(prompt_ids, skip_special_tokens=True)
+                                    response_text = self.tokenizer.decode(toks, skip_special_tokens=True)
+                                    full_text = prompt_text + response_text
+                                    
+                                    # Get advantage values and verify tensor shapes
+                                    grpo_vals = outcome_per_token[i, positions].detach().cpu().numpy().tolist()
+                                    msa_vals = msa[i, positions].detach().cpu().numpy().tolist()
+                                    uid = batch.non_tensor_batch['uid'][i]
+                                    
+                                    # Debug: show raw tensor info
+                                    print(f"DEBUG: outcome_per_token.shape = {outcome_per_token.shape}")
+                                    print(f"DEBUG: msa.shape = {msa.shape}")
+                                    print(f"DEBUG: positions = {positions.tolist()}")
+                                    print(f"DEBUG: response token_ids = {toks[:10]}...")  # First 10 tokens
+                                    
+                                    # Get batch info and verify indices
+                                    batch_size = batch.batch['responses'].shape[0]
+                                    sample_reward = batch.batch['rewards'][i].detach().cpu().numpy().tolist() if 'rewards' in batch.batch else "N/A"
+                                    
+                                    # Analyze group-level rewards to understand advantage calculation
+                                    if 'rewards' in batch.batch:
+                                        all_rewards = batch.batch['rewards'].detach().cpu().numpy()
+                                        # Find samples with same prompt (same group)
+                                        current_prompt_ids = batch.batch['prompts'][i]
+                                        group_indices = []
+                                        group_rewards = []
+                                        for j in range(min(batch_size, 20)):  # Check first 20 samples
+                                            if torch.equal(batch.batch['prompts'][j], current_prompt_ids):
+                                                group_indices.append(j)
+                                                group_rewards.append(all_rewards[j].item())
+                                        
+                                        print(f"GROUP ANALYSIS: Found {len(group_indices)} samples with same prompt")
+                                        print(f"GROUP INDICES: {group_indices}")
+                                        print(f"GROUP REWARDS: {group_rewards}")
+                                        if group_rewards:
+                                            group_mean = sum(group_rewards) / len(group_rewards)
+                                            current_advantage = sample_reward[0] - group_mean if isinstance(sample_reward, list) else sample_reward - group_mean
+                                            print(f"GROUP MEAN REWARD: {group_mean:.4f}")
+                                            print(f"CALCULATED ADVANTAGE: {current_advantage:.4f}")
+                                    
+                                    # Verify we're looking at the right sample
+                                    all_uids = batch.non_tensor_batch['uid'] if 'uid' in batch.non_tensor_batch else ["N/A"] * batch_size
+                                    
+                                    print(f"\n=== SRPO-DEBUG step={self.global_steps} ====")
+                                    print(f"BATCH SIZE: {batch_size}, LOOKING AT INDEX: {i}")
+                                    print(f"ALL UIDs IN BATCH: {all_uids}")
+                                    print(f"CURRENT UID: {uid}")
+                                    print(f"ACTUAL REWARD: {sample_reward}")
+                                    print(f"WHITENING: {use_whitening}")
+                                    print(f"PROMPT: {prompt_text}")
+                                    print(f"RESPONSE: {response_text}")
+                                    print(f"FULL TEXT: {full_text}")
+                                    
+                                    # Get whitened values if available
+                                    grpo_whitened = None
+                                    msa_whitened = None
+                                    if use_whitening and 'outcome_per_token_whitened' in dbg and 'msa_whitened' in dbg:
+                                        grpo_whitened = dbg['outcome_per_token_whitened'][i, positions].detach().cpu().numpy().tolist()
+                                        msa_whitened = dbg['msa_whitened'][i, positions].detach().cpu().numpy().tolist()
+                                    
+                                    # Token-by-token breakdown
+                                    print(f"\n--- TOKEN-BY-TOKEN BREAKDOWN ---")
+                                    for j, tok_id in enumerate(toks):
+                                        token_text = self.tokenizer.decode([tok_id], skip_special_tokens=False)
+                                        grpo_val = grpo_vals[j]
+                                        msa_val = msa_vals[j]
+                                        
+                                        line = f"Token[{j:2d}]: '{token_text}' | GRPO_outcome: {grpo_val:8.4f} | MSA: {msa_val:8.4f}"
+                                        
+                                        if grpo_whitened is not None and msa_whitened is not None:
+                                            grpo_w = grpo_whitened[j]
+                                            msa_w = msa_whitened[j]
+                                            line += f" | GRPO_whitened: {grpo_w:8.4f} | MSA_whitened: {msa_w:8.4f}"
+                                        
+                                        print(line)
+                                    
+                                    print(f"=== END SRPO-DEBUG ===\n")
+                                    
+                                except Exception as e:
+                                    print(f"SRPO-DEBUG print error: {e}")
+                            elif self.config.algorithm.adv_estimator == 'srpo':
+                                # Diagnostic: why srpo_debug missing
+                                try:
+                                    has_ref = 'ref_log_prob' in batch.batch
+                                    has_old = 'old_log_probs' in batch.batch
+                                    print(f"SRPO-DEBUG missing debug_info at step={self.global_steps}. meta_info_keys={list(batch.meta_info.keys())} has_ref_log_prob={has_ref} has_old_log_probs={has_old}")
+                                except Exception:
+                                    pass
 
                             # implement critic warmup
                             if self.config.trainer.critic_warmup <= self.global_steps:
@@ -1272,7 +1410,41 @@ class RayPPOTrainer(object):
                                                   adv_estimator=self.config.algorithm.adv_estimator,
                                                   gamma=self.config.algorithm.gamma,
                                                   lam=self.config.algorithm.lam,
-                                                  num_repeat=self.config.actor_rollout_ref.rollout.n)
+                                                  num_repeat=self.config.actor_rollout_ref.rollout.n,
+                                                  srpo_beta=getattr(self.config.algorithm, 'srpo_beta', 0.1),
+                                                  srpo_baseline_type=getattr(self.config.algorithm, 'srpo_baseline_type', 'mean'),
+                                                  srpo_use_whitening=getattr(self.config.algorithm, 'srpo_use_whitening', True))
+
+                        # SRPO per-step debug print: first sample text + per-token GRPO and MSA
+                        if self.config.algorithm.adv_estimator == 'srpo' and 'srpo_debug' in batch.meta_info:
+                            dbg = batch.meta_info['srpo_debug']
+                            msa = dbg['msa']  # (bs, T)
+                            outcome_per_token = dbg['outcome_per_token']  # (bs, T)
+                            eos_mask = dbg['eos_mask']  # (bs, T)
+                            i = 0
+                            try:
+                                import torch as _torch
+                                positions = _torch.where(eos_mask[i] > 0)[0]
+                                resp_ids = batch.batch['responses'][i]
+                                toks = resp_ids[positions].tolist()
+                                text = self.tokenizer.decode(toks, skip_special_tokens=True)
+                                grpo_vals = outcome_per_token[i, positions].detach().cpu().numpy().tolist()
+                                msa_vals = msa[i, positions].detach().cpu().numpy().tolist()
+                                uid = batch.non_tensor_batch['uid'][i]
+                                print(f"SRPO-DEBUG step={self.global_steps} uid={uid}")
+                                print(f"text: {text}")
+                                print(f"GRPO_outcome_per_token: {grpo_vals}")
+                                print(f"SRPO_MSA: {msa_vals}")
+                            except Exception as e:
+                                print(f"SRPO-DEBUG print error: {e}")
+                        elif self.config.algorithm.adv_estimator == 'srpo':
+                            # Diagnostic: why srpo_debug missing
+                            try:
+                                has_ref = 'ref_log_prob' in batch.batch
+                                has_old = 'old_log_probs' in batch.batch
+                                print(f"SRPO-DEBUG missing debug_info at step={self.global_steps}. meta_info_keys={list(batch.meta_info.keys())} has_ref_log_prob={has_ref} has_old_log_probs={has_old}")
+                            except Exception:
+                                pass
 
                     # update critic
                     if self.use_critic:

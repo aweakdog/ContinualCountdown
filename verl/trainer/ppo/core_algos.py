@@ -155,6 +155,195 @@ def compute_grpo_outcome_advantage(token_level_rewards: torch.Tensor,
     return scores, scores
 
 
+def compute_srpo_advantage(token_level_rewards: torch.Tensor,
+                           eos_mask: torch.Tensor,
+                           index: torch.Tensor,
+                           old_log_prob: torch.Tensor,
+                           ref_log_prob: torch.Tensor,
+                           beta: float = 0.1,
+                           epsilon: float = 1e-6,
+                           baseline_type: str = 'mean',
+                           debug: bool = False,
+                           use_whitening: bool = True):
+    """
+    Compute advantage for SRPO (Step-wise Relative Policy Optimization).
+    Combines outcome advantage (like GRPO) with step-wise process advantage (MSA).
+    
+    Args:
+        token_level_rewards: `(torch.Tensor)`
+            shape: (bs, response_length) - rewards for each token
+        eos_mask: `(torch.Tensor)`
+            shape: (bs, response_length) - mask for valid tokens
+        index: `(torch.Tensor)`
+            shape: (bs,) - prompt group indices for grouping responses
+        old_log_prob: `(torch.Tensor)`
+            shape: (bs, response_length) - log probabilities from current policy
+        ref_log_prob: `(torch.Tensor)`
+            shape: (bs, response_length) - log probabilities from reference policy
+        beta: `(float)`
+            coefficient for cumulative probability ratio computation
+        epsilon: `(float)`
+            small value to avoid division by zero
+        baseline_type: `(str)`
+            type of baseline for MSA computation ('mean', 'max', 'median')
+    
+    Returns:
+        advantages: `(torch.Tensor)`
+            shape: (bs, response_length) - combined advantages (outcome + process)
+        returns: `(torch.Tensor)`
+            shape: (bs, response_length) - same as advantages for compatibility
+    """
+    device = token_level_rewards.device
+    bsz, response_length = token_level_rewards.shape
+    
+    # Step 1: Compute outcome advantages (same as GRPO)
+    non_zero_mask = (token_level_rewards != 0)
+    scores = (token_level_rewards * non_zero_mask).sum(dim=-1)  # (bs,)
+    
+    id2rows = defaultdict(list)
+    id2mean = {}
+    id2std = {}
+
+    with torch.no_grad():
+        # Build mapping from group id to row indices; support tensor or string/list indices
+        for i in range(bsz):
+            key = index[i].item() if torch.is_tensor(index) else index[i]
+            id2rows[key].append(i)
+
+        # Compute group statistics for outcome advantages
+        for key, rows in id2rows.items():
+            if len(rows) == 0:
+                raise ValueError(f"No rows for prompt index: {key}")
+            group_scores = scores[torch.tensor(rows, device=device, dtype=torch.long)]
+            if len(rows) == 1:
+                id2mean[key] = torch.tensor(0.0, device=device)
+                id2std[key] = torch.tensor(1.0, device=device)
+            else:
+                id2mean[key] = torch.mean(group_scores)
+                # Clamp std to avoid divide-by-zero when variance is zero
+                std = torch.std(group_scores)
+                id2std[key] = torch.clamp(std, min=epsilon)
+
+        # Compute standardized outcome advantages
+        outcome_advantages = torch.zeros_like(scores)
+        for i in range(bsz):
+            key = index[i].item() if torch.is_tensor(index) else index[i]
+            outcome_advantages[i] = (scores[i] - id2mean[key]) / (id2std[key] + epsilon)
+        
+        # Step 2: Compute Cumulative Probability Ratios (CPR)
+        log_ratio = beta * (old_log_prob - ref_log_prob)  # (bs, response_length)
+        cpr = torch.cumsum(log_ratio * eos_mask, dim=-1)  # (bs, response_length)
+        
+        # Step 3: Compute Masked Step Advantages (MSA)
+        msa = torch.zeros_like(cpr)
+        
+        # Group responses by prompt index for step-wise comparison using id2rows
+        for key, rows in id2rows.items():
+            group_indices = torch.tensor(rows, device=device, dtype=torch.long)
+            
+            if len(group_indices) <= 1:
+                # Single response: MSA = 0 (no comparison possible)
+                continue
+            
+            # Get CPR for this group across all time steps
+            group_cpr = cpr[group_indices]  # (group_size, response_length)
+            group_mask = eos_mask[group_indices]  # (group_size, response_length)
+            
+            # For each time step, compute MSA
+            for t in range(response_length):
+                # Find valid responses at time step t
+                valid_mask = group_mask[:, t] > 0  # which responses are valid at step t
+                valid_indices = torch.where(valid_mask)[0]
+                
+                if len(valid_indices) <= 1:
+                    continue  # Need at least 2 responses for comparison
+                
+                # Get CPR values for valid responses at step t
+                group_cpr_t = group_cpr[valid_indices, t]  # (n_valid,)
+                
+                # Compute baseline with better numerical stability
+                if baseline_type == 'mean':
+                    baseline_t = torch.mean(group_cpr_t)
+                elif baseline_type == 'max':
+                    baseline_t = torch.max(group_cpr_t)
+                elif baseline_type == 'median':
+                    baseline_t = torch.median(group_cpr_t)
+                else:
+                    baseline_t = torch.mean(group_cpr_t)  # default to mean
+                
+                # Compute MSA for valid responses at step t
+                msa_t = group_cpr_t - baseline_t
+                
+                # Map back to original indices
+                original_indices = group_indices[valid_indices]
+                msa[original_indices, t] = msa_t
+        
+        # Step 4: Combine outcome and process advantages
+        # Broadcast outcome advantages to all time steps
+        outcome_adv_broadcast = outcome_advantages.unsqueeze(-1).expand(-1, response_length)  # (bs, response_length)
+        
+        if use_whitening:
+            # Whitening strategy: outcome centering (like DrGRPO) + MSA full whitening
+            # This allows 1:1 weighting without manual hyperparameter tuning
+            print(f"SRPO-WHITENING: Applying DrGRPO-style centering for outcome + full whitening for MSA")
+            
+            # Outcome: Only subtract mean (DrGRPO style centering, no std normalization)
+            outcome_per_token = outcome_adv_broadcast * eos_mask
+            valid_outcome_mask = eos_mask > 0
+            if valid_outcome_mask.sum() > 1:  # Need at least 2 valid tokens
+                valid_outcome_values = outcome_per_token[valid_outcome_mask]
+                outcome_mean = torch.mean(valid_outcome_values)
+                outcome_whitened = outcome_per_token - outcome_mean  # Only subtract mean
+                print(f"SRPO-WHITENING: Outcome centering - mean={outcome_mean:.4f}, valid_tokens={valid_outcome_mask.sum()}")
+            else:
+                outcome_whitened = outcome_per_token
+                print(f"SRPO-WHITENING: Outcome - insufficient tokens for centering ({valid_outcome_mask.sum()})")
+            
+            # MSA: Full whitening (subtract mean + divide by std)
+            valid_msa_mask = eos_mask > 0
+            if valid_msa_mask.sum() > 1:  # Need at least 2 valid tokens
+                valid_msa_values = msa[valid_msa_mask]
+                msa_mean = torch.mean(valid_msa_values)
+                msa_std = torch.std(valid_msa_values)
+                msa_whitened = (msa - msa_mean) / (msa_std + epsilon)
+                print(f"SRPO-WHITENING: MSA full whitening - mean={msa_mean:.4f}, std={msa_std:.4f}, valid_tokens={valid_msa_mask.sum()}")
+            else:
+                msa_whitened = msa
+                print(f"SRPO-WHITENING: MSA - insufficient tokens for whitening ({valid_msa_mask.sum()})")
+            
+            # Combine with 1:1 weighting after processing
+            total_advantages = (outcome_whitened + msa_whitened) * eos_mask
+            print(f"SRPO-WHITENING: Combined advantages with 1:1 weighting (outcome centered + MSA whitened)")
+        else:
+            # Original combination without whitening
+            total_advantages = (outcome_adv_broadcast + msa) * eos_mask
+        
+        if debug:
+            # Expand outcome advantage to per-token for debugging/printing
+            if use_whitening:
+                # Include both original and whitened values for comparison
+                outcome_per_token_orig = outcome_adv_broadcast * eos_mask
+                debug_info = {
+                    'msa': msa.detach(),
+                    'msa_whitened': msa_whitened.detach() if use_whitening else msa.detach(),
+                    'outcome_per_token': outcome_per_token_orig.detach(),
+                    'outcome_per_token_whitened': outcome_whitened.detach() if use_whitening else outcome_per_token_orig.detach(),
+                    'eos_mask': eos_mask.detach(),
+                    'use_whitening': use_whitening,
+                }
+            else:
+                outcome_per_token = outcome_adv_broadcast * eos_mask
+                debug_info = {
+                    'msa': msa.detach(),
+                    'outcome_per_token': outcome_per_token.detach(),
+                    'eos_mask': eos_mask.detach(),
+                    'use_whitening': use_whitening,
+                }
+            return total_advantages, total_advantages, debug_info
+    
+    return total_advantages, total_advantages
+
+
 def compute_rewards(token_level_scores, old_log_prob, ref_log_prob, kl_ratio):
     kl = old_log_prob - ref_log_prob
     return token_level_scores - kl * kl_ratio

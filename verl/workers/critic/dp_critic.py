@@ -51,12 +51,6 @@ class DataParallelPPOCritic(BasePPOCritic):
         print(f'Critic use_remove_padding={self.use_remove_padding}')
 
         # Initialize ReDo-related attributes
-        self._redo_step = 0
-        self.redo_enabled = getattr(self.config, 'redo_enabled', False)
-        self.redo_metric_freq = getattr(self.config, 'redo_metric_freq', 1)
-        self.redo_reset_freq = getattr(self.config, 'redo_reset_freq', 1000)
-        self.redo_mode = getattr(self.config, 'redo_mode', 'threshold')
-        self.redo_tau = getattr(self.config, 'redo_tau', 0.04)
 
         assert self.config.ppo_mini_batch_size % self.config.ppo_micro_batch_size == 0
         self.gradient_accumulation = self.config.ppo_mini_batch_size // self.config.ppo_micro_batch_size

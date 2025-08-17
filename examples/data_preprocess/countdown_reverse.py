@@ -52,6 +52,7 @@ class CountDownReverse(object):
             while cnt <= self.max_cnt_limit:
                 res = self.fill_values(all_nodes[-1], [self.min_target, self.max_target], 1)
                 cnt += 1
+                # print(cnt)
                 assert self.min_target!=0 or res or self.max_target!=self.max_internal_value
                 if res:
                     target, nums, solution = self.encode(all_nodes)
@@ -100,12 +101,12 @@ class CountDownReverse(object):
         #     print("gg. Check the code")
         #     exit(1)
         for other_group in self.other_groups:
-            other_candidate_operators = other_group[0]['candidate']
-            other_neccessary_operators = other_group[0]['necessary']
-            other_start_size = other_group[0]['start_size']
+            other_candidate_operators = other_group['candidate']
+            other_neccessary_operators = other_group['necessary']
+            other_start_size = other_group['start_size']
             if other_start_size != self.start_size:
                 continue
-            # print(other_start_size, self.start_size)
+            # print(other_candidate_operators, other_neccessary_operators, other_start_size)
             if self.check_single_group_overlop(nums, target, other_candidate_operators, other_neccessary_operators):
                 return True
         return False

@@ -39,7 +39,7 @@ echo "[GPU Config] Training will use GPUs 0-3, Analyzers will use GPUs 4-7"
 export LAYER_RESET_ENABLE=${LAYER_RESET_ENABLE:-true}
 export LAYER_RESET_K_FIRST=${LAYER_RESET_K_FIRST:-0}    # Reset first 4 transformer layers
 export LAYER_RESET_K_LAST=${LAYER_RESET_K_LAST:-0}      # Reset last 2 transformer layers
-export LAYER_RESET_STEPS=${LAYER_RESET_STEPS:-"[40,80,120,150]"}  # Reset at global steps 120 and 200
+export LAYER_RESET_STEPS=${LAYER_RESET_STEPS:-"[40,80,120]"}  # Reset at global steps 120 and 200
 
 # Set up logging with backup
 LOG_FILE="./llama_logs/ContinualCountdown3B_llama_Curriculum.log"

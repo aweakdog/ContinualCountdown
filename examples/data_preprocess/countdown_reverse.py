@@ -17,19 +17,21 @@ class Node:
 
 
 class CountDownReverse(object):
-    def __init__(self, max_target=24, start_size=4, min_target=10, max_internal_value=1000, candidate_operators=None, neccessary_operators=None, distinct=False, one_limit_prob=0.1):
+    def __init__(self, max_target=24, start_size=4, min_target=10, max_internal_value=1000, candidate_operators=None, neccessary_operators=None, other_groups=None, distinct=False, one_limit_prob=0.1):
         self.max_target = max_target
         self.min_target = min_target
         self.max_internal_value = max_internal_value
         self.start_size = start_size
-        self.candidate_operators = candidate_operators if candidate_operators is not None else ["+", "-", "*", "/"]
+        self.candidate_operators = candidate_operators if candidate_operators is not None else ["+", "-", "*", "/", "%"]
         self.neccessary_operators = neccessary_operators if neccessary_operators is not None else []
+        self.other_groups = other_groups if other_groups is not None else []
+
         self.distinct = distinct
         # if len(self.operators) == 1 :
         #     self.max_cnt_limit = 10
         # else:
         #     self.max_cnt_limit = 10000
-        self.max_cnt_limit = 10000
+        self.max_cnt_limit = 100000
         self.one_limit_prob = one_limit_prob  # Probability to accept samples containing 1
     
     def check_distinct_numbers(self, nums):
@@ -60,11 +62,17 @@ class CountDownReverse(object):
                         # Accept sample based on one_limit_prob if it has 1, or always accept if it doesn't have 1
                         if not has_one or random.random() < self.one_limit_prob:
                             # Generate the full parenthesized expression
-                            full_expr = self.reconstruct_expression(nums, solution, target)
-                            if full_expr is None:
-                                full_expr = ''
-                            return target, nums, solution, full_expr
+                            #full_expr = self.reconstruct_expression(nums, solution, target)
+                            #print(full_expr, target)
+                            if not self.overlop(nums, target):
+                                #print("ok")
+                                full_expr = self.reconstruct_expression(nums, solution, target)
+                                # print(full_expr, target)
+                                if full_expr is None:
+                                    full_expr = ''
+                                return target, nums, solution, full_expr
             print("Failed to generate a valid value after", cnt, "attempts.")
+
     def encode(self, all_nodes):
         target = all_nodes[-1].value
         assert self.min_target<=target and target<=self.max_target
@@ -77,6 +85,7 @@ class CountDownReverse(object):
         while (len(lowest_operator_nodes)>0):
             node = random.sample(lowest_operator_nodes, 1)[0]
             value, operation = combine_nums(node.left.value, node.right.value, [node.operator])[0]
+            # print("node:", node.right.value, node.operator, node.left.value, "=", value )
             operations.append(operation)
             assert node.value == value
             lowest_operator_nodes.remove(node)
@@ -86,6 +95,87 @@ class CountDownReverse(object):
                 if parent.is_lowest_operator():
                     lowest_operator_nodes.append(parent)
         return target, nums, operations
+    def overlop(self, nums, target):
+        # if not self.check_single_group_overlop(nums, target, self.candidate_operators, self.neccessary_operators):
+        #     print("gg. Check the code")
+        #     exit(1)
+        for other_group in self.other_groups:
+            other_candidate_operators = other_group[0]['candidate']
+            other_neccessary_operators = other_group[0]['necessary']
+            other_start_size = other_group[0]['start_size']
+            if other_start_size != self.start_size:
+                continue
+            # print(other_start_size, self.start_size)
+            if self.check_single_group_overlop(nums, target, other_candidate_operators, other_neccessary_operators):
+                return True
+        return False
+    def generate_new_num_and_neccessary_operators(self, nums, i, j, new_value, current_operator,neccessary_operators):
+        new_nums = []
+        for k in range(len(nums)):
+            if k!=i and k!=j:
+                new_nums.append(nums[k])
+        new_nums.append(new_value)
+        new_neccessary_operators = neccessary_operators.copy()
+        if current_operator in new_neccessary_operators:
+            new_neccessary_operators.remove(current_operator)
+        return new_nums, new_neccessary_operators
+
+    def check_single_group_overlop(self, nums, target, candidate_operators, remain_neccessary_operators):
+        if len(nums) == 1 and nums[0] == target:
+            if len(remain_neccessary_operators) == 0:
+                return True
+            return False
+        if '+' in candidate_operators:
+            for i in range(len(nums)):
+                for j in range(i+1, len(nums)):
+                    new_nums, new_neccessary_operators = self.generate_new_num_and_neccessary_operators(nums, i, j, nums[i]+nums[j], 
+                                                                         '+', remain_neccessary_operators)
+                    if self.check_single_group_overlop(new_nums, target, candidate_operators, new_neccessary_operators):
+                        # print(nums[j] , "+", nums[i] , "=", nums[j]+nums[i])
+                        return True
+        if '-' in candidate_operators:
+            for i in range(len(nums)):
+                for j in range(len(nums)):
+                    if (i==j):
+                        continue
+                    new_nums, new_neccessary_operators = self.generate_new_num_and_neccessary_operators(nums, i, j, nums[i]-nums[j], 
+                                                                         '-', remain_neccessary_operators)
+                    if self.check_single_group_overlop(new_nums, target, candidate_operators, new_neccessary_operators):
+                        #print(nums[i] , "-", nums[j] , "=", nums[i]-nums[j])
+                        return True
+        if '*' in candidate_operators:
+            for i in range(len(nums)):
+                for j in range(i+1, len(nums)):
+                    new_nums, new_neccessary_operators = self.generate_new_num_and_neccessary_operators(nums, i, j, nums[i]*nums[j], 
+                                                                         '*', remain_neccessary_operators)
+                    if self.check_single_group_overlop(new_nums, target, candidate_operators, new_neccessary_operators):
+                        # print(nums[i] , "*", nums[j] , "=", nums[i]*nums[j])
+                        return True
+        if '/' in candidate_operators:
+            for i in range(len(nums)):
+                for j in range(len(nums)):
+                    if (i==j) or (nums[j]==0) or (nums[i]%nums[j]!=0):
+                        continue
+                    new_nums, new_neccessary_operators = self.generate_new_num_and_neccessary_operators(nums, i, j, nums[i]//nums[j], 
+                                                                            '/', remain_neccessary_operators)
+                    if self.check_single_group_overlop(new_nums, target, candidate_operators, new_neccessary_operators):
+                        # print(nums[i] , "/", nums[j] , "=", nums[i]//nums[j])
+                        return True
+        if '%' in candidate_operators:
+            for i in range(len(nums)):
+                for j in range(len(nums)):
+                    if (i==j) or (nums[j]==0):
+                        continue
+                    new_nums, new_neccessary_operators = self.generate_new_num_and_neccessary_operators(nums, i, j, nums[i]%nums[j], 
+                                                                             '%', remain_neccessary_operators)
+                    if self.check_single_group_overlop(new_nums, target, candidate_operators, new_neccessary_operators):
+                        # print(nums[i] , "%", nums[j] , "=", nums[i]%nums[j])
+                        return True
+
+        return False
+
+        
+
 
     @staticmethod
     def reconstruct_expression(nums, operations, target=None):
@@ -111,7 +201,7 @@ class CountDownReverse(object):
                 left_right, result = op_str.split('=')
             except ValueError:
                 continue
-            for op in ['+', '-', '*', '/']:
+            for op in ['+', '-', '*', '/', '%']:
                 if op in left_right:
                     left, right = left_right.split(op)
                     dep_map[result.strip()] = (left.strip(), op, right.strip())
@@ -125,7 +215,7 @@ class CountDownReverse(object):
                 left_right, result = op_str.split('=')
             except ValueError:
                 continue
-            for op in ['+', '-', '*', '/']:
+            for op in ['+', '-', '*', '/', '%']:
                 if op in left_right:
                     left, right = left_right.split(op)
                     parsed_steps.append((left.strip(), op, right.strip(), result.strip()))
@@ -244,16 +334,16 @@ class CountDownReverse(object):
             right_value = tree_node.right.value
             tree_node.value = left_value + right_value
         elif tree_node.operator == "-":
-            left_value_range = [value_range[0], self.max_internal_value]
-            if not self.fill_values(tree_node.left, left_value_range, base):
-                return False
-            left_value = tree_node.left.value
-            right_value_range = [max(left_value - value_range[1], 0), left_value - value_range[0]]
-            # print("right_value_range - :", right_value_range, left_value, value_range, tree_node.operator)
+            right_value_range = [value_range[0], self.max_internal_value]
             if not self.fill_values(tree_node.right, right_value_range, base):
                 return False
             right_value = tree_node.right.value
-            tree_node.value = left_value - right_value
+            left_value_range = [max(right_value - value_range[1], 0), right_value - value_range[0]]
+            # print("right_value_range - :", right_value_range, left_value_range, value_range, tree_node.operator)
+            if not self.fill_values(tree_node.left, left_value_range, base):
+                return False
+            left_value = tree_node.left.value
+            tree_node.value = right_value - left_value
         elif tree_node.operator == "*":
             product = self.sample_int_in_range(value_range, base)
             # print("product", product)
@@ -292,8 +382,31 @@ class CountDownReverse(object):
             right_value = tree_node.right.value
             assert right_value % left_value == 0
             tree_node.value = right_value // left_value
+        elif tree_node.operator == "%":
+            mod = self.sample_int_in_range(value_range, base)
+            
+            left_value_range = [mod + 1, self.max_internal_value]
+            # print("left_value_range / :", left_value_range, value_range, tree_node.operator, base, quotient)
+            if not self.fill_values(tree_node.left, left_value_range, 1):
+                return False
+            left_value = tree_node.left.value
+            # if (value_range[1] == 0):
+            #     right_value_range = [0, 0]
+            # else:
+            #     right_value_range = [left_value*quotient, left_value*quotient]
+            #     mod <= right <= self.max_internal_value  and right = k*left + mod
+            #     0<= k <= (self.max_internal_value - mod ) //left
+            k_range = [0 , (self.max_internal_value - mod ) //left_value]
+            k = self.sample_int_in_range(k_range, 1)
+            right_value_range = [k*left_value + mod, k*left_value + mod]
+            # print("right_value_range / :", right_value_range, left_value, value_range, tree_node.operator)
+            if not self.fill_values(tree_node.right, right_value_range, 1):
+                return False
+            right_value = tree_node.right.value
+            tree_node.value = right_value % left_value
         else:
-            print("Operator Error.")
+            print("Operator Error:" , tree_node.operator)
+
         return True
     def random_countdown(self, nums):
         remain_nums = deepcopy(nums)

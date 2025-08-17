@@ -49,7 +49,7 @@ Assistant: Let me solve this step by step.
         """This works for Qwen Instruct Models"""
         prefix = f"""Assistant\nYou are a helpful assistant. You first thinks about the reasoning process in the mind and then provides the user with the answer. \nUser\n Using the numbers {numbers}, create an equation that equals {target}. You can use basic arithmetic operations ({', '.join(operators)}) and each number should be used exactly once. Show your work in <think> </think> tags. And return the final answer in <answer> </answer> tags, for example <answer> (1 + 2) / 3 </answer>.\nAssistant\nLet me solve this step by step.\n<think>"""
     elif template_type == 'llama':
-        prefix = f"""Using the numbers {numbers}, create an equation that equals {target}. You can use basic arithmetic operations (+, -, *, /) and each number should be used exactly once. Show your work in <think> </think> tags. And return the final answer in <answer> </answer> tags. For example, <answer> (1 + 2) / 3 </answer>.
+        prefix = f"""Using the numbers {numbers}, create an equation that equals {target}. You can use basic arithmetic operations ({', '.join(operators)}) and each number should be used exactly once. Show your work in <think> </think> tags. And return the final answer in <answer> </answer> tags. For example, <answer> (1 + 2) / 3 </answer>.
 Let me see if I can solve this step by step.
 <think>"""
     return prefix
@@ -64,7 +64,7 @@ class DataGenerator:
             {
                 'name': '0',
                 'distributions': [
-                    {'weight': 0.5, 'candidate': ['+', '-', '*'], 'necessary': ['+', '-', '*'], 'start_size': 4},
+                    {'weight': 0.5, 'candidate': ['+', '-', '*'], 'necessary': ['+','-','*'], 'start_size': 4},
                     {'weight': 0.25, 'candidate': ['+', '*'], 'necessary': ['+', '*'], 'start_size': 3},
                     {'weight': 0.25, 'candidate': ['-', '*'], 'necessary': ['-', '*'], 'start_size': 3}
                 ]
@@ -78,16 +78,26 @@ class DataGenerator:
                     {'weight': 0.25, 'candidate': ['-', '/'], 'necessary': ['-', '/'], 'start_size': 3}
                 ]
             },
-            # Group 2: division-based operations  
+            # Group 2: mod-based operations  
             {
                 'name': '2',
                 'distributions': [
-                    {'weight': 0.25, 'candidate': ['+', '*', '/'], 'necessary': ['+', '*', '/'], 'start_size': 4},
-                    {'weight': 0.25, 'candidate': ['-', '*', '/'], 'necessary': ['-', '*', '/'], 'start_size': 4},
-                    {'weight': 0.25, 'candidate': ['*', '/'], 'necessary': ['*', '/'], 'start_size': 3},
-                    {'weight': 0.25, 'candidate': ['*', '/'], 'necessary': ['*', '/'], 'start_size': 3}
+                    {'weight': 0.5, 'candidate': ['+', '-', '%'], 'necessary': ['+', '-', '%'], 'start_size': 4},
+                    {'weight': 0.25, 'candidate': ['+', '%'], 'necessary': ['+', '%'], 'start_size': 3},
+                    {'weight': 0.25, 'candidate': ['-', '%'], 'necessary': ['-', '%'], 'start_size': 3}
                 ]
-            }
+            },
+            # Group 2: division-based operations  
+            #{
+            #    'name': '3',
+            #    'distributions': [
+            #        {'weight': 0.25, 'candidate': ['+', '*', '/'], 'necessary': ['+', '*', '/'], 'start_size': 4},
+            #        {'weight': 0.25, 'candidate': ['-', '*', '/'], 'necessary': ['-', '*', '/'], 'start_size': 4},
+            #        {'weight': 0.25, 'candidate': ['*', '/'], 'necessary': ['*', '/'], 'start_size': 3},
+            #        {'weight': 0.25, 'candidate': ['*', '/'], 'necessary': ['*', '/'], 'start_size': 3}
+            #    ]
+            #}
+
         ]
         self.distinct = True
         os.makedirs(base_dir, exist_ok=True)
@@ -119,16 +129,18 @@ class DataGenerator:
                 config_samples[0] = (config_samples[0][0], config_samples[0][1] + (num_samples - total_assigned))
             
             # Generate samples for each configuration
-            for config, count in config_samples:
+            for idx, (config, count) in enumerate(config_samples):
                 candidate_operators = config['candidate']
                 neccessary_operators = config['necessary']
                 start_size = config['start_size']
-                
+                other_groups = config_samples[:idx] + config_samples[idx+1:]
+
                 for _ in tqdm(range(count), desc=f"Generating {count} samples for {config['candidate']} config"):
                     cd = CountDownReverse(min_target=3, max_target=100, start_size=start_size, 
                                        max_internal_value=100, 
                                        candidate_operators=candidate_operators, 
                                        neccessary_operators=neccessary_operators,
+                                       other_groups=other_groups,
                                        distinct=self.distinct)
                     target, nums, solution, full_expr = cd.generate()
                     rating = 1.0
@@ -163,7 +175,7 @@ class DataGenerator:
             
             def process_fn(example, idx):
                 # Create prompt template
-                question = make_prefix(example, operators=["+", "-", "*", "/"])
+                question = make_prefix(example, operators=["+", "-", "*", "/", "%"])
 
                 # Add solution and metadata
                 data = {

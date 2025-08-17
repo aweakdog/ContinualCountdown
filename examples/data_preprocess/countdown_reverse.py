@@ -31,7 +31,7 @@ class CountDownReverse(object):
         #     self.max_cnt_limit = 10
         # else:
         #     self.max_cnt_limit = 10000
-        self.max_cnt_limit = 10000
+        self.max_cnt_limit = 100000
         self.one_limit_prob = one_limit_prob  # Probability to accept samples containing 1
     
     def check_distinct_numbers(self, nums):
@@ -101,12 +101,21 @@ class CountDownReverse(object):
         #     print("gg. Check the code")
         #     exit(1)
         for other_group in self.other_groups:
+<<<<<<< HEAD
             other_candidate_operators = other_group['candidate']
             other_neccessary_operators = other_group['necessary']
             other_start_size = other_group['start_size']
             if other_start_size != self.start_size:
                 continue
             # print(other_candidate_operators, other_neccessary_operators, other_start_size)
+=======
+            other_candidate_operators = other_group[0]['candidate']
+            other_neccessary_operators = other_group[0]['necessary']
+            other_start_size = other_group[0]['start_size']
+            if other_start_size != self.start_size:
+                continue
+            # print(other_start_size, self.start_size)
+>>>>>>> ae2b96219bada739e6da7968b873df1ed06cf616
             if self.check_single_group_overlop(nums, target, other_candidate_operators, other_neccessary_operators):
                 return True
         return False

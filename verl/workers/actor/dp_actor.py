@@ -275,6 +275,104 @@ class DataParallelPPOActor(BasePPOActor):
 
         return log_probs
 
+    def _collect_fisher_gradients_per_sample(self, mini_batch, components_to_analyze, component_param_ids, collected_grads_for_fisher):
+        """
+        在训练前收集每个样本独立的梯度用于Fisher分析
+        注意：在分布式训练中，每个rank只看到部分样本，需要所有rank都参与收集
+        """
+        rank = dist.get_rank() if dist.is_available() and dist.is_initialized() else 0
+        world_size = dist.get_world_size() if dist.is_available() and dist.is_initialized() else 1
+        
+        if rank == 0:
+            print(f"[FisherCollection][Step {self.global_steps}] Starting per-sample gradient collection for Fisher analysis")
+            print(f"[FisherCollection][Step {self.global_steps}] Distributed setup: rank {rank}/{world_size}, world_size={world_size}")
+        
+        # 将mini-batch拆分成单个样本
+        batch_size = mini_batch['responses'].size(0)
+        total_samples = batch_size * world_size  # 全局样本总数
+        
+        if rank == 0:
+            print(f"[FisherCollection][Step {self.global_steps}] Local batch size: {batch_size} samples, Total samples across all ranks: {total_samples}")
+        
+        for sample_idx in range(batch_size):
+            # 提取单个样本
+            single_sample = {
+                key: value[sample_idx:sample_idx+1] for key, value in mini_batch.items()
+            }
+            single_sample = {k: v.cuda() for k, v in single_sample.items()}
+            
+            # 清零梯度
+            self.actor_optimizer.zero_grad()
+            
+            # 单样本前向传播
+            responses, response_mask = single_sample['responses'], single_sample['attention_mask'][:, -single_sample['responses'].size(1):]
+            entropy, log_prob = self._forward_micro_batch(micro_batch=single_sample, temperature=1.0)
+            
+            # 计算loss（不除以gradient_accumulation，因为这是单样本）
+            pg_loss, pg_clipfrac, ppo_kl = core_algos.compute_policy_loss(
+                old_log_prob=single_sample['old_log_probs'],
+                log_prob=log_prob,
+                advantages=single_sample['advantages'],
+                eos_mask=response_mask,
+                cliprange=self.config.clip_ratio
+            )
+            entropy_loss = verl_F.masked_mean(entropy, response_mask)
+            policy_loss = pg_loss - entropy_loss * self.config.entropy_coeff
+            
+            if self.config.use_kl_loss:
+                ref_log_prob = single_sample['ref_log_prob']
+                kl_loss = verl_F.masked_mean(log_prob - ref_log_prob, response_mask)
+                policy_loss += kl_loss * self.config.kl_coeff
+            
+            # 反向传播（获得单样本梯度）
+            policy_loss.backward()
+            
+            # 收集单样本梯度
+            for component_name, component_module in components_to_analyze.items():
+                with FSDP.summon_full_params(component_module, writeback=False, rank0_only=True, with_grads=True):
+                    if rank == 0:
+                        grad_dict = {}
+                        for fqn, p in self.actor_module.named_parameters():
+                            if id(p) in component_param_ids[component_name]:
+                                if p.grad is not None:
+                                    clean_fqn = fqn.replace('_fsdp_wrapped_module.', '').replace('._fsdp_wrapped_module', '')
+                                    grad_dict[clean_fqn] = p.grad.clone().cpu()
+                        
+                        if grad_dict:
+                            collected_grads_for_fisher[component_name].append(grad_dict)
+                            current_count = len(collected_grads_for_fisher[component_name])
+                            if sample_idx % 8 == 0:  # 每8个样本打印一次
+                                print(f"[FisherCollection][Step {self.global_steps}][Rank {rank}] Sample {sample_idx}: collected gradients for component '{component_name}', local count: {current_count}")
+        
+        # 同步所有rank，确保收集完成
+        if dist.is_available() and dist.is_initialized():
+            dist.barrier()
+        
+        # 汇总所有rank的梯度到rank 0
+        if world_size > 1:
+            # 创建临时存储用于汇总
+            if rank == 0:
+                all_rank_grads = {component_name: [] for component_name in collected_grads_for_fisher}
+            
+            # 每个rank将自己的梯度发送给rank 0
+            for component_name in collected_grads_for_fisher:
+                local_grads = collected_grads_for_fisher[component_name]
+                
+                if rank == 0:
+                    # rank 0收集所有rank的梯度
+                    all_rank_grads[component_name].extend(local_grads)  # 先添加自己的
+                    
+                    # 接收其他rank的梯度
+                    for src_rank in range(1, world_size):
+                        # 这里需要使用Ray的分布式通信或其他方式
+                        # 暂时先保持当前逻辑，但添加警告
+                        pass
+                    
+            
+            # 更新collected_grads_for_fisher为汇总结果
+            if rank == 0:
+                collected_grads_for_fisher.update(all_rank_grads)
+        
     def update_policy(self, data: DataProto):
         """
         Update the policy with the given data. Accepts global_steps from trainer for correct frequency control.
@@ -298,7 +396,31 @@ class DataParallelPPOActor(BasePPOActor):
         dataloader = batch.split(self.config.ppo_mini_batch_size)
 
         metrics = {}
-        run_fisher_analysis = self.fisher_info_analyzer and self.global_steps % self.fisher_analysis_freq == 0
+        
+        # Check if any analysis should be performed (defined early for use in mini-batch loop)
+        should_analyze_gradients = (self.grad_analyzer is not None and 
+                                  self.global_steps % self.config.get("redo_analysis_freq", 1) == 0)
+        should_analyze_fisher = (self.fisher_info_analyzer is not None and 
+                               self.global_steps % self.fisher_analysis_freq == 0)
+        
+        # Legacy variable for backward compatibility
+        run_fisher_analysis = should_analyze_fisher
+        
+        # Initialize gradient collection for gradient analysis (similar to Fisher)
+        collected_grads_for_gradient = {}
+        if should_analyze_gradients:
+            grad_components_to_analyze = {
+                "embed_tokens": self.actor_module.model.embed_tokens,
+                "final_norm": self.actor_module.model.norm,
+                "lm_head": self.actor_module.lm_head,
+            }
+            # Add all transformer layers
+            for i, layer in enumerate(self.actor_module.model.layers):
+                grad_components_to_analyze[f"layer_{i}"] = layer
+            
+            grad_component_param_ids = {name: {id(p) for p in module.parameters()} for name, module in grad_components_to_analyze.items()}
+            collected_grads_for_gradient = {name: [] for name in grad_components_to_analyze}
+        
         if run_fisher_analysis:
             rank = dist.get_rank()
             if rank == 0:
@@ -318,7 +440,15 @@ class DataParallelPPOActor(BasePPOActor):
             component_param_ids = {name: {id(p) for p in module.parameters()} for name, module in components_to_analyze.items()}
             collected_grads_for_fisher = {name: [] for name in components_to_analyze}
 
-        for batch_idx, data in enumerate(dataloader):
+        # 将dataloader转换为list以便重复使用第一个mini-batch
+        dataloader_list = list(dataloader)
+        
+        # Fisher分析：在训练前对第一个mini-batch进行逐样本梯度收集
+        if run_fisher_analysis and len(dataloader_list) > 0:
+            first_mini_batch = dataloader_list[0]  # 获取第一个mini-batch但不消耗它
+            self._collect_fisher_gradients_per_sample(first_mini_batch, components_to_analyze, component_param_ids, collected_grads_for_fisher)
+        
+        for batch_idx, data in enumerate(dataloader_list):
             mini_batch = data
             if self.config.use_dynamic_bsz:
                 max_token_len = self.config.ppo_max_token_len_per_gpu * self.ulysses_sequence_parallel_size
@@ -328,7 +458,7 @@ class DataParallelPPOActor(BasePPOActor):
 
             self.actor_optimizer.zero_grad()
 
-            for data in micro_batches:
+            for micro_batch_idx, data in enumerate(micro_batches):
                 data = data.cuda()  
                 responses, response_mask = data['responses'], data['attention_mask'][:, -data['responses'].size(1):]
                 entropy, log_prob = self._forward_micro_batch(micro_batch=data, temperature=temperature)
@@ -351,20 +481,51 @@ class DataParallelPPOActor(BasePPOActor):
 
                 loss = policy_loss / self.gradient_accumulation
                 loss.backward()
+<<<<<<< HEAD
 
             # Fisher梯度收集：在梯度裁剪之前收集原始梯度用于Fisher分析
             if run_fisher_analysis:
                 for component_name, component_module in components_to_analyze.items():
+=======
+                
+                # Fisher分析已移至训练前的逐样本收集阶段
+            
+            # Gradient分析：在整个mini-batch处理完后收集一次累积梯度
+            if batch_idx == 0 and should_analyze_gradients:
+                # 获取当前进程的rank用于多GPU协调
+                rank = dist.get_rank() if dist.is_available() and dist.is_initialized() else 0
+                
+                if rank == 0:
+                    print(f"[GradientCollection] Collecting accumulated gradients for mini-batch {batch_idx} (after all micro-batches)")
+                
+                for component_name, component_module in grad_components_to_analyze.items():
+>>>>>>> ae2b96219bada739e6da7968b873df1ed06cf616
                     with FSDP.summon_full_params(component_module, writeback=False, rank0_only=True, with_grads=True):
                         if rank == 0:
                             grad_dict = {}
+                            total_params = 0
+                            collected_params = 0
+                            
                             for fqn, p in self.actor_module.named_parameters():
-                                if id(p) in component_param_ids[component_name]:
+                                if id(p) in grad_component_param_ids[component_name]:
+                                    total_params += 1
                                     if p.grad is not None:
                                         clean_fqn = fqn.replace('_fsdp_wrapped_module.', '').replace('._fsdp_wrapped_module', '')
+<<<<<<< HEAD
                                         grad_dict[clean_fqn] = p.grad.clone().cpu()  # 收集每个mini-batch的梯度
                             if grad_dict:
                                 collected_grads_for_fisher[component_name].append(grad_dict)
+=======
+                                        # Gradient分析：收集累积梯度
+                                        grad_dict[clean_fqn] = p.grad.clone().cpu()
+                                        collected_params += 1
+                            
+                            if grad_dict:
+                                collected_grads_for_gradient[component_name].append(grad_dict)
+                                print(f"[GradientCollection] Component '{component_name}': collected {collected_params}/{total_params} parameters (accumulated gradients)")
+                            else:
+                                print(f"[GradientCollection] WARNING: No accumulated gradients found for component '{component_name}'")
+>>>>>>> ae2b96219bada739e6da7968b873df1ed06cf616
 
             # Apply gradient clipping after all micro-batches
             if isinstance(self.actor_module, FSDP):
@@ -387,6 +548,7 @@ class DataParallelPPOActor(BasePPOActor):
         # Capture the learning rate that will be used for this optimizer step.
         current_lr = self.actor_optimizer.param_groups[0]['lr']
         
+<<<<<<< HEAD
         # Check if any analysis should be performed (only once per global step)
         should_analyze_gradients = (self.grad_analyzer is not None and 
                                   self.global_steps % self.config.get("redo_analysis_freq", 1) == 0)
@@ -509,6 +671,20 @@ class DataParallelPPOActor(BasePPOActor):
                         for key, value in global_fisher.items():
                             if isinstance(value, (int, float)):
                                 metrics[f'actor/fisher_{key}'] = value
+=======
+        # Variables already defined at the beginning of the function
+
+        # Note: Gradient collection now happens during mini-batch loop (after clipping)
+        # This section will submit analysis tasks using collected gradient data
+        print(f"[DEBUG][GradCollection][Step {self.global_steps}] Gradient collection completed during mini-batch loop")
+        
+        # Single barrier after all gradient collection is complete
+        if isinstance(self.actor_module, FSDP):
+            dist.barrier()
+
+        # Fisher analysis will be handled in the unified analysis section below
+        # This removes the duplicate Fisher analysis logic
+>>>>>>> ae2b96219bada739e6da7968b873df1ed06cf616
 
         rank = dist.get_rank() if dist.is_available() and dist.is_initialized() else 0
         is_fsdp = isinstance(self.actor_module, FSDP)
@@ -532,8 +708,6 @@ class DataParallelPPOActor(BasePPOActor):
             # Variables already defined earlier after gradient clipping
             
             if should_analyze_gradients or should_analyze_fisher:
-                print(f"[INFO][Actor][Step {self.global_steps}] 🚀 STARTING Parallel Analysis workflow")
-                print(f"[INFO][Actor][Step {self.global_steps}] Gradient Analysis: {should_analyze_gradients}, Fisher Analysis: {should_analyze_fisher}")
                 
                 # Initialize futures for parallel execution
                 grad_analysis_futures = []
@@ -554,31 +728,88 @@ class DataParallelPPOActor(BasePPOActor):
                 # NOTE: Gradient analysis has been moved to happen AFTER gradient clipping
                 # for consistency with Fisher analysis and to use clipped gradients
 
+<<<<<<< HEAD
                 # Step 3: Start Fisher analysis in parallel (if enabled)
                 if should_analyze_fisher and rank == 0:
                     print(f"[INFO][Parallel Analysis][Step {self.global_steps}] 🔄 Starting Fisher analysis")
                     fisher_analysis_future = self.fisher_info_analyzer.get_aggregated_stats.remote(identifier='actor')
+=======
+                # Step 3: Submit Fisher analysis tasks if needed
+                fisher_analysis_tasks = []
+                if rank == 0 and should_analyze_fisher:
+                    print(f"[INFO][Actor][Step {self.global_steps}] Starting PARALLEL Fisher analysis for {len(collected_grads_for_fisher)} components")
+                    
+                    valid_components = []
+                    # Step 1: Validate and prepare all components for batch submission
+                    for component_name, per_sample_grads in collected_grads_for_fisher.items():
+                        if per_sample_grads:
+                            valid_components.append((component_name, per_sample_grads))
+                            print(f"[Fisher Debug][Step {self.global_steps}] Component {component_name}: {len(per_sample_grads)} sample grads ready for analysis (should be 32 for per-sample collection)")
+                        else:
+                            print(f"[Fisher Debug][Step {self.global_steps}] WARNING: Component {component_name} has no gradients collected!")
+                    
+                    # Step 2: Batch submit ALL Fisher analysis tasks simultaneously
+                    for component_name, per_sample_grads in valid_components:
+                        self.logger.info(f"--- Submitting parallel Fisher analysis for component: {component_name} ---")
+                        task = self.fisher_info_analyzer.analyze_component_grads.remote(
+                            identifier='actor',
+                            component_name=component_name,
+                            per_micro_batch_grads=per_sample_grads,
+                            original_param_shapes=self.original_param_shapes,
+                            micro_batch_size=self.config.ppo_mini_batch_size,
+                            current_lr=current_lr,
+                            global_step=self.global_steps
+                        )
+                        fisher_analysis_tasks.append((component_name, task))
+                    
+                    print(f"[INFO][Actor][Step {self.global_steps}] Submitted {len(fisher_analysis_tasks)} Fisher analysis tasks in parallel")
+>>>>>>> ae2b96219bada739e6da7968b873df1ed06cf616
                 
-                # Step 4: Get aggregated results from gradient analyzer (if enabled)
-                # Step 5: Start parallel analysis aggregation
+                # Step 4: Initialize futures for parallel analysis aggregation
                 grad_stats_future = None
-                fisher_stats_future = None
+                fisher_analysis_future = None
                 
                 if rank == 0:
-                    print(f"[INFO][Parallel Analysis][Step {self.global_steps}] 🚀 Starting parallel execution of Gradient and Fisher analyzers")
-                    
-                    # Start gradient analysis aggregation (non-blocking) if enabled
-                    if should_analyze_gradients:
-                        print(f"[INFO][Actor][Step {self.global_steps}] Getting aggregated gradient analysis results.")
+                    # Submit gradient analysis tasks using collected mini-batch gradients
+                    if should_analyze_gradients and collected_grads_for_gradient:
+                        print(f"[INFO][Actor][Step {self.global_steps}] Starting PARALLEL gradient analysis for {len(collected_grads_for_gradient)} components")
+                        
+                        gradient_analysis_tasks = []
+                        for component_name, per_mini_batch_grads in collected_grads_for_gradient.items():
+                            if per_mini_batch_grads:
+                                print(f"[Gradient Debug] Component {component_name}: {len(per_mini_batch_grads)} mini-batch grads ready for analysis")
+                                task = self.grad_analyzer.analyze_component_gradients_batched.remote(
+                                    identifier='actor',
+                                    component_name=component_name,
+                                    per_mini_batch_grads=per_mini_batch_grads,
+                                    original_param_shapes=self.original_param_shapes,
+                                    tau=self.redo_tau,
+                                    verbose=True
+                                )
+                                gradient_analysis_tasks.append((component_name, task))
+                        
+                        if gradient_analysis_tasks:
+                            # Wait for all gradient analysis tasks to complete
+                            task_refs = [task for component_name, task in gradient_analysis_tasks]
+                            print(f"[INFO][Actor][Step {self.global_steps}] Waiting for {len(task_refs)} gradient analysis tasks to complete...")
+                            ray.get(task_refs)
+                            print(f"[INFO][Actor][Step {self.global_steps}] All gradient analysis tasks completed!")
+                        
+                        # Start gradient analysis aggregation (non-blocking) if enabled
                         grad_stats_future = self.grad_analyzer.get_aggregated_stats.remote(identifier='actor', verbose=True)
+                    elif should_analyze_gradients:
+                        print(f"[WARNING][Gradient][Step {self.global_steps}] No gradient data collected for analysis!")
+                        grad_stats_future = None
                     
-                    # Start Fisher analysis in parallel if enabled
-                    if run_fisher_analysis and analysis_tasks:
-                        print(f"[INFO][Parallel Analysis][Step {self.global_steps}] 🔄 Starting Fisher analysis in parallel")
-                        # Wait for Fisher component analyses to complete
-                        ray.get(analysis_tasks)
-                        # Start Fisher aggregation in parallel with gradient analysis
-                        fisher_stats_future = self.fisher_info_analyzer.get_aggregated_stats.remote(identifier='actor')
+                    # Start Fisher analysis aggregation if enabled
+                    if should_analyze_fisher and fisher_analysis_tasks:
+                        # First wait for Fisher component analyses to complete
+                        task_refs = [task for component_name, task in fisher_analysis_tasks]
+                        print(f"[INFO][Actor][Step {self.global_steps}] Waiting for {len(task_refs)} Fisher analysis tasks to complete...")
+                        ray.get(task_refs)  # Ensure all component analyses are done
+                        print(f"[INFO][Actor][Step {self.global_steps}] All Fisher analysis tasks completed!")
+                        
+                        fisher_analysis_future = self.fisher_info_analyzer.get_aggregated_stats.remote(identifier='actor')
                     
                 # Step 5: Process results from both analyzers in parallel
                 zero_gradspace_ratio_avg = 0.0
@@ -597,7 +828,6 @@ class DataParallelPPOActor(BasePPOActor):
                         future_types.append('fisher')
                     
                     if all_futures:
-                        print(f"[INFO][Parallel Analysis][Step {self.global_steps}] ⏳ Waiting for {len(all_futures)} analysis tasks to complete")
                         
                         # Wait for all analysis tasks to complete in parallel
                         results = ray.get(all_futures)
@@ -606,13 +836,20 @@ class DataParallelPPOActor(BasePPOActor):
                         for i, (result, future_type) in enumerate(zip(results, future_types)):
                             if future_type == 'gradient':
                                 final_stats = result
+                                
+                                # Initialize default values to prevent undefined variable usage
+                                global_stats = {}
+                                zero_gradspace_ratio_avg = 0.0
+                                
                                 if not final_stats:
                                     self.logger.warning(f"[Actor][Step {self.global_steps}] Failed to get zero-grad analysis results.")
-                                    zero_gradspace_ratio_avg = 0.0
-                                else:
+                                elif isinstance(final_stats, dict):
                                     global_stats = final_stats.get('__global__', {})
                                     global_ratio = global_stats.get('ratio', 0.0)
                                     zero_gradspace_ratio_avg = global_ratio
+                                    
+                                    if '__global__' not in final_stats:
+                                        print(f"[DEBUG][Gradient][Step {self.global_steps}] WARNING: '__global__' key not found in final_stats")
                                     
                                     self.logger.info(f"--- 📊 Gradient Analysis Results (Step {self.global_steps}, Tau: {self.redo_tau}) ---")
                                     self.logger.info(f"Global Dormant Neuron Ratio: {global_ratio:.4%}")
@@ -670,21 +907,47 @@ class DataParallelPPOActor(BasePPOActor):
                                         except Exception as e:
                                             print(f"[ERROR][Storage] Failed to save Fisher metrics: {e}")
                                     
-                                    # Log detailed Fisher statistics
-                                    for key, value in fisher_stats.items():
-                                        if isinstance(value, (int, float)):
-                                            self.logger.info(f"  {key}: {value:.6f}")
+                                    # Log global Fisher Info metrics
+                                    global_fisher = fisher_stats.get('global', {})
+                                    if global_fisher:
+                                        self.logger.info(f"Global Fisher Metrics:")
+                                        for metric_name, value in global_fisher.items():
+                                            if isinstance(value, (int, float)):
+                                                self.logger.info(f"  - {metric_name}: {value:.6g}")
                                     
-                                    print(f"[INFO][Parallel Analysis][Step {self.global_steps}] ✅ Fisher analysis completed successfully")
+                                    # Log per-component Fisher Info metrics
+                                    components_fisher = fisher_stats.get('components', {})
+                                    if components_fisher:
+                                        self.logger.info(f"--- Per-Component Fisher Info Breakdown ---")
+                                        for component_name, comp_stats in sorted(components_fisher.items()):
+                                            self.logger.info(f"  - Component: {component_name}")
+                                            params_stats = comp_stats.get('params', {})
+                                            if params_stats:
+                                                for param_name, param_metrics in sorted(params_stats.items()):
+                                                    short_name = '.'.join(param_name.split('.')[-3:])
+                                                    c_k = param_metrics.get('c_k', 0.0)
+                                                    l_k = param_metrics.get('l_k', 0.0)
+                                                    sigma_max = param_metrics.get('sigma_max', 0.0)
+                                                    sigma_min = param_metrics.get('sigma_min', 0.0)
+                                                    self.logger.info(f"    - {short_name:<40} | c_k: {c_k:.4f} | l_k: {l_k:.6g} | σ_max: {sigma_max:.6g} | σ_min: {sigma_min:.6g}")
+                                    
+                                    self.logger.info("-" * 60)
+                                    
+                                    # Update metrics for logging/tracking
+                                    metrics.update(fisher_stats)
+                                    
+                                    # Add summary Fisher metrics to main metrics dict
+                                    if global_fisher:
+                                        for key, value in global_fisher.items():
+                                            if isinstance(value, (int, float)):
+                                                metrics[f'actor/fisher_{key}'] = value
+                                    
                                 else:
                                     self.logger.warning(f"[Actor][Step {self.global_steps}] Failed to get Fisher analysis results.")
                         
-                        print(f"[INFO][Parallel Analysis][Step {self.global_steps}] 🎉 All parallel analysis tasks completed")
                     
                     # Set the metrics with the correct value
                     metrics['actor/zero_gradspace_ratio'] = zero_gradspace_ratio_avg
-                    print(f"[ZeroGradV2-Metrics][After Optim Step][Step {self.global_steps}] Aggregated Zero Grad Space Ratio: {zero_gradspace_ratio_avg:.4f}")
-                    print(f"[INFO][Parallel Analysis][Step {self.global_steps}] 🎉 Parallel analysis execution completed")
                 else:
                     # Non-rank 0 processes set zero
                     metrics['actor/zero_gradspace_ratio'] = 0.0

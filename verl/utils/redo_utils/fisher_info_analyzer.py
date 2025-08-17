@@ -18,7 +18,11 @@ import numpy as np
 import collections
 from typing import List, Dict
 
+<<<<<<< HEAD
 @ray.remote(num_gpus=0, num_cpus=1)  # Temporarily disabled GPU allocation for GRPO training
+=======
+@ray.remote(num_gpus=2, num_cpus=8)  # Multi-GPU support for parallel Fisher analysis
+>>>>>>> ae2b96219bada739e6da7968b873df1ed06cf616
 class FisherInfoAnalyzer:
     """
     A stateful Ray actor that computes Empirical Fisher Information Matrix (EFIM) metrics
@@ -28,7 +32,21 @@ class FisherInfoAnalyzer:
         self.config = config
         import os
         self.actor_pid = os.getpid()
+<<<<<<< HEAD
         print(f"[FisherInfoAnalyzer] Actor initialized with PID {self.actor_pid}.")
+=======
+        
+        # Multi-GPU device management
+        if torch.cuda.is_available():
+            self.available_devices = [torch.device(f'cuda:{i}') for i in range(torch.cuda.device_count())]
+            self.primary_device = self.available_devices[0]
+            torch.cuda.set_device(self.primary_device)
+            print(f"[FisherInfoAnalyzer] Actor initialized with PID {self.actor_pid} on {len(self.available_devices)} GPUs: {self.available_devices}")
+        else:
+            self.available_devices = [torch.device('cpu')]
+            self.primary_device = self.available_devices[0]
+            print(f"[FisherInfoAnalyzer] Actor initialized with PID {self.actor_pid} on CPU (no CUDA available)")
+>>>>>>> ae2b96219bada739e6da7968b873df1ed06cf616
         # self.stats stores metrics for the CURRENT analysis step
         self.stats = collections.defaultdict(lambda: {'params': {}})
         # self.global_history stores aggregated metrics from ALL past analysis steps to compute running global stats
@@ -42,7 +60,10 @@ class FisherInfoAnalyzer:
         """Resets all statistics and history for a given analysis identifier (e.g., 'actor')."""
         # Debug: Check what we're about to reset
         old_history_len = len(self.global_history.get(identifier, {}).get('c_k_normalized_history', []))
+<<<<<<< HEAD
         print(f"[DEBUG][Fisher] PID {self.actor_pid} - RESET called for '{identifier}' - clearing {old_history_len} steps of history!")
+=======
+>>>>>>> ae2b96219bada739e6da7968b873df1ed06cf616
         
         self.stats.pop(identifier, None)
         self.global_history.pop(identifier, None)
@@ -54,7 +75,6 @@ class FisherInfoAnalyzer:
         """
         Analyzes gradients for a specific model component to compute EFIM metrics for each parameter.
         """
-        # print(f"[DEBUG][Fisher] Received request for component '{component_name}' with {len(per_micro_batch_grads)} micro-batch grads.")
         if not per_micro_batch_grads or not per_micro_batch_grads[0]:
             print(f"[FisherInfoAnalyzer] No gradients for component '{component_name}'. Skipping.")
             return
@@ -70,24 +90,86 @@ class FisherInfoAnalyzer:
             return
 
         component_stats = {}
-        for name, grads in grads_by_param.items():
+        
+        # OPTIMIZED PARALLEL PROCESSING: Use CUDA streams for true GPU parallelism
+        num_devices = len(self.available_devices)
+        device_batches = {device: [] for device in self.available_devices}
+        device_streams = {device: torch.cuda.Stream(device) for device in self.available_devices if device.type == 'cuda'}
+        
+        # Step 1: Distribute parameters across devices
+        for i, (name, grads) in enumerate(grads_by_param.items()):
+            device_idx = i % num_devices
+            device_to_use = self.available_devices[device_idx]
+            device_batches[device_to_use].append((name, grads))
+            
+            # Store parameter shape for normalization calculations
+            original_shape = original_param_shapes.get(name)
+            if original_shape:
+                self.param_shapes[identifier][name] = original_shape
+        
+        # Step 2: Process all device batches in parallel using CUDA streams
+        device_results = {}
+        
+        for device, param_batch in device_batches.items():
+            if not param_batch:  # Skip empty batches
+                continue
+                
+            if device.type == 'cuda':
+                stream = device_streams[device]
+                with torch.cuda.device(device), torch.cuda.stream(stream):
+                    device_results[device] = self._process_fisher_device_batch(
+                        device, param_batch, original_param_shapes, current_lr, micro_batch_size
+                    )
+            else:
+                # CPU fallback
+                device_results[device] = self._process_fisher_device_batch(
+                    device, param_batch, original_param_shapes, current_lr, micro_batch_size
+                )
+        
+        # Step 3: Synchronize all streams and collect results
+        for device in device_streams:
+            torch.cuda.synchronize(device)
+        
+        # Step 4: Aggregate results from all devices
+        for device, device_stats in device_results.items():
+            component_stats.update(device_stats)
+        
+        # Step 5: Update history and statistics after parallel processing
+        for name, param_stats in component_stats.items():
+            param_hist = self.param_history[identifier]['params'][name]
+            param_hist['c_k_history'].append(param_stats['c_k'])
+            param_hist['l_k_history'].append(param_stats['l_k'])
+            
+            C_K_param = np.mean(param_hist['c_k_history'])
+            L_K_param = np.sum(param_hist['l_k_history'])
+            
+        
+        self.stats[identifier]['params'][component_name] = component_stats
+    
+    def _process_fisher_device_batch(self, device, param_batch, original_param_shapes, current_lr, micro_batch_size):
+        """Optimized Fisher information computation for a single device batch"""
+        device_stats = {}
+        
+        for name, grads in param_batch:
             try:
                 original_shape = original_param_shapes.get(name)
                 if not original_shape:
                     continue
-                
-                # Store parameter shape for normalization calculations
-                self.param_shapes[identifier][name] = original_shape
 
-                # Per user instruction, reshape the flattened gradients before stacking them into the Jacobian.
+                # Multi-GPU parallel gradient processing
                 reshaped_then_flattened_grads = []
+                
                 for g in grads:
+                    # Ensure gradient is on the correct device
+                    if g.device != device:
+                        g = g.to(device, non_blocking=True)
+                    
                     if g.numel() == original_shape.numel():
                         g_reshaped = g.reshape(original_shape)
-                        reshaped_then_flattened_grads.append(g_reshaped.flatten().cuda())
+                        reshaped_then_flattened_grads.append(g_reshaped.flatten())
                     else:
                         # If shape mismatch, just flatten what we have.
-                        reshaped_then_flattened_grads.append(g.flatten().cuda())
+                        reshaped_then_flattened_grads.append(g.flatten())
 
                 if not reshaped_then_flattened_grads:
                     continue
@@ -97,7 +179,6 @@ class FisherInfoAnalyzer:
                 # Compute reduced Fisher matrix: F_tilde = J @ J.T
                 fisher_tilde = jacobian @ jacobian.T
 
-                
                 eigenvalues = torch.linalg.eigvalsh(fisher_tilde)
                 
                 eig_threshold = self.config.actor.get('fsdp_component_analysis', {}).get('fisher_eig_threshold', 1e-8)
@@ -108,7 +189,7 @@ class FisherInfoAnalyzer:
                 elif len(non_zero_eigenvalues) == 1:
                     sigma_max = torch.sqrt(non_zero_eigenvalues.max())
                     sigma_min = sigma_max
-                    c_k = torch.tensor(1.0)
+                    c_k = torch.tensor(1.0, device=device)
                 else:
                     sigma_max = torch.sqrt(non_zero_eigenvalues.max())
                     sigma_min = torch.sqrt(non_zero_eigenvalues.min())
@@ -116,7 +197,11 @@ class FisherInfoAnalyzer:
                     
                     # Diagnostic logging for extreme condition numbers
                     if c_k > 1000:  # Threshold for "extremely high"
+<<<<<<< HEAD
                         print(f"[WARNING][Fisher] Param '{name}': EXTREME c_k={c_k:.2f}!")
+=======
+                        print(f"[WARNING][Fisher] Param '{name}' on {device}: EXTREME c_k={c_k:.2f}!")
+>>>>>>> ae2b96219bada739e6da7968b873df1ed06cf616
                         print(f"  - sigma_max={sigma_max:.6g}, sigma_min={sigma_min:.6g}")
                         print(f"  - eigenvalue_max={non_zero_eigenvalues.max():.6g}, eigenvalue_min={non_zero_eigenvalues.min():.6g}")
                         print(f"  - num_eigenvalues={len(non_zero_eigenvalues)}, jacobian_shape={jacobian.shape}")
@@ -124,7 +209,8 @@ class FisherInfoAnalyzer:
                         print(f"  - current_lr={current_lr}, micro_batch_size={micro_batch_size}")
 
                 trace_F = torch.sum(non_zero_eigenvalues)
-                l_k = (current_lr / micro_batch_size) * torch.sqrt(trace_F)
+                # L_k now only depends on Fisher information trace, not learning rate
+                l_k = torch.sqrt(trace_F) / micro_batch_size
 
                 param_stats = {
                     'c_k': c_k.item(),
@@ -134,23 +220,14 @@ class FisherInfoAnalyzer:
                     'sigma_min': sigma_min.item(),
                 }
 
-                param_hist = self.param_history[identifier]['params'][name]
-                param_hist['c_k_history'].append(param_stats['c_k'])
-                param_hist['l_k_history'].append(param_stats['l_k'])
-                
-                C_K_param = np.mean(param_hist['c_k_history'])
-                L_K_param = np.sum(param_hist['l_k_history'])
-
-                print(f"[FisherInfo] Param '{name}': c_k={param_stats['c_k']:.4f}, l_k={param_stats['l_k']:.6g}, C_K={C_K_param:.4f}, L_K={L_K_param:.6g}, sigma_max={param_stats['sigma_max']:.6g}, sigma_min={param_stats['sigma_min']:.6g}")
-                #print(f'[FisherInfo] fisher_tilde shape: {fisher_tilde.shape}, eigenvalues: {len(non_zero_eigenvalues)} non-zero')
-                component_stats[name] = param_stats
+                device_stats[name] = param_stats
+                print(f"[FisherInfo][{device}] Param '{name}': c_k={param_stats['c_k']:.4f}, l_k={param_stats['l_k']:.6g}, sigma_max={param_stats['sigma_max']:.6g}, sigma_min={param_stats['sigma_min']:.6g}")
 
             except torch.linalg.LinAlgError as e:
-                print(f"[FisherInfoAnalyzer] LinAlgError for param '{name}' in component '{component_name}': {e}")
+                print(f"[FisherInfoAnalyzer][{device}] LinAlgError for param '{name}': {e}")
                 continue
         
-        self.stats[identifier]['params'][component_name] = component_stats
-        print(f"[FisherInfoAnalyzer] Step {global_step} | Component '{component_name}': Analyzed {len(component_stats)} params.")
+        return device_stats
 
     def get_aggregated_stats(self, identifier: str):
         """
@@ -222,10 +299,27 @@ class FisherInfoAnalyzer:
             sigma_max_normalized = 0.0
             sigma_min_normalized = 0.0
 
+<<<<<<< HEAD
         # 2. Update global history
         self.global_history.setdefault(identifier, {'c_k_normalized_history': [], 'l_k_sums': []})
         self.global_history[identifier]['c_k_normalized_history'].append(c_k_normalized)
         self.global_history[identifier]['l_k_sums'].append(current_l_k_sum_for_this_step)
+=======
+        # 2. Update global history (with step-level deduplication)
+        self.global_history.setdefault(identifier, {'c_k_normalized_history': [], 'l_k_sums': [], 'last_step_added': -1})
+        
+        # Add step tracking to prevent duplicate entries in the same step
+        current_step = len(self.global_history[identifier]['c_k_normalized_history'])
+        last_step_added = self.global_history[identifier].get('last_step_added', -1)
+        
+        # Only add to history if this is a new step (prevent duplicate calls in same step)
+        if current_step != last_step_added:
+            self.global_history[identifier]['c_k_normalized_history'].append(c_k_normalized)
+            self.global_history[identifier]['l_k_sums'].append(current_l_k_sum_for_this_step)
+            self.global_history[identifier]['last_step_added'] = current_step
+        else:
+            print(f"[DEBUG][Fisher] PID {self.actor_pid} - Skipping duplicate history update for step {current_step}")
+>>>>>>> ae2b96219bada739e6da7968b873df1ed06cf616
 
         # Debug: Print history state
         c_k_history_list = self.global_history[identifier]['c_k_normalized_history']

@@ -61,14 +61,14 @@ class DataGenerator:
         # Simplified operator groups - only 2 groups now
         self.operator_groups = [
             # Group 0: multiplication-based operations
-            # {
-            #     'name': '0',
-            #     'distributions': [
-            #         {'weight': 0.5, 'candidate': ['+', '-', '*'], 'necessary': ['+','-','*'], 'start_size': 4},
-            #         {'weight': 0.25, 'candidate': ['+', '*'], 'necessary': ['+', '*'], 'start_size': 3},
-            #         {'weight': 0.25, 'candidate': ['-', '*'], 'necessary': ['-', '*'], 'start_size': 3}
-            #     ]
-            # },
+            {
+                'name': '0',
+                'distributions': [
+                    {'weight': 0.5, 'candidate': ['+', '-', '*'], 'necessary': ['+','-','*'], 'start_size': 4},
+                    {'weight': 0.25, 'candidate': ['+', '*'], 'necessary': ['+', '*'], 'start_size': 3},
+                    {'weight': 0.25, 'candidate': ['-', '*'], 'necessary': ['-', '*'], 'start_size': 3}
+                ]
+            },
             # Group 1: division-based operations  
             {
                 'name': '1',
@@ -88,12 +88,12 @@ class DataGenerator:
                     {'weight': 0.25, 'candidate': ['*', '/'], 'necessary': ['*', '/'], 'start_size': 3}
                 ]
             },
-            {
-                'name': '3',
-                'distributions': [
-                    {'weight': 1, 'candidate': ['+', '-', '*', '/'], 'necessary': [], 'start_size': 4},
-                ]
-            }
+            # {
+            #     'name': '3',
+            #     'distributions': [
+            #         {'weight': 1, 'candidate': ['+', '-', '*', '/'], 'necessary': [], 'start_size': 4},
+            #     ]
+            # }
 
         ]
         self.distinct = True
@@ -130,9 +130,15 @@ class DataGenerator:
                 candidate_operators = config['candidate']
                 neccessary_operators = config['necessary']
                 start_size = config['start_size']
-                other_groups = config_samples[:idx] + config_samples[idx+1:]
-
+                other_groups = []
+                for id, operator_group in enumerate(self.operator_groups):
+                    if group_idx == id:
+                        other_groups += operator_group['distributions'][:idx] + operator_group['distributions'][idx+1:]
+                    else:
+                        other_groups += operator_group['distributions']
+                # print(other_groups)
                 for _ in tqdm(range(count), desc=f"Generating {count} samples for {config['candidate']} config"):
+                
                     cd = CountDownReverse(min_target=3, max_target=100, start_size=start_size, 
                                        max_internal_value=100, 
                                        candidate_operators=candidate_operators, 

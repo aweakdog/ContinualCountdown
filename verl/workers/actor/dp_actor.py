@@ -401,7 +401,7 @@ class DataParallelPPOActor(BasePPOActor):
         # Legacy variable for backward compatibility
         run_fisher_analysis = should_analyze_fisher
         
-        # Initialize gradient collection for gradient analysis (similar to Fisher)
+        # Initialize gradient collection for gradient analysis (only if enabled)
         collected_grads_for_gradient = {}
         if should_analyze_gradients:
             grad_components_to_analyze = {
@@ -479,7 +479,7 @@ class DataParallelPPOActor(BasePPOActor):
                 
                 # Fisher分析已移至训练前的逐样本收集阶段
             
-            # Gradient分析：在整个mini-batch处理完后收集一次累积梯度
+            # Gradient分析：在整个mini-batch处理完后收集一次累积梯度 (only if enabled)
             if batch_idx == 0 and should_analyze_gradients:
                 # 获取当前进程的rank用于多GPU协调
                 rank = dist.get_rank() if dist.is_available() and dist.is_initialized() else 0

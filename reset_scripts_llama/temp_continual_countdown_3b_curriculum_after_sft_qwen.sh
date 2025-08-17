@@ -1,10 +1,10 @@
 #!/bin/bash
 
-SFT_CHECKPOINT=global_step_0
+SFT_CHECKPOINT=global_step_10
 
 # Phase repetition control parameters
-export PHASE1_REPEAT_COUNT=${PHASE1_REPEAT_COUNT:-1}  # Default: run Phase 1 once
-export PHASE2_REPEAT_COUNT=${PHASE2_REPEAT_COUNT:-0}  # Default: run Phase 2 twice
+export PHASE1_REPEAT_COUNT=${PHASE1_REPEAT_COUNT:-0}  # Default: run Phase 1 once
+export PHASE2_REPEAT_COUNT=${PHASE2_REPEAT_COUNT:-2}  # Default: run Phase 2 twice
 export PHASE3_REPEAT_COUNT=${PHASE3_REPEAT_COUNT:-0}  # Default: run Phase 3 twice
 
 echo "[Phase Config] Phase 1 will run $PHASE1_REPEAT_COUNT time(s)"
@@ -19,8 +19,8 @@ fi
 
 # Configuration - Set environment variables
 export NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-all}
-export CHECKPOINT_BASE_DIR=${CHECKPOINT_BASE_DIR:-/nas/shared/sys2/yuanhangli/tmp/checkpoints/continual_countdown3b_qwen_curriculum}
-export BASE_MODEL=${BASE_MODEL:-"/nas/shared/sys2/yuanhangli/tmp/qwen_sft_model/${SFT_CHECKPOINT}"}  # Path to mounted Qwen SFT model
+export CHECKPOINT_BASE_DIR=${CHECKPOINT_BASE_DIR:-/nas/shared/sys2/yuanhangli/tmp/checkpoints/continual_countdown3b_llama_curriculum}
+export BASE_MODEL=${BASE_MODEL:-"/nas/shared/sys2/yuanhangli/tmp/llama_sft_model/${SFT_CHECKPOINT}"}  # Path to mounted llama SFT model
 export N_GPUS=${N_GPUS:-4}  # Using 8 A100 GPUs
 export ROLLOUT_TP_SIZE=${ROLLOUT_TP_SIZE:-1}  # Tensor parallel size optimized for 8 GPUs
 export WANDB_MODE=${WANDB_MODE:-offline}  # Run WandB in offline mode
@@ -37,19 +37,19 @@ echo "[GPU Config] Training will use GPUs 0-3, Analyzers will use GPUs 4-7"
 # Layer Reset Configuration (OPTIONAL - defaults to disabled)
 # Uncomment and modify the following lines to enable layer reset functionality:
 export LAYER_RESET_ENABLE=${LAYER_RESET_ENABLE:-true}
-export LAYER_RESET_K_FIRST=${LAYER_RESET_K_FIRST:-0}    # Reset first 4 transformer layers
-export LAYER_RESET_K_LAST=${LAYER_RESET_K_LAST:-0}      # Reset last 2 transformer layers
+export LAYER_RESET_K_FIRST=${LAYER_RESET_K_FIRST:-20}    # Reset first 4 transformer layers
+export LAYER_RESET_K_LAST=${LAYER_RESET_K_LAST:-20}      # Reset last 2 transformer layers
 export LAYER_RESET_STEPS=${LAYER_RESET_STEPS:-"[40,80,120,150]"}  # Reset at global steps 120 and 200
 
 # Set up logging with backup
-LOG_FILE="./qwen_logs/ContinualCountdown3B_Qwen_Curriculum.log"
+LOG_FILE="./llama_logs/ContinualCountdown3B_llama_Curriculum.log"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-BACKUP_DIR="./qwen_logs/run"
+BACKUP_DIR="./llama_logs/run"
 
 # Create backup of existing log if it exists
 if [ -f "$LOG_FILE" ]; then
     mkdir -p "$BACKUP_DIR"
-    cp "$LOG_FILE" "$BACKUP_DIR/ContinualCountdown3B_Qwen_Curriculum_${TIMESTAMP}.log"
+    cp "$LOG_FILE" "$BACKUP_DIR/ContinualCountdown3B_llama_Curriculum_${TIMESTAMP}.log"
 fi
 
 # Clean up previous checkpoints
@@ -58,8 +58,8 @@ rm -rf ${CHECKPOINT_BASE_DIR}
 # Clean up current log and wandb
 rm -f "$LOG_FILE"
 rm -rf ./wandb/*
-chmod -R 755 ./qwen_logs
-chmod -R 755 ./qwen_logs/run
+chmod -R 755 ./llama_logs
+chmod -R 755 ./llama_logs/run
 
 # Set FSDP gradient metric flag (set to true to enable FSDP gradient metrics)
 export FSDP_GRAD_METRIC_ENABLED=true
@@ -80,8 +80,8 @@ if [ ! -f "$BASE_MODEL/config.json" ]; then
     exit 1
 fi
 
-# Create a unique subdirectory for this experiment's qwen_logs
-EXP_LOG_DIR=./qwen_logs/train_countdown3b_qwen_sft_${SFT_CHECKPOINT}_reset_k${LAYER_RESET_K_FIRST}f_k${LAYER_RESET_K_LAST}l
+# Create a unique subdirectory for this experiment's llama_logs
+EXP_LOG_DIR=./llama_logs/temp_countdown3b_llama_sft_${SFT_CHECKPOINT}_reset_k${LAYER_RESET_K_FIRST}f_k${LAYER_RESET_K_LAST}l
 mkdir -p "$EXP_LOG_DIR"
 cp tmp/monitor_master.sh "$EXP_LOG_DIR/"
 MASTER_LOG_FILE="$EXP_LOG_DIR/experiment_master.log"
@@ -174,7 +174,7 @@ for ((phase1_iter=1; phase1_iter<=PHASE1_REPEAT_COUNT; phase1_iter++)); do
     trainer.nnodes=1 \
     trainer.save_freq=1200 \
     trainer.test_freq=30 \
-    trainer.project_name=ContinualCountdown3B_Qwen \
+    trainer.project_name=ContinualCountdown3B_llama \
     trainer.experiment_name=$RUN_NAME \
     trainer.total_epochs=1 \
     +trainer.val_before_train=true \
@@ -252,7 +252,7 @@ python3 -m verl.trainer.main_ppo \
   trainer.nnodes=1 \
   trainer.save_freq=1200 \
   trainer.test_freq=30 \
-  trainer.project_name=ContinualCountdown3B_Qwen \
+  trainer.project_name=ContinualCountdown3B_llama \
   trainer.experiment_name=$RUN_NAME \
   trainer.total_epochs=1 \
   +trainer.val_before_train=true \
@@ -331,7 +331,7 @@ for ((phase3_iter=1; phase3_iter<=PHASE3_REPEAT_COUNT; phase3_iter++)); do
     trainer.nnodes=1 \
     trainer.save_freq=1200 \
     trainer.test_freq=30 \
-    trainer.project_name=ContinualCountdown3B_Qwen \
+    trainer.project_name=ContinualCountdown3B_llama \
     trainer.experiment_name=$RUN_NAME \
     trainer.total_epochs=1 \
     +trainer.val_before_train=true \

@@ -294,7 +294,7 @@ class LayerResetManager:
         print(f"[LAYER_RESET_DEBUG] Resetting layers {layers_to_reset} out of {total_layers} total layers")
         
         # Use FSDP state dict context to handle parameter flattening properly
-        from torch.distributed.fsdp import FSDP, StateDictType, FullStateDictConfig
+        from torch.distributed.fsdp import FullyShardedDataParallel as FSDP, StateDictType, FullStateDictConfig
         
         # Check if model is FSDP wrapped
         if hasattr(model, '_fsdp_wrapped_module') or isinstance(model, FSDP):

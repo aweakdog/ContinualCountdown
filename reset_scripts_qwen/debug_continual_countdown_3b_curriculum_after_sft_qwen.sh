@@ -1,11 +1,11 @@
 #!/bin/bash
 
-SFT_CHECKPOINT=global_step_15
+SFT_CHECKPOINT=global_step_0
 
 # Phase repetition control parameters
 export PHASE1_REPEAT_COUNT=${PHASE1_REPEAT_COUNT:-1}  # Default: run Phase 1 once
-export PHASE2_REPEAT_COUNT=${PHASE2_REPEAT_COUNT:-2}  # Default: run Phase 2 twice
-export PHASE3_REPEAT_COUNT=${PHASE3_REPEAT_COUNT:-2}  # Default: run Phase 3 twice
+export PHASE2_REPEAT_COUNT=${PHASE2_REPEAT_COUNT:-0}  # Default: run Phase 2 twice
+export PHASE3_REPEAT_COUNT=${PHASE3_REPEAT_COUNT:-0}  # Default: run Phase 3 twice
 
 echo "[Phase Config] Phase 1 will run $PHASE1_REPEAT_COUNT time(s)"
 echo "[Phase Config] Phase 2 will run $PHASE2_REPEAT_COUNT time(s)"
@@ -21,30 +21,25 @@ fi
 export NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-all}
 export CHECKPOINT_BASE_DIR=${CHECKPOINT_BASE_DIR:-/nas/shared/sys2/yuanhangli/tmp/checkpoints/continual_countdown3b_qwen_curriculum}
 export BASE_MODEL=${BASE_MODEL:-"/nas/shared/sys2/yuanhangli/tmp/qwen_sft_model/${SFT_CHECKPOINT}"}  # Path to mounted Qwen SFT model
-export N_GPUS=${N_GPUS:-4}  # Using 4 GPUs for training
-export ROLLOUT_TP_SIZE=${ROLLOUT_TP_SIZE:-1}  # Tensor parallel size optimized for 4 GPUs
+export N_GPUS=${N_GPUS:-4}  # Using 8 A100 GPUs
+export ROLLOUT_TP_SIZE=${ROLLOUT_TP_SIZE:-1}  # Tensor parallel size optimized for 8 GPUs
 export WANDB_MODE=${WANDB_MODE:-offline}  # Run WandB in offline mode
 export VLLM_ATTENTION_BACKEND=${VLLM_ATTENTION_BACKEND:-XFORMERS}
-
-# GPU Resource Allocation Strategy:
-# - Training processes: Only see GPUs 0-3 (via CUDA_VISIBLE_DEVICES)
-# - Ray/Analyzers: See all GPUs 0-7, but training occupies 0-3, so Ray uses 4-7
-export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0,1,2,3,4,5,6,7}  # All GPUs visible to Ray
-export TRAINING_CUDA_DEVICES="0,1,2,3"  # Only training GPUs
+export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0,1,2,3,4,5,6,7}  # Limit training to GPUs 0-3, reserve 4-7 for analyzers
 export NCCL_DEBUG=${NCCL_DEBUG:-INFO}
 
 # GPU Resource Allocation Configuration for 8 A100 setup
 # Training: GPUs 0-3, Analyzers: GPUs 4-7
 export RAY_ANALYZER_GPU_START=${RAY_ANALYZER_GPU_START:-4}  # Start analyzer GPUs from GPU 4
 export RAY_ANALYZER_GPU_COUNT=${RAY_ANALYZER_GPU_COUNT:-4}  # Use 4 GPUs for analyzers (4-7)
-echo "[GPU Config] Training will use GPUs 0-3, Ray/Analyzers will use GPUs 4-7"
+echo "[GPU Config] Training will use GPUs 0-3, Analyzers will use GPUs 4-7"
 
 # Layer Reset Configuration (OPTIONAL - defaults to disabled)
 # Uncomment and modify the following lines to enable layer reset functionality:
-# export LAYER_RESET_ENABLE=${LAYER_RESET_ENABLE:-true}
-# export LAYER_RESET_K_FIRST=${LAYER_RESET_K_FIRST:-4}    # Reset first 4 transformer layers
-# export LAYER_RESET_K_LAST=${LAYER_RESET_K_LAST:-2}      # Reset last 2 transformer layers
-# export LAYER_RESET_STEPS=${LAYER_RESET_STEPS:-"[120,200]"}  # Reset at global steps 120 and 200
+export LAYER_RESET_ENABLE=${LAYER_RESET_ENABLE:-true}
+export LAYER_RESET_K_FIRST=${LAYER_RESET_K_FIRST:-0}    # Reset first 4 transformer layers
+export LAYER_RESET_K_LAST=${LAYER_RESET_K_LAST:-20}      # Reset last 2 transformer layers
+export LAYER_RESET_STEPS=${LAYER_RESET_STEPS:-"[40,80,120,150]"}  # Reset at global steps 120 and 200
 
 # Set up logging with backup
 LOG_FILE="./qwen_logs/ContinualCountdown3B_Qwen_Curriculum.log"
@@ -86,7 +81,7 @@ if [ ! -f "$BASE_MODEL/config.json" ]; then
 fi
 
 # Create a unique subdirectory for this experiment's qwen_logs
-EXP_LOG_DIR=./qwen_logs/continual_countdown3b_qwen_sft_${SFT_CHECKPOINT}
+EXP_LOG_DIR=./qwen_logs/debug_countdown3b_qwen_sft_${SFT_CHECKPOINT}_reset_k${LAYER_RESET_K_FIRST}f_k${LAYER_RESET_K_LAST}l
 mkdir -p "$EXP_LOG_DIR"
 cp tmp/monitor_master.sh "$EXP_LOG_DIR/"
 MASTER_LOG_FILE="$EXP_LOG_DIR/experiment_master.log"
@@ -97,11 +92,19 @@ fi
 
 # Prepare layer reset configuration if enabled
 LAYER_RESET_CONFIG=""
+echo "[LAYER_RESET_DEBUG] Environment variables:"
+echo "[LAYER_RESET_DEBUG]   LAYER_RESET_ENABLE=${LAYER_RESET_ENABLE:-false}"
+echo "[LAYER_RESET_DEBUG]   LAYER_RESET_K_FIRST=${LAYER_RESET_K_FIRST:-4}"
+echo "[LAYER_RESET_DEBUG]   LAYER_RESET_K_LAST=${LAYER_RESET_K_LAST:-2}"
+echo "[LAYER_RESET_DEBUG]   LAYER_RESET_STEPS=${LAYER_RESET_STEPS:-[2,30]}"
+
 if [ "${LAYER_RESET_ENABLE:-false}" = "true" ]; then
     echo "[Layer Reset] Layer reset enabled with k_first=${LAYER_RESET_K_FIRST:-4}, k_last=${LAYER_RESET_K_LAST:-2}, steps=${LAYER_RESET_STEPS:-[120,200]}"
     LAYER_RESET_CONFIG="++layer_reset.enable_reset=${LAYER_RESET_ENABLE:-true} ++layer_reset.reset_k_first=${LAYER_RESET_K_FIRST:-4} ++layer_reset.reset_k_last=${LAYER_RESET_K_LAST:-2} ++layer_reset.reset_steps=\"${LAYER_RESET_STEPS:-[120,200]}\""
+    echo "[LAYER_RESET_DEBUG] Generated config: $LAYER_RESET_CONFIG"
 else
     echo "[Layer Reset] Layer reset disabled (default)"
+    echo "[LAYER_RESET_DEBUG] Layer reset is disabled because LAYER_RESET_ENABLE != 'true'"
 fi
 
 # Three-phase training: Phase 1 (group0 only), Phase 2 (group1 + group2 in same session), Phase 3 (group2 only)
@@ -161,16 +164,7 @@ for ((phase1_iter=1; phase1_iter<=PHASE1_REPEAT_COUNT; phase1_iter++)); do
     +critic.model.use_cache=false \
     critic.ppo_mini_batch_size=32 \
     critic.ppo_micro_batch_size=8 \
-    ++actor_rollout_ref.actor.redo_enabled=true \
-    ++actor_rollout_ref.actor.redo_metric_freq=1 \
-    ++actor_rollout_ref.actor.redo_reset_freq=1 \
-    ++actor_rollout_ref.actor.redo_mode=threshold \
     ++actor_rollout_ref.actor.redo_tau=0.1 \
-    ++critic.redo_enabled=true \
-    ++critic.redo_metric_freq=1 \
-    ++critic.redo_reset_freq=1 \
-    ++critic.redo_mode=threshold \
-    ++critic.redo_tau=0.1 \
     algorithm.kl_ctrl.kl_coef=0.001 \
     trainer.logger=['wandb','console'] \
     +logger.print_to_console=true \
@@ -248,16 +242,7 @@ python3 -m verl.trainer.main_ppo \
   +critic.model.use_cache=false \
   critic.ppo_mini_batch_size=32 \
   critic.ppo_micro_batch_size=8 \
-  ++actor_rollout_ref.actor.redo_enabled=true \
-  ++actor_rollout_ref.actor.redo_metric_freq=1 \
-  ++actor_rollout_ref.actor.redo_reset_freq=1 \
-  ++actor_rollout_ref.actor.redo_mode=threshold \
   ++actor_rollout_ref.actor.redo_tau=0.1 \
-  ++critic.redo_enabled=true \
-  ++critic.redo_metric_freq=1 \
-  ++critic.redo_reset_freq=1 \
-  ++critic.redo_mode=threshold \
-  ++critic.redo_tau=0.1 \
   algorithm.kl_ctrl.kl_coef=0.001 \
   trainer.logger=['wandb','console'] \
   +logger.print_to_console=true \
@@ -336,16 +321,7 @@ for ((phase3_iter=1; phase3_iter<=PHASE3_REPEAT_COUNT; phase3_iter++)); do
     +critic.model.use_cache=false \
     critic.ppo_mini_batch_size=32 \
     critic.ppo_micro_batch_size=8 \
-    ++actor_rollout_ref.actor.redo_enabled=true \
-    ++actor_rollout_ref.actor.redo_metric_freq=1 \
-    ++actor_rollout_ref.actor.redo_reset_freq=1 \
-    ++actor_rollout_ref.actor.redo_mode=threshold \
     ++actor_rollout_ref.actor.redo_tau=0.1 \
-    ++critic.redo_enabled=true \
-    ++critic.redo_metric_freq=1 \
-    ++critic.redo_reset_freq=1 \
-    ++critic.redo_mode=threshold \
-    ++critic.redo_tau=0.1 \
     algorithm.kl_ctrl.kl_coef=0.001 \
     trainer.logger=['wandb','console'] \
     +logger.print_to_console=true \

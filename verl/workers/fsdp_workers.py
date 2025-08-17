@@ -1494,6 +1494,18 @@ class CriticWorker(Worker):
         # Multi-GPU: Ensure FSDP parameters are properly synchronized after reset
         if torch.distributed.is_initialized():
             print(f"[LAYER_RESET_DEBUG] Multi-GPU: Synchronizing critic FSDP parameters across ranks")
+            
+            # Force FSDP to reshard parameters after reset
+            try:
+                from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
+                if isinstance(self.critic_module, FSDP) or hasattr(self.critic_module, '_fsdp_wrapped_module'):
+                    print(f"[LAYER_RESET_DEBUG] Multi-GPU: Forcing FSDP reshard after parameter reset")
+                    # Summon full parameters to ensure all ranks have updated values
+                    with FSDP.summon_full_params(self.critic_module, writeback=True):
+                        pass  # This forces synchronization of parameters across all ranks
+            except Exception as e:
+                print(f"[LAYER_RESET_DEBUG] Multi-GPU: FSDP reshard failed: {e}")
+            
             torch.distributed.barrier()
             
             # If using FSDP offload, ensure parameters are properly loaded after reset

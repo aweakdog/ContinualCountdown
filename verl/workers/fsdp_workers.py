@@ -18,6 +18,7 @@ The main entry point to run the PPO algorithm
 import logging
 import os
 import warnings
+from typing import List, Dict
 
 import torch
 import torch.distributed
@@ -671,6 +672,131 @@ class ActorRolloutRefWorker(Worker):
             offload_fsdp_param_and_grad(module=self.ref_module_fsdp, offload_grad=self._is_offload_grad)
         torch.cuda.empty_cache()
         return output
+    
+    @register(dispatch_mode=Dispatch.ONE_TO_ALL)
+    def extract_layers_for_reset(self, layer_indices: List[int]) -> Dict[str, torch.Tensor]:
+        """
+        Extract specific transformer layers from reference model for layer reset.
+        Memory-efficient: RefPolicy stays on GPU, only transfers specific layers to CPU.
+        
+        Args:
+            layer_indices: List of layer indices to extract
+            
+        Returns:
+            Dictionary containing state dict for specified layers (on CPU)
+        """
+        print(f"[LAYER_RESET_DEBUG] RefWorker extracting layers {layer_indices}")
+        
+        # Import required FSDP types
+        from torch.distributed.fsdp import StateDictType, FullStateDictConfig
+        
+        if not self._is_ref:
+            raise RuntimeError("extract_layers_for_reset can only be called on reference worker")
+        
+        # Ensure reference model is loaded (should already be on GPU for PPO)
+        was_offloaded = False
+        if self._is_offload_param:
+            load_fsdp_param_and_grad(module=self.ref_module_fsdp,
+                                   device_id=torch.cuda.current_device(),
+                                   load_grad=False)
+            was_offloaded = True
+        
+        try:
+            # Get transformer layers from reference model directly
+            # Handle FSDP wrapped models
+            if isinstance(self.ref_module_fsdp, FSDP):
+                base_model = self.ref_module_fsdp._fsdp_wrapped_module
+            else:
+                base_model = self.ref_module_fsdp
+            
+            # Find transformer layers using common patterns
+            layer_patterns = ['model.layers', 'transformer.h', 'transformer.layers', 'layers']
+            transformer_layers = None
+            
+            for pattern in layer_patterns:
+                try:
+                    layers = base_model
+                    for attr in pattern.split('.'):
+                        layers = getattr(layers, attr)
+                    if isinstance(layers, (list, torch.nn.ModuleList)):
+                        transformer_layers = list(layers)
+                        break
+                except AttributeError:
+                    continue
+            
+            if transformer_layers is None:
+                raise ValueError("Could not identify transformer layers in the reference model")
+            
+            # Get the layer container path
+            layer_patterns = ['model.layers', 'transformer.h', 'transformer.layers', 'layers']
+            layer_container_path = None
+            
+            # Handle FSDP wrapped models
+            if isinstance(self.ref_module_fsdp, FSDP):
+                base_model = self.ref_module_fsdp._fsdp_wrapped_module
+            else:
+                base_model = self.ref_module_fsdp
+            
+            for pattern in layer_patterns:
+                try:
+                    container = base_model
+                    for attr in pattern.split('.'):
+                        container = getattr(container, attr)
+                    if isinstance(container, (list, torch.nn.ModuleList)) and len(container) == len(transformer_layers):
+                        layer_container_path = pattern
+                        break
+                except AttributeError:
+                    continue
+            
+            if layer_container_path is None:
+                raise RuntimeError("Could not find transformer layers container")
+            
+            # Memory-efficient extraction: only get specific layers and transfer to CPU
+            layer_state_dict = {}
+            
+            # Extract state dict layer by layer to minimize GPU memory usage
+            for layer_idx in layer_indices:
+                print(f"[LAYER_RESET_DEBUG] Extracting layer {layer_idx}...")
+                
+                # Get the specific layer
+                target_layer = transformer_layers[layer_idx]
+                
+                # Extract parameters for this layer and immediately transfer to CPU
+                layer_prefix = f"{layer_container_path}.{layer_idx}."
+                
+                # Use FSDP state dict for this specific layer
+                with FSDP.state_dict_type(self.ref_module_fsdp, StateDictType.FULL_STATE_DICT,
+                                         FullStateDictConfig(offload_to_cpu=False, rank0_only=False)):
+                    # Get full state dict but only extract what we need
+                    full_state_dict = self.ref_module_fsdp.state_dict()
+                    
+                    # Extract only this layer's parameters and transfer to CPU immediately
+                    layer_params_found = 0
+                    for param_name, param_tensor in full_state_dict.items():
+                        if param_name.startswith(layer_prefix):
+                            # Transfer to CPU to save GPU memory
+                            layer_state_dict[param_name] = param_tensor.detach().cpu().clone()
+                            layer_params_found += 1
+                            print(f"[LAYER_RESET_DEBUG] Extracted parameter: {param_name} (shape: {param_tensor.shape})")
+                    
+                    print(f"[LAYER_RESET_DEBUG] Layer {layer_idx}: found {layer_params_found} parameters with prefix '{layer_prefix}'")
+                    
+                    # Clear the full state dict to free GPU memory
+                    del full_state_dict
+                
+                # Force garbage collection to free GPU memory
+                torch.cuda.empty_cache()
+                print(f"[LAYER_RESET_DEBUG] Layer {layer_idx} extracted and transferred to CPU")
+            
+            print(f"[LAYER_RESET_DEBUG] RefWorker extracted {len(layer_state_dict)} parameters for layers {layer_indices}")
+            return layer_state_dict
+            
+        finally:
+            # Only offload if it was originally offloaded (preserve original state)
+            if was_offloaded and self._is_offload_param:
+                offload_fsdp_param_and_grad(module=self.ref_module_fsdp, offload_grad=False)
+            # Clean up GPU memory
+            torch.cuda.empty_cache()
 
     @register(dispatch_mode=Dispatch.ONE_TO_ALL)
     def reset_optimizer_learning_rate(self):
@@ -680,6 +806,228 @@ class ActorRolloutRefWorker(Worker):
             self.actor_lr_scheduler.last_epoch = -1
             # Update learning rate
             self.actor_lr_scheduler.step()
+
+    @register(dispatch_mode=Dispatch.ONE_TO_ALL)
+    def reset_layers(self, layer_reset_manager, ref_worker=None) -> None:
+        """
+        Reset specific transformer layers of the actor model to reference model state.
+        
+        Args:
+            layer_reset_manager: LayerResetManager instance with reset configuration
+            ref_worker: Reference worker to get layer weights from (for memory efficiency)
+        """
+        if not self._is_actor:
+            return  # Only reset if this worker has an actor
+        
+        print(f"[LAYER_RESET_DEBUG] ActorWorker resetting layers: k_first={layer_reset_manager.reset_k_first}, k_last={layer_reset_manager.reset_k_last}")
+        
+        # Get transformer layers for debugging
+        transformer_layers = layer_reset_manager.get_transformer_layers(self.actor_module_fsdp)
+        total_layers = len(transformer_layers)
+        print(f"[LAYER_RESET_DEBUG] Actor model has {total_layers} transformer layers")
+        
+        # Get layer indices to reset
+        layer_indices = layer_reset_manager.get_layer_indices_to_reset(total_layers)
+        
+        if not layer_indices:
+            print(f"[LAYER_RESET_DEBUG] No layers to reset for actor")
+            return
+        
+        print(f"[LAYER_RESET_DEBUG] Actor resetting layers: {layer_indices}")
+        
+        # Capture weights before reset for comparison
+        weights_before = {}
+        for layer_idx in layer_indices[:1]:  # Only check first layer to avoid spam
+            layer = transformer_layers[layer_idx]
+            for name, param in layer.named_parameters():
+                if 'weight' in name:
+                    weights_before[f"layer_{layer_idx}.{name}"] = param.data.clone().detach().cpu()
+                    print(f"[LAYER_RESET_DEBUG] Before reset - Layer {layer_idx} {name}: mean={param.data.mean().item():.6f}, std={param.data.std().item():.6f}")
+                    break  # Only check one weight per layer
+        
+        # Memory-efficient approach: get reference layers from ref worker
+        if ref_worker is not None:
+            # Get reference layer state dict from ref worker
+            ref_layer_state_dict = layer_reset_manager.get_reference_layer_state_dict(ref_worker, layer_indices)
+            
+            # Reset actor layers using reference state dict
+            reset_param_names = layer_reset_manager.reset_model_layers_from_ref(
+                model=self.actor_module_fsdp,
+                ref_layer_state_dict=ref_layer_state_dict,
+                reset_k_first=layer_reset_manager.reset_k_first,
+                reset_k_last=layer_reset_manager.reset_k_last
+            )
+            
+            # Reset optimizer states for affected parameters
+            if self.actor_optimizer is not None and layer_reset_manager.reset_optimizer_states:
+                layer_reset_manager._reset_optimizer_states(self.actor_optimizer, reset_param_names, "actor")
+            
+            # Multi-GPU: Ensure FSDP parameters are properly synchronized after reset
+            if torch.distributed.is_initialized():
+                print(f"[LAYER_RESET_DEBUG] Multi-GPU: Synchronizing FSDP parameters across ranks")
+                torch.distributed.barrier()
+                
+                # If using FSDP offload, ensure parameters are properly loaded after reset
+                if self._is_offload_param:
+                    print(f"[LAYER_RESET_DEBUG] Multi-GPU: Reloading FSDP offloaded parameters after reset")
+                    load_fsdp_param_and_grad(module=self.actor_module_fsdp,
+                                           device_id=torch.cuda.current_device(),
+                                           load_grad=self._is_offload_grad)
+            
+            # Compare weights after reset
+            print(f"[LAYER_RESET_DEBUG] Comparing weights after reset...")
+            for layer_idx in layer_indices[:1]:  # Only check first layer to avoid spam
+                layer = transformer_layers[layer_idx]
+                for name, param in layer.named_parameters():
+                    if 'weight' in name:
+                        before_key = f"layer_{layer_idx}.{name}"
+                        if before_key in weights_before:
+                            before_weight = weights_before[before_key]
+                            after_weight = param.data.detach().cpu()
+                            
+                            # Check if weights actually changed
+                            weight_diff = torch.norm(after_weight - before_weight).item()
+                            weights_equal = torch.allclose(after_weight, before_weight, atol=1e-6)
+                            
+                            print(f"[LAYER_RESET_DEBUG] After reset - Layer {layer_idx} {name}: mean={param.data.mean().item():.6f}, std={param.data.std().item():.6f}")
+                            print(f"[LAYER_RESET_DEBUG] Weight change - Layer {layer_idx} {name}: diff_norm={weight_diff:.6f}, weights_equal={weights_equal}")
+                            
+                            if weights_equal:
+                                print(f"[LAYER_RESET_DEBUG] WARNING: Weights did not change for layer {layer_idx} {name}!")
+                            else:
+                                print(f"[LAYER_RESET_DEBUG] SUCCESS: Weights changed for layer {layer_idx} {name}")
+                        break  # Only check one weight per layer
+        
+        elif self._is_ref and hasattr(self, 'ref_module_fsdp'):
+            # Fallback: use local reference model if available (less memory efficient)
+            print(f"[LAYER_RESET_DEBUG] Warning: Using local reference model (less memory efficient)")
+            layer_reset_manager.reset_model_layers(
+                current_model=self.actor_module_fsdp,
+                reference_model=self.ref_module_fsdp,
+                reset_k_first=layer_reset_manager.reset_k_first,
+                reset_k_last=layer_reset_manager.reset_k_last,
+                optimizer=self.actor_optimizer,
+                model_name="actor"
+            )
+        else:
+            print(f"[LAYER_RESET_DEBUG] Error: No reference model available for actor reset")
+            return
+        
+        print(f"[LAYER_RESET_DEBUG] Actor layer reset completed")
+    
+    @register(dispatch_mode=Dispatch.ONE_TO_ALL)
+    def reset_layers_with_ref_dict(self, layer_reset_manager, ref_layer_state_dict: Dict[str, torch.Tensor]) -> None:
+        """
+        Reset specific transformer layers of the actor model using pre-extracted reference state dict.
+        This avoids Ray deadlock by not calling other Ray workers from within this worker.
+        
+        Args:
+            layer_reset_manager: LayerResetManager instance with reset configuration
+            ref_layer_state_dict: Pre-extracted reference layer state dict (on CPU)
+        """
+        if not self._is_actor:
+            return  # Only reset if this worker has an actor
+        
+        print(f"[LAYER_RESET_DEBUG] ActorWorker resetting layers with pre-extracted reference: k_first={layer_reset_manager.reset_k_first}, k_last={layer_reset_manager.reset_k_last}")
+        
+        # Get transformer layers for debugging
+        transformer_layers = layer_reset_manager.get_transformer_layers(self.actor_module_fsdp)
+        total_layers = len(transformer_layers)
+        print(f"[LAYER_RESET_DEBUG] Actor model has {total_layers} transformer layers")
+        
+        # Get layer indices to reset
+        layer_indices = layer_reset_manager.get_layer_indices_to_reset(total_layers)
+        
+        if not layer_indices:
+            print(f"[LAYER_RESET_DEBUG] No layers to reset for actor")
+            return
+        
+        print(f"[LAYER_RESET_DEBUG] Actor resetting layers: {layer_indices}")
+        
+        # Capture weights before reset for comparison
+        weights_before = {}
+        for layer_idx in layer_indices[:1]:  # Only check first layer to avoid spam
+            layer = transformer_layers[layer_idx]
+            for name, param in layer.named_parameters():
+                if 'weight' in name:
+                    weights_before[f"layer_{layer_idx}.{name}"] = param.data.clone().detach().cpu()
+                    print(f"[LAYER_RESET_DEBUG] Before reset - Layer {layer_idx} {name}: mean={param.data.mean().item():.6f}, std={param.data.std().item():.6f}")
+                    break  # Only check one weight per layer
+        
+        # Reset actor layers using pre-extracted reference state dict
+        print(f"[LAYER_RESET_DEBUG] Using pre-extracted reference layers (avoiding Ray deadlock)")
+        reset_param_names = layer_reset_manager.reset_model_layers_from_ref(
+            model=self.actor_module_fsdp,
+            ref_layer_state_dict=ref_layer_state_dict,
+            reset_k_first=layer_reset_manager.reset_k_first,
+            reset_k_last=layer_reset_manager.reset_k_last
+        )
+        
+        # Reset optimizer states for affected parameters
+        if self.actor_optimizer is not None and layer_reset_manager.reset_optimizer_states:
+            layer_reset_manager._reset_optimizer_states(self.actor_optimizer, reset_param_names, "actor")
+        
+        # Multi-GPU: Ensure FSDP parameters are properly synchronized after reset
+        if torch.distributed.is_initialized():
+            print(f"[LAYER_RESET_DEBUG] Multi-GPU: Synchronizing FSDP parameters across ranks")
+            torch.distributed.barrier()
+            
+            # If using FSDP offload, ensure parameters are properly loaded after reset
+            if self._is_offload_param:
+                print(f"[LAYER_RESET_DEBUG] Multi-GPU: Reloading FSDP offloaded parameters after reset")
+                load_fsdp_param_and_grad(module=self.actor_module_fsdp,
+                                       device_id=torch.cuda.current_device(),
+                                       load_grad=self._is_offload_grad)
+        
+        # Compare weights after reset
+        print(f"[LAYER_RESET_DEBUG] Comparing weights after reset...")
+        for layer_idx in layer_indices[:1]:  # Only check first layer to avoid spam
+            layer = transformer_layers[layer_idx]
+            for name, param in layer.named_parameters():
+                if 'weight' in name:
+                    before_key = f"layer_{layer_idx}.{name}"
+                    if before_key in weights_before:
+                        before_weight = weights_before[before_key]
+                        after_weight = param.data.detach().cpu()
+                        
+                        # Check if weights actually changed
+                        weight_diff = torch.norm(after_weight - before_weight).item()
+                        weights_equal = torch.allclose(after_weight, before_weight, atol=1e-6)
+                        
+                        print(f"[LAYER_RESET_DEBUG] After reset - Layer {layer_idx} {name}: mean={param.data.mean().item():.6f}, std={param.data.std().item():.6f}")
+                        print(f"[LAYER_RESET_DEBUG] Weight change - Layer {layer_idx} {name}: diff_norm={weight_diff:.6f}, weights_equal={weights_equal}")
+                        
+                        if weights_equal:
+                            print(f"[LAYER_RESET_DEBUG] WARNING: Weights did not change for layer {layer_idx} {name}!")
+                        else:
+                            print(f"[LAYER_RESET_DEBUG] SUCCESS: Weights changed for layer {layer_idx} {name}")
+                    break  # Only check one weight per layer
+        
+        print(f"[LAYER_RESET_DEBUG] Actor layer reset with pre-extracted reference completed")
+    
+    @register(dispatch_mode=Dispatch.ONE_TO_ALL)
+    def get_transformer_layer_count(self) -> int:
+        """
+        Get the number of transformer layers in the actor model.
+        This is used by the main trainer to determine layer indices for reset.
+        
+        Returns:
+            int: Number of transformer layers in the actor model
+        """
+        if not self._is_actor:
+            return 0  # Return 0 if this worker doesn't have an actor
+        
+        try:
+            # Import LayerResetManager to use its layer detection logic
+            from verl.utils.redo_utils.layer_reset import LayerResetManager
+            layer_manager = LayerResetManager()
+            transformer_layers = layer_manager.get_transformer_layers(self.actor_module_fsdp)
+            layer_count = len(transformer_layers)
+            print(f"[LAYER_RESET_DEBUG] Actor model has {layer_count} transformer layers")
+            return layer_count
+        except Exception as e:
+            print(f"[LAYER_RESET_DEBUG] Error getting transformer layer count: {e}")
+            return 0
 
     @register(dispatch_mode=Dispatch.ONE_TO_ALL)
     def save_checkpoint(self, local_path, hdfs_path=None):
@@ -884,6 +1232,9 @@ class CriticWorker(Worker):
 
         self.flops_counter = FlopsCounter(self.critic_model_config)
 
+        # Store initial critic state for layer reset functionality
+        self._store_initial_critic_state()
+
         torch.cuda.empty_cache()
 
     @register(dispatch_mode=Dispatch.DP_COMPUTE_PROTO)
@@ -968,6 +1319,215 @@ class CriticWorker(Worker):
             self.critic_lr_scheduler.last_epoch = -1
             # Update learning rate
             self.critic_lr_scheduler.step()
+
+    def _store_initial_critic_state(self):
+        """Store the initial critic state for layer reset functionality"""
+        from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
+        from torch.distributed.fsdp.api import FullStateDictConfig, StateDictType
+        import copy
+        
+        logger.info(f"Storing initial critic state for layer reset on rank {self.rank}")
+        
+        # Store initial state dict for layer reset
+        with FSDP.state_dict_type(self.critic_module, StateDictType.FULL_STATE_DICT,
+                                 FullStateDictConfig(offload_to_cpu=True, rank0_only=False)):
+            self.initial_critic_state_dict = copy.deepcopy(self.critic_module.state_dict())
+        
+        logger.info(f"Stored initial critic state with {len(self.initial_critic_state_dict)} parameters")
+
+    @register(dispatch_mode=Dispatch.ONE_TO_ALL)
+    def reset_layers(self, layer_reset_manager, ref_worker=None) -> None:
+        """
+        Reset specific transformer layers of the critic model to reference model state.
+        
+        Args:
+            layer_reset_manager: LayerResetManager instance with reset configuration
+            ref_worker: Reference worker to get layer weights from (for memory efficiency)
+        """
+        if not layer_reset_manager.reset_critic:
+            print(f"[LAYER_RESET_DEBUG] Critic reset disabled, skipping")
+            return
+        
+        print(f"[LAYER_RESET_DEBUG] CriticWorker resetting layers: k_first={layer_reset_manager.reset_k_first}, k_last={layer_reset_manager.reset_k_last}")
+        
+        # Get transformer layers for debugging
+        transformer_layers = layer_reset_manager.get_transformer_layers(self.critic_module)
+        total_layers = len(transformer_layers)
+        print(f"[LAYER_RESET_DEBUG] Critic model has {total_layers} transformer layers")
+        
+        # Get layer indices to reset
+        layer_indices = layer_reset_manager.get_layer_indices_to_reset(total_layers)
+        
+        if not layer_indices:
+            print(f"[LAYER_RESET_DEBUG] No layers to reset for critic")
+            return
+        
+        print(f"[LAYER_RESET_DEBUG] Critic resetting layers: {layer_indices}")
+        
+        # Capture weights before reset for comparison
+        weights_before = {}
+        for layer_idx in layer_indices[:1]:  # Only check first layer to avoid spam
+            layer = transformer_layers[layer_idx]
+            for name, param in layer.named_parameters():
+                if 'weight' in name:
+                    weights_before[f"layer_{layer_idx}.{name}"] = param.data.clone().detach().cpu()
+                    print(f"[LAYER_RESET_DEBUG] Before reset - Critic Layer {layer_idx} {name}: mean={param.data.mean().item():.6f}, std={param.data.std().item():.6f}")
+                    break  # Only check one weight per layer
+        
+        # Memory-efficient approach: get reference layers from ref worker
+        if ref_worker is not None:
+            # Get reference layer state dict from ref worker
+            ref_layer_state_dict = layer_reset_manager.get_reference_layer_state_dict(ref_worker, layer_indices)
+            
+            # Reset critic layers using reference state dict
+            reset_param_names = layer_reset_manager.reset_model_layers_from_ref(
+                model=self.critic_module,
+                ref_layer_state_dict=ref_layer_state_dict,
+                reset_k_first=layer_reset_manager.reset_k_first,
+                reset_k_last=layer_reset_manager.reset_k_last
+            )
+            
+            # Reset optimizer states for affected parameters
+            if self.critic_optimizer is not None and layer_reset_manager.reset_optimizer_states:
+                layer_reset_manager._reset_optimizer_states(self.critic_optimizer, reset_param_names, "critic")
+            
+            # Multi-GPU: Ensure FSDP parameters are properly synchronized after reset
+            if torch.distributed.is_initialized():
+                print(f"[LAYER_RESET_DEBUG] Multi-GPU: Synchronizing critic FSDP parameters across ranks")
+                torch.distributed.barrier()
+                
+                # If using FSDP offload, ensure parameters are properly loaded after reset
+                if self._is_offload_param:
+                    print(f"[LAYER_RESET_DEBUG] Multi-GPU: Reloading critic FSDP offloaded parameters after reset")
+                    load_fsdp_param_and_grad(module=self.critic_module,
+                                           device_id=torch.cuda.current_device(),
+                                           load_grad=self._is_offload_grad)
+            
+            # Compare weights after reset
+            print(f"[LAYER_RESET_DEBUG] Comparing critic weights after reset...")
+            for layer_idx in layer_indices[:1]:  # Only check first layer to avoid spam
+                layer = transformer_layers[layer_idx]
+                for name, param in layer.named_parameters():
+                    if 'weight' in name:
+                        before_key = f"layer_{layer_idx}.{name}"
+                        if before_key in weights_before:
+                            before_weight = weights_before[before_key]
+                            after_weight = param.data.detach().cpu()
+                            
+                            # Check if weights actually changed
+                            weight_diff = torch.norm(after_weight - before_weight).item()
+                            weights_equal = torch.allclose(after_weight, before_weight, atol=1e-6)
+                            
+                            print(f"[LAYER_RESET_DEBUG] After reset - Critic Layer {layer_idx} {name}: mean={param.data.mean().item():.6f}, std={param.data.std().item():.6f}")
+                            print(f"[LAYER_RESET_DEBUG] Weight change - Critic Layer {layer_idx} {name}: diff_norm={weight_diff:.6f}, weights_equal={weights_equal}")
+                            
+                            if weights_equal:
+                                print(f"[LAYER_RESET_DEBUG] WARNING: Critic weights did not change for layer {layer_idx} {name}!")
+                            else:
+                                print(f"[LAYER_RESET_DEBUG] SUCCESS: Critic weights changed for layer {layer_idx} {name}")
+                        break  # Only check one weight per layer
+        
+        elif hasattr(self, 'initial_critic_state_dict'):
+            # Fallback: use initial critic state (less correct but available)
+            print(f"[LAYER_RESET_DEBUG] Warning: Using initial critic state instead of reference model")
+            # TODO: Implement reset from initial state dict if needed
+            print(f"[LAYER_RESET_DEBUG] Error: Initial critic state reset not implemented yet")
+            return
+        else:
+            print(f"[LAYER_RESET_DEBUG] Error: No reference model available for critic reset")
+            return
+        
+        print(f"[LAYER_RESET_DEBUG] Critic layer reset completed")
+    
+    @register(dispatch_mode=Dispatch.ONE_TO_ALL)
+    def reset_layers_with_ref_dict(self, layer_reset_manager, ref_layer_state_dict: Dict[str, torch.Tensor]) -> None:
+        """
+        Reset specific transformer layers of the critic model using pre-extracted reference state dict.
+        This avoids Ray deadlock by not calling other Ray workers from within this worker.
+        
+        Args:
+            layer_reset_manager: LayerResetManager instance with reset configuration
+            ref_layer_state_dict: Pre-extracted reference layer state dict (on CPU)
+        """
+        if not layer_reset_manager.reset_critic:
+            return  # Only reset if critic reset is enabled
+        
+        print(f"[LAYER_RESET_DEBUG] CriticWorker resetting layers with pre-extracted reference: k_first={layer_reset_manager.reset_k_first}, k_last={layer_reset_manager.reset_k_last}")
+        
+        # Get transformer layers for debugging
+        transformer_layers = layer_reset_manager.get_transformer_layers(self.critic_module)
+        total_layers = len(transformer_layers)
+        print(f"[LAYER_RESET_DEBUG] Critic model has {total_layers} transformer layers")
+        
+        # Get layer indices to reset
+        layer_indices = layer_reset_manager.get_layer_indices_to_reset(total_layers)
+        
+        if not layer_indices:
+            print(f"[LAYER_RESET_DEBUG] No layers to reset for critic")
+            return
+        
+        print(f"[LAYER_RESET_DEBUG] Critic resetting layers: {layer_indices}")
+        
+        # Capture weights before reset for comparison
+        weights_before = {}
+        for layer_idx in layer_indices[:1]:  # Only check first layer to avoid spam
+            layer = transformer_layers[layer_idx]
+            for name, param in layer.named_parameters():
+                if 'weight' in name:
+                    weights_before[f"layer_{layer_idx}.{name}"] = param.data.clone().detach().cpu()
+                    print(f"[LAYER_RESET_DEBUG] Before reset - Critic Layer {layer_idx} {name}: mean={param.data.mean().item():.6f}, std={param.data.std().item():.6f}")
+                    break  # Only check one weight per layer
+        
+        # Reset critic layers using pre-extracted reference state dict
+        print(f"[LAYER_RESET_DEBUG] Using pre-extracted reference layers for critic (avoiding Ray deadlock)")
+        reset_param_names = layer_reset_manager.reset_model_layers_from_ref(
+            model=self.critic_module,
+            ref_layer_state_dict=ref_layer_state_dict,
+            reset_k_first=layer_reset_manager.reset_k_first,
+            reset_k_last=layer_reset_manager.reset_k_last
+        )
+        
+        # Reset optimizer states for affected parameters
+        if self.critic_optimizer is not None and layer_reset_manager.reset_optimizer_states:
+            layer_reset_manager._reset_optimizer_states(self.critic_optimizer, reset_param_names, "critic")
+        
+        # Multi-GPU: Ensure FSDP parameters are properly synchronized after reset
+        if torch.distributed.is_initialized():
+            print(f"[LAYER_RESET_DEBUG] Multi-GPU: Synchronizing critic FSDP parameters across ranks")
+            torch.distributed.barrier()
+            
+            # If using FSDP offload, ensure parameters are properly loaded after reset
+            if self._is_offload_param:
+                print(f"[LAYER_RESET_DEBUG] Multi-GPU: Reloading critic FSDP offloaded parameters after reset")
+                load_fsdp_param_and_grad(module=self.critic_module,
+                                       device_id=torch.cuda.current_device(),
+                                       load_grad=self._is_offload_grad)
+        
+        # Compare weights after reset
+        print(f"[LAYER_RESET_DEBUG] Comparing critic weights after reset...")
+        for layer_idx in layer_indices[:1]:  # Only check first layer to avoid spam
+            layer = transformer_layers[layer_idx]
+            for name, param in layer.named_parameters():
+                if 'weight' in name:
+                    before_key = f"layer_{layer_idx}.{name}"
+                    if before_key in weights_before:
+                        before_weight = weights_before[before_key]
+                        after_weight = param.data.detach().cpu()
+                        
+                        # Check if weights actually changed
+                        weight_diff = torch.norm(after_weight - before_weight).item()
+                        weights_equal = torch.allclose(after_weight, before_weight, atol=1e-6)
+                        
+                        print(f"[LAYER_RESET_DEBUG] After reset - Critic Layer {layer_idx} {name}: mean={param.data.mean().item():.6f}, std={param.data.std().item():.6f}")
+                        print(f"[LAYER_RESET_DEBUG] Weight change - Critic Layer {layer_idx} {name}: diff_norm={weight_diff:.6f}, weights_equal={weights_equal}")
+                        
+                        if weights_equal:
+                            print(f"[LAYER_RESET_DEBUG] WARNING: Critic weights did not change for layer {layer_idx} {name}!")
+                        else:
+                            print(f"[LAYER_RESET_DEBUG] SUCCESS: Critic weights changed for layer {layer_idx} {name}")
+                    break  # Only check one weight per layer
+        
+        print(f"[LAYER_RESET_DEBUG] Critic layer reset with pre-extracted reference completed")
 
     @register(dispatch_mode=Dispatch.ONE_TO_ALL)
     def save_checkpoint(self, local_path, hdfs_path=None):

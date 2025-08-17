@@ -338,6 +338,18 @@ class RayPPOTrainer(object):
         else:
             self.kl_ctrl = core_algos.FixedKLController(kl_coef=0.)
 
+        # Initialize layer reset manager
+        from verl.utils.redo_utils.layer_reset import create_layer_reset_manager
+        layer_reset_config = config.get('layer_reset', {})
+        self.layer_reset_manager = create_layer_reset_manager(layer_reset_config)
+        
+        if self.layer_reset_manager.enable_reset:
+            print(f"Layer reset enabled: reset_k_first={self.layer_reset_manager.reset_k_first}, "
+                  f"reset_k_last={self.layer_reset_manager.reset_k_last}, "
+                  f"reset_steps={self.layer_reset_manager.reset_steps}")
+        else:
+            print("Layer reset disabled")
+
         self._create_dataloader()
 
     def _create_dataloader(self):
@@ -1199,6 +1211,71 @@ class RayPPOTrainer(object):
                             logger.log(data=metrics, step=self.global_steps)
                             self.global_steps += 1
 
+                            # Check for layer reset at specified global steps (curriculum learning path)
+                            print(f"[LAYER_RESET_DEBUG] ===== STEP {self.global_steps}: CHECKING LAYER RESET (CURRICULUM) =====")
+                            print(f"[LAYER_RESET_DEBUG] LayerResetManager exists: {hasattr(self, 'layer_reset_manager')}")
+                            if hasattr(self, 'layer_reset_manager'):
+                                print(f"[LAYER_RESET_DEBUG] LayerResetManager.enable_reset: {self.layer_reset_manager.enable_reset}")
+                                print(f"[LAYER_RESET_DEBUG] LayerResetManager.reset_steps: {self.layer_reset_manager.reset_steps}")
+                                print(f"[LAYER_RESET_DEBUG] Current global_step: {self.global_steps}")
+                                print(f"[LAYER_RESET_DEBUG] Is global_step in reset_steps: {self.global_steps in self.layer_reset_manager.reset_steps}")
+                                should_reset = self.layer_reset_manager.should_reset(self.global_steps)
+                                print(f"[LAYER_RESET_DEBUG] should_reset() returned: {should_reset}")
+                            else:
+                                print(f"[LAYER_RESET_DEBUG] ERROR: LayerResetManager not found!")
+                                should_reset = False
+                            
+                            if should_reset:
+                                with _timer('layer_reset', timing_raw):
+                                    print(f"[LAYER_RESET_DEBUG] *** PERFORMING LAYER RESET at global step {self.global_steps} (CURRICULUM) ***")
+                                    
+                                    # Get reference worker for memory-efficient layer extraction
+                                    ref_worker = None
+                                    if hasattr(self, 'ref_policy_wg') and self.use_reference_policy:
+                                        # Use the dedicated reference policy worker
+                                        ref_worker = self.ref_policy_wg
+                                        print(f"[LAYER_RESET_DEBUG] Using ref_policy_wg as reference worker")
+                                    elif hasattr(self, 'actor_rollout_wg'):
+                                        # Fallback to actor_rollout_wg (contains reference model)
+                                        ref_worker = self.actor_rollout_wg
+                                        print(f"[LAYER_RESET_DEBUG] Using actor_rollout_wg as reference worker (fallback)")
+                                    
+                                    # Extract reference layers first to avoid Ray deadlock
+                                    print(f"[LAYER_RESET_DEBUG] Pre-extracting reference layers to avoid Ray deadlock...")
+                                    
+                                    # Get layer indices that will be reset
+                                    if self.layer_reset_manager.reset_actor:
+                                        # Get transformer layers count from actor worker (via Ray call)
+                                        total_layers_list = self.actor_rollout_wg.get_transformer_layer_count()
+                                        # Extract the first result (all workers should have same layer count)
+                                        total_layers = total_layers_list[0] if isinstance(total_layers_list, list) else total_layers_list
+                                        print(f"[LAYER_RESET_DEBUG] Total transformer layers: {total_layers}")
+                                        layer_indices = self.layer_reset_manager.get_layer_indices_to_reset(total_layers)
+                                        print(f"[LAYER_RESET_DEBUG] Will reset layers: {layer_indices}")
+                                        
+                                        # Extract reference layers once, outside of worker calls
+                                        ref_layer_state_dict_result = ref_worker.extract_layers_for_reset(layer_indices)
+                                        # Extract the first result (Ray worker group returns a list)
+                                        ref_layer_state_dict = ref_layer_state_dict_result[0] if isinstance(ref_layer_state_dict_result, list) else ref_layer_state_dict_result
+                                        print(f"[LAYER_RESET_DEBUG] Reference layers extracted successfully (type: {type(ref_layer_state_dict)}, keys: {len(ref_layer_state_dict) if isinstance(ref_layer_state_dict, dict) else 'N/A'})")
+                                    else:
+                                        ref_layer_state_dict = {}
+                                        layer_indices = []
+                                    
+                                    # Reset actor layers with pre-extracted reference
+                                    if self.layer_reset_manager.reset_actor:
+                                        print(f"[LAYER_RESET_DEBUG] Resetting actor layers...")
+                                        self.actor_rollout_wg.reset_layers_with_ref_dict(self.layer_reset_manager, ref_layer_state_dict)
+                                        print(f"[LAYER_RESET_DEBUG] Actor layers reset completed at step {self.global_steps}")
+                                    
+                                    # Reset critic layers with same pre-extracted reference
+                                    if self.layer_reset_manager.reset_critic and self.use_critic:
+                                        print(f"[LAYER_RESET_DEBUG] Resetting critic layers...")
+                                        self.critic_wg.reset_layers_with_ref_dict(self.layer_reset_manager, ref_layer_state_dict)
+                                        print(f"[LAYER_RESET_DEBUG] Critic layers reset completed at step {self.global_steps}")
+                                    
+                                    print(f"[LAYER_RESET_DEBUG] *** LAYER RESET COMPLETED at global step {self.global_steps} (CURRICULUM) ***")
+
                             # update kl control
                             if self.use_reference_policy and 'kl_mean' in metrics:
                                 self.kl_ctrl.update(metrics['kl_mean'], n_steps=1)
@@ -1310,6 +1387,71 @@ class RayPPOTrainer(object):
                 logger.log(data=metrics, step=self.global_steps)
 
                 self.global_steps += 1
+
+                # Check for layer reset at specified global steps
+                print(f"[LAYER_RESET_DEBUG] ===== STEP {self.global_steps}: CHECKING LAYER RESET =====")
+                print(f"[LAYER_RESET_DEBUG] LayerResetManager exists: {hasattr(self, 'layer_reset_manager')}")
+                if hasattr(self, 'layer_reset_manager'):
+                    print(f"[LAYER_RESET_DEBUG] LayerResetManager.enable_reset: {self.layer_reset_manager.enable_reset}")
+                    print(f"[LAYER_RESET_DEBUG] LayerResetManager.reset_steps: {self.layer_reset_manager.reset_steps}")
+                    print(f"[LAYER_RESET_DEBUG] Current global_step: {self.global_steps}")
+                    print(f"[LAYER_RESET_DEBUG] Is global_step in reset_steps: {self.global_steps in self.layer_reset_manager.reset_steps}")
+                    should_reset = self.layer_reset_manager.should_reset(self.global_steps)
+                    print(f"[LAYER_RESET_DEBUG] should_reset() returned: {should_reset}")
+                else:
+                    print(f"[LAYER_RESET_DEBUG] ERROR: LayerResetManager not found!")
+                    should_reset = False
+                
+                if should_reset:
+                    with _timer('layer_reset', timing_raw):
+                        print(f"[LAYER_RESET_DEBUG] *** PERFORMING LAYER RESET at global step {self.global_steps} ***")
+                        
+                        # Get reference worker for memory-efficient layer extraction
+                        ref_worker = None
+                        if hasattr(self, 'ref_policy_wg') and self.use_reference_policy:
+                            # Use the dedicated reference policy worker
+                            ref_worker = self.ref_policy_wg
+                            print(f"[LAYER_RESET_DEBUG] Using ref_policy_wg as reference worker")
+                        elif hasattr(self, 'actor_rollout_wg'):
+                            # Fallback to actor_rollout_wg (contains reference model)
+                            ref_worker = self.actor_rollout_wg
+                            print(f"[LAYER_RESET_DEBUG] Using actor_rollout_wg as reference worker (fallback)")
+                        
+                        # Extract reference layers first to avoid Ray deadlock
+                        print(f"[LAYER_RESET_DEBUG] Pre-extracting reference layers to avoid Ray deadlock...")
+                        
+                        # Get layer indices that will be reset
+                        if self.layer_reset_manager.reset_actor:
+                            # Get transformer layers count from actor worker (via Ray call)
+                            total_layers_list = self.actor_rollout_wg.get_transformer_layer_count()
+                            # Extract the first result (all workers should have same layer count)
+                            total_layers = total_layers_list[0] if isinstance(total_layers_list, list) else total_layers_list
+                            print(f"[LAYER_RESET_DEBUG] Total transformer layers: {total_layers}")
+                            layer_indices = self.layer_reset_manager.get_layer_indices_to_reset(total_layers)
+                            print(f"[LAYER_RESET_DEBUG] Will reset layers: {layer_indices}")
+                            
+                            # Extract reference layers once, outside of worker calls
+                            ref_layer_state_dict_result = ref_worker.extract_layers_for_reset(layer_indices)
+                            # Extract the first result (Ray worker group returns a list)
+                            ref_layer_state_dict = ref_layer_state_dict_result[0] if isinstance(ref_layer_state_dict_result, list) else ref_layer_state_dict_result
+                            print(f"[LAYER_RESET_DEBUG] Reference layers extracted successfully (type: {type(ref_layer_state_dict)}, keys: {len(ref_layer_state_dict) if isinstance(ref_layer_state_dict, dict) else 'N/A'})")
+                        else:
+                            ref_layer_state_dict = {}
+                            layer_indices = []
+                        
+                        # Reset actor layers with pre-extracted reference
+                        if self.layer_reset_manager.reset_actor:
+                            print(f"[LAYER_RESET_DEBUG] Resetting actor layers...")
+                            self.actor_rollout_wg.reset_layers_with_ref_dict(self.layer_reset_manager, ref_layer_state_dict)
+                            print(f"[LAYER_RESET_DEBUG] Actor layers reset completed at step {self.global_steps}")
+                        
+                        # Reset critic layers with same pre-extracted reference
+                        if self.layer_reset_manager.reset_critic and self.use_critic:
+                            print(f"[LAYER_RESET_DEBUG] Resetting critic layers...")
+                            self.critic_wg.reset_layers_with_ref_dict(self.layer_reset_manager, ref_layer_state_dict)
+                            print(f"[LAYER_RESET_DEBUG] Critic layers reset completed at step {self.global_steps}")
+                        
+                        print(f"[LAYER_RESET_DEBUG] *** LAYER RESET COMPLETED at global step {self.global_steps} ***")
 
                 if self.global_steps >= self.total_training_steps:
 

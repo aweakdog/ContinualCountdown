@@ -102,14 +102,7 @@ class DataParallelPPOActor(BasePPOActor):
         self.ulysses_sequence_parallel_size = self.config.ulysses_sequence_parallel_size
         self.use_ulysses_sp = self.ulysses_sequence_parallel_size > 1
         
-        self._redo_step = 0
-        self.redo_enabled = getattr(self.config, 'redo_enabled', False)
-        self.redo_metric_freq = getattr(self.config, 'redo_metric_freq', 1)
-        self.redo_reset_freq = getattr(self.config, 'redo_reset_freq', 1000)
-        self.redo_mode = getattr(self.config, 'redo_mode', 'threshold')
         self.redo_tau = getattr(self.config, 'redo_tau', 0.3)
-        print(f'[DEBUG][Actor] ReDo config: enabled={self.redo_enabled}, metric_freq={self.redo_metric_freq}, '
-              f'reset_freq={self.redo_reset_freq}, mode={self.redo_mode}, tau={self.redo_tau}')
 
         self.optim_config = None
         if hasattr(self.config, 'optim'):
@@ -403,6 +396,8 @@ class DataParallelPPOActor(BasePPOActor):
         should_analyze_fisher = (self.fisher_info_analyzer is not None and 
                                self.global_steps % self.fisher_analysis_freq == 0)
         
+        should_analyze_gradients = False
+        should_analyze_fisher = False
         # Legacy variable for backward compatibility
         run_fisher_analysis = should_analyze_fisher
         

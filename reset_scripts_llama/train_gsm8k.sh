@@ -3,7 +3,7 @@
 # GSM8K PPO RLHF training script for llama2.5-3B (FSDP + vLLM rollout)
 # Single-phase training on data/gsm8k/{train,test}.parquet
 
-SFT_CHECKPOINT=${SFT_CHECKPOINT:-global_step_0}
+SFT_CHECKPOINT=${SFT_CHECKPOINT:-global_step_0_instruct}
 
 # Safety for git in shared mounts
 if ! git config --global --get-all safe.directory | grep -q "."; then

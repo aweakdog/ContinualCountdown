@@ -3,7 +3,7 @@
 # GSM8K PPO RLHF training script for Qwen2.5-3B (FSDP + vLLM rollout)
 # Single-phase training on data/gsm8k/{train,test}.parquet
 
-SFT_CHECKPOINT=${SFT_CHECKPOINT:-global_step_10}
+SFT_CHECKPOINT=${SFT_CHECKPOINT:-global_step_20}
 
 # Safety for git in shared mounts
 if ! git config --global --get-all safe.directory | grep -q "."; then

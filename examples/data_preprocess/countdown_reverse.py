@@ -2,6 +2,8 @@ import random
 from copy import deepcopy
 from .countdown_utils import combine_nums, sum_heuristic, mult_heuristic, great_prune, mult_prune
 import math
+import re as regex_module
+
 class Node:
     def __init__(self, operator, left=None, right=None, value=None):   
         self.operator = operator
@@ -14,7 +16,28 @@ class Node:
             return 
         return self.left.operator is None and self.right.operator is None
             
-
+def multi_split(text, seps):
+    result = []
+    start = 0
+    while start < len(text):
+        # 查找最近的分隔符位置
+        min_index = float('inf')
+        for sep in seps:
+            index = text.find(sep, start)
+            if index != -1 and index < min_index:
+                min_index = index
+                found_sep = sep
+        
+        # 未找到分隔符时添加剩余部分
+        if min_index == float('inf'):
+            result.append(text[start:])
+            break
+        
+        # 添加分隔符前的部分
+        result.append(text[start:min_index])
+        start = min_index + len(found_sep)  # 跳过分隔符长度
+    
+    return result
 
 class CountDownReverse(object):
     def __init__(self, max_target=24, start_size=4, min_target=10, max_internal_value=1000, candidate_operators=None, neccessary_operators=None, other_groups=None, distinct=False, one_limit_prob=0.1):
@@ -22,7 +45,7 @@ class CountDownReverse(object):
         self.min_target = min_target
         self.max_internal_value = max_internal_value
         self.start_size = start_size
-        self.candidate_operators = candidate_operators if candidate_operators is not None else ["+", "-", "*", "/", "%"]
+        self.candidate_operators = candidate_operators if candidate_operators is not None else ["+", "-", "*", "/", "%" ,'@']
         self.neccessary_operators = neccessary_operators if neccessary_operators is not None else []
         self.other_groups = other_groups if other_groups is not None else []
 
@@ -68,9 +91,13 @@ class CountDownReverse(object):
                             if not self.overlop(nums, target):
                                 #print("ok")
                                 full_expr = self.reconstruct_expression(nums, solution, target)
-                                # print(full_expr, target)
+                                full_expr = full_expr.replace('@', "//")
+                                for i in range(len(solution)):
+                                    solution[i] = solution[i].replace('@', "//")
+                                #print(full_expr, target)
                                 if full_expr is None:
                                     full_expr = ''
+                                print(target, nums, solution, full_expr)
                                 return target, nums, solution, full_expr
             print("Failed to generate a valid value after", cnt, "attempts.")
 
@@ -172,6 +199,16 @@ class CountDownReverse(object):
                     if self.check_single_group_overlop(new_nums, target, candidate_operators, new_neccessary_operators):
                         # print(nums[i] , "%", nums[j] , "=", nums[i]%nums[j])
                         return True
+        if '@' in candidate_operators:
+            for i in range(len(nums)):
+                for j in range(len(nums)):
+                    if (i==j) or (nums[j]==0):
+                        continue
+                    new_nums, new_neccessary_operators = self.generate_new_num_and_neccessary_operators(nums, i, j, nums[i]//nums[j], 
+                                                                             '@', remain_neccessary_operators)
+                    if self.check_single_group_overlop(new_nums, target, candidate_operators, new_neccessary_operators):
+                        # print(nums[i] , "%", nums[j] , "=", nums[i]%nums[j])
+                        return True
 
         return False
 
@@ -202,9 +239,9 @@ class CountDownReverse(object):
                 left_right, result = op_str.split('=')
             except ValueError:
                 continue
-            for op in ['+', '-', '*', '/', '%']:
+            for op in ['+', '-', '*', '/', '%', '@']:
                 if op in left_right:
-                    left, right = left_right.split(op)
+                    left, right = multi_split(left_right, op)
                     dep_map[result.strip()] = (left.strip(), op, right.strip())
                     break
         # Stepwise backward expansion: start with expr = target
@@ -216,9 +253,10 @@ class CountDownReverse(object):
                 left_right, result = op_str.split('=')
             except ValueError:
                 continue
-            for op in ['+', '-', '*', '/', '%']:
+            for op in ['+', '-', '*', '/', '%', '@']:
                 if op in left_right:
-                    left, right = left_right.split(op)
+
+                    left, right = multi_split(left_right, op)
                     parsed_steps.append((left.strip(), op, right.strip(), result.strip()))
                     break
         # Go backward through the steps
@@ -264,15 +302,15 @@ class CountDownReverse(object):
 
                 
     def generate_operation_tree(self, start_size):
-        pass_check = False
-        while not pass_check:
+        while True:
+            neccessary_operators = deepcopy(self.neccessary_operators)
             operators = random.choices(self.candidate_operators, k=start_size-1)
             operators_set = set(operators)
-            pass_check = True
-            for i in self.neccessary_operators:
-                if i not in operators_set:
-                    pass_check = False
-                    break
+            for operator in operators:
+                if operator in neccessary_operators:
+                    neccessary_operators.remove(operator)
+            if len(neccessary_operators) == 0:
+                break
             
         all_nodes: List[Node] = [Node(None) for _ in range(start_size)]
         nodes = all_nodes[:]
@@ -405,6 +443,24 @@ class CountDownReverse(object):
                 return False
             right_value = tree_node.right.value
             tree_node.value = right_value % left_value
+        elif tree_node.operator == "@":
+            quotient = self.sample_int_in_range(value_range, base)
+            # right // left = quotient
+            if (quotient == 0):
+                left_value_range = [1, self.max_internal_value]
+            else:
+                left_value_range = [1, self.max_internal_value//quotient]
+            # print("left_value_range / :", left_value_range, value_range, tree_node.operator, base, quotient)
+            if not self.fill_values(tree_node.left, left_value_range, 1):
+                return False
+            left_value = tree_node.left.value
+            right_value_range = [left_value*quotient, left_value*quotient+left_value-1]
+
+            # print("right_value_range / :", right_value_range, left_value, value_range, tree_node.operator)
+            if not self.fill_values(tree_node.right, right_value_range, 1):
+                return False
+            right_value = tree_node.right.value
+            tree_node.value = right_value // left_value
         else:
             print("Operator Error:" , tree_node.operator)
 

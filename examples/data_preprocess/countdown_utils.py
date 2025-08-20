@@ -7,7 +7,7 @@ import json
 def combine_nums(a, b, operators=None):
     # Use specified operators or default to all
     if operators is None:
-        operators = ["+", "-", "*", "/", "%"]
+        operators = ["+", "-", "*", "/", "%", "@"]
     
     a = int(a)
     b = int(b)
@@ -33,7 +33,9 @@ def combine_nums(a, b, operators=None):
     if "%" in operators:
         if a != 0:
             possible.append([b%a, f"{b}%{a}={b%a}"])
-
+    if "@" in operators:
+        if a != 0:
+            possible.append([b//a, f"{b}@{a}={b//a}"])
     return possible
 
 class CountdownNode:

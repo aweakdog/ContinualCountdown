@@ -396,8 +396,8 @@ class DataParallelPPOActor(BasePPOActor):
         should_analyze_fisher = (self.fisher_info_analyzer is not None and 
                                self.global_steps % self.fisher_analysis_freq == 0)
         
-        should_analyze_gradients = False
-        should_analyze_fisher = False
+        #should_analyze_gradients = False
+        #should_analyze_fisher = False
         # Legacy variable for backward compatibility
         run_fisher_analysis = should_analyze_fisher
         

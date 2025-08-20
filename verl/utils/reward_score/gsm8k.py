@@ -13,21 +13,33 @@
 # limitations under the License.
 
 import re
+import random
 
 
 def extract_solution(solution_str, method='strict'):
     assert method in ['strict', 'flexible']
 
+    # Heuristic: strip any prompt/example block by starting from the last marker
+    # commonly present in our prompts (Q:, A:, or the bridge sentence)
+    text = solution_str if solution_str is not None else ""
+    markers = ["\nQ:", "\nA:", "Now solve the following question"]
+    last_idx = -1
+    for m in markers:
+        idx = text.rfind(m)
+        if idx > last_idx:
+            last_idx = idx
+    if last_idx != -1:
+        text = text[last_idx:]
+
     if method == 'strict':
-        # this also tests the formatting of the model
-        solution = re.search("#### (\\-?[0-9\\.\\,]+)", solution_str)
-        if solution is None:
+        # Use the LAST occurrence of a formatted answer within the stripped text
+        matches = re.findall(r"#### (\-?[0-9\.,]+)", text)
+        if len(matches) == 0:
             final_answer = None
         else:
-            final_answer = solution.group(0)
-            final_answer = final_answer.split('#### ')[1].replace(',', '').replace('$', '')
+            final_answer = matches[-1].replace(',', '').replace('$', '')
     elif method == 'flexible':
-        answer = re.findall("(\\-?[0-9\\.\\,]+)", solution_str)
+        answer = re.findall("(\\-?[0-9\\.\\,]+)", text)
         final_answer = None
         if len(answer) == 0:
             # no reward is there is no answer
@@ -54,6 +66,12 @@ def compute_score(solution_str, ground_truth, method='strict', format_score=0., 
         score: the score for the correct answer
     """
     answer = extract_solution(solution_str=solution_str, method=method)
+    do_print = random.randint(1, 64) == 1
+    if do_print:
+        print(f"--------------------------------")
+        print(f"Ground truth: {ground_truth}")
+        print(f"Extracted answer: {answer}")
+        print(f"Solution string: {solution_str}")
     if answer is None:
         return 0
     else:

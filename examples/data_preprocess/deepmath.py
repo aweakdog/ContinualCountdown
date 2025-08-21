@@ -238,9 +238,9 @@ if __name__ == '__main__':
     print(f"Filter rate: {filtered_samples/original_size*100:.2f}%")
 
     # Create test dataset by splitting from train (DeepMath doesn't have separate test set)
-    # Use fixed 1025 samples for test, rest for train
+    # Use fixed 1024 samples for test, rest for train
     total_samples_after_filter = len(train_dataset)
-    test_size = min(1025, total_samples_after_filter)  # At most 1025 samples for test
+    test_size = min(1024, total_samples_after_filter)  # At most 1025 samples for test
     train_size = total_samples_after_filter - test_size
     
     test_dataset = train_dataset.select(range(test_size))

@@ -160,12 +160,12 @@ CONSTRAINT_FUNCTIONS = {
 }
 
 
-def compute_score(response: str, ground_truth: str) -> float:
+def compute_score(solution_str: str, ground_truth: str) -> float:
     """
     Compute IFeval score for a response given ground truth constraints.
     
     Args:
-        response: The model's response text
+        solution_str: The model's response text
         ground_truth: JSON string containing constraint information
         
     Returns:
@@ -187,7 +187,7 @@ def compute_score(response: str, ground_truth: str) -> float:
             return 0.0
         
         # Validate the response
-        is_valid = validation_func(response, gt_data)
+        is_valid = validation_func(solution_str, gt_data)
         score = 1.0 if is_valid else 0.0
         
         # Debug output (like DeepMath scorer)
@@ -196,7 +196,7 @@ def compute_score(response: str, ground_truth: str) -> float:
             print(f"--------------------------------")
             print(f"IFeval Constraint: {func_name}")
             print(f"Ground truth: {ground_truth}")
-            print(f"Response (first 200 chars): {response[:200]}...")
+            print(f"Response (first 200 chars): {solution_str[:200]}...")
             print(f"Validation result: {is_valid}")
             print(f"Score: {score}")
             print(f"--------------------------------")

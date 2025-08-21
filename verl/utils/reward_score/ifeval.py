@@ -12,8 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import re
 import json
+import re
 import random
 from typing import Dict, Any
 
@@ -160,40 +160,55 @@ CONSTRAINT_FUNCTIONS = {
 }
 
 
-def compute_score(solution_str, ground_truth, score=1.):
-    """The scoring function for IFeval instruction following constraints.
-
+def compute_score(response: str, ground_truth: str) -> float:
+    """
+    Compute IFeval score for a response given ground truth constraints.
+    
     Args:
-        solution_str: the solution text (model response)
-        ground_truth: the ground truth constraint specification (JSON string)
-        score: the score for satisfying the constraint
+        response: The model's response text
+        ground_truth: JSON string containing constraint information
+        
+    Returns:
+        float: 1.0 if all constraints are satisfied, 0.0 otherwise
     """
     try:
+        # Parse the ground truth JSON
+        if not ground_truth or ground_truth.strip() == "":
+            print(f"Error scoring IFeval response: Empty ground truth")
+            return 0.0
+            
         gt_data = json.loads(ground_truth)
-        func_name = gt_data.get('func_name', 'unknown')
+        func_name = gt_data.get('func_name', '')
         
+        # Get the validation function
+        validation_func = CONSTRAINT_FUNCTIONS.get(func_name)
+        if validation_func is None:
+            print(f"Error scoring IFeval response: Unknown constraint function: {func_name}")
+            return 0.0
+        
+        # Validate the response
+        is_valid = validation_func(response, gt_data)
+        score = 1.0 if is_valid else 0.0
+        
+        # Debug output (like DeepMath scorer)
         do_print = random.randint(1, 64) == 1
         if do_print:
             print(f"--------------------------------")
-            print(f"Constraint function: {func_name}")
+            print(f"IFeval Constraint: {func_name}")
             print(f"Ground truth: {ground_truth}")
-            print(f"Solution string: {solution_str[:200]}...")
+            print(f"Response (first 200 chars): {response[:200]}...")
+            print(f"Validation result: {is_valid}")
+            print(f"Score: {score}")
+            print(f"--------------------------------")
         
-        if func_name not in CONSTRAINT_FUNCTIONS:
-            if do_print:
-                print(f"Unknown constraint function: {func_name}")
-            return 0.0
+        return score
         
-        # Call the appropriate validation function
-        constraint_satisfied = CONSTRAINT_FUNCTIONS[func_name](solution_str, gt_data)
-        
-        if do_print:
-            print(f"Constraint satisfied: {constraint_satisfied}")
-        
-        return score if constraint_satisfied else 0.0
+    except json.JSONDecodeError as e:
+        print(f"Error scoring IFeval response: JSON decode error - {e}")
+        print(f"Ground truth content: '{ground_truth}'")
+        return 0.0
         
     except Exception as e:
-        do_print = random.randint(1, 16) == 1
-        if do_print:
-            print(f"Error scoring IFeval response: {e}")
+        print(f"Error scoring IFeval response: {e}")
+        print(f"Ground truth content: '{ground_truth}'")
         return 0.0

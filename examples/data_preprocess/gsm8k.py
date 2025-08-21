@@ -51,6 +51,15 @@ if __name__ == '__main__':
   --prepend_cot_examples \
   --preview_n 3
     '''
+    '''
+    python examples/data_preprocess/gsm8k.py \
+  --from_local \
+  --source main \
+  --local_json_dir ./data/gsm8k/main \
+  --local_dir ./data/gsm8k/1 \
+  --prepend_cot_examples \
+  --preview_n 3
+    '''
     parser = argparse.ArgumentParser()
     parser.add_argument('--local_dir', default='~/data/gsm8k')
     parser.add_argument('--hdfs_dir', default=None)

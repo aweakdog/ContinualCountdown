@@ -61,7 +61,7 @@ def evaluate_equation(equation_str):
     """Safely evaluate the arithmetic equation using eval() with precautions."""
     try:
         # Define a regex pattern that only allows numbers, operators, parentheses, and whitespace
-        allowed_pattern = r'^[\d+\-*/().\s]+$'
+        allowed_pattern = r'^[\d+\-*/%@().\s]+$'
         if not re.match(allowed_pattern, equation_str):
             raise ValueError("Invalid characters in equation.")
 
@@ -72,10 +72,10 @@ def evaluate_equation(equation_str):
         return None
 
 def extract_complex_expressions(s, number_of_numbers):
-    allowed_chars = set('0123456789+-*/(). ')
+    allowed_chars = set('0123456789+-*/%@(). ')
     start_chars = set('0123456789(')
     digits = set('0123456789')
-    operators = set("+-*/")
+    operators = set("+-*/%@")
     n = len(s)
     valid_exprs = []
     i = 0

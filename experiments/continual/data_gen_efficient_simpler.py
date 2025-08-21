@@ -60,44 +60,45 @@ class DataGenerator:
         self.base_dir = base_dir
         # Simplified operator groups - only 2 groups now
         self.operator_groups = [
-            # Group 0: multiplication-based operations
+            # Group 0: + and % operations
             {
                 'name': '0',
                 'distributions': [
-                    {'weight': 0.5, 'candidate': ['+', '-', '*'], 'necessary': ['+','-','*'], 'start_size': 4},
-                    {'weight': 0.25, 'candidate': ['+', '*'], 'necessary': ['+', '*'], 'start_size': 3},
-                    {'weight': 0.25, 'candidate': ['-', '*'], 'necessary': ['-', '*'], 'start_size': 3}
+                    {'weight': 0.2, 'candidate': ['+', '%'], 'necessary': ['+', '%'], 'start_size': 3},
+                    {'weight': 0.1, 'candidate': ['%'], 'necessary': ['%', '%'], 'start_size': 3},
+                    {'weight': 0.1, 'candidate': ['+'], 'necessary': ['+', '+'], 'start_size': 3},
+                    {'weight': 0.2, 'candidate': ['+', '%'], 'necessary': ['+', '%', '%'], 'start_size': 4},
+                    {'weight': 0.1, 'candidate': ['%'], 'necessary': ['%', '%', '%'], 'start_size': 4},
+                    {'weight': 0.2, 'candidate': ['+', '%'], 'necessary': ['+', '+', '%'], 'start_size': 4},
+                    {'weight': 0.1, 'candidate': ['+'], 'necessary': ['+', '+', '+'], 'start_size': 4}
                 ]
             },
-            # Group 1: division-based operations  
+            # Group 1: - and / operations
             {
                 'name': '1',
                 'distributions': [
-                    {'weight': 0.5, 'candidate': ['+', '-', '/'], 'necessary': ['+', '-', '/'], 'start_size': 4},
-                    {'weight': 0.25, 'candidate': ['+', '/'], 'necessary': ['+', '/'], 'start_size': 3},
-                    {'weight': 0.25, 'candidate': ['-', '/'], 'necessary': ['-', '/'], 'start_size': 3}
+                    {'weight': 0.2, 'candidate': ['-', '/'], 'necessary': ['-', '/'], 'start_size': 3},
+                    {'weight': 0.1, 'candidate': ['/'], 'necessary': ['/', '/'], 'start_size': 3},
+                    {'weight': 0.1, 'candidate': ['-'], 'necessary': ['-', '-'], 'start_size': 3},
+                    {'weight': 0.2, 'candidate': ['-', '/'], 'necessary': ['-', '/', '/'], 'start_size': 4},
+                    {'weight': 0.1, 'candidate': ['/'], 'necessary': ['/', '/', '/'], 'start_size': 4},
+                    {'weight': 0.2, 'candidate': ['-', '/'], 'necessary': ['-', '-', '/'], 'start_size': 4},
+                    {'weight': 0.1, 'candidate': ['-'], 'necessary': ['-', '-', '-'], 'start_size': 4}
                 ]
             },
-            # Group 2: mod-based operations  
+            # Group 2: * and @ operations
             {
                 'name': '2',
                 'distributions': [
-                    {'weight': 0.5, 'candidate': ['+', '-', '%'], 'necessary': ['+', '-', '%'], 'start_size': 4},
-                    {'weight': 0.25, 'candidate': ['+', '%'], 'necessary': ['+', '%'], 'start_size': 3},
-                    {'weight': 0.25, 'candidate': ['-', '%'], 'necessary': ['-', '%'], 'start_size': 3}
+                    {'weight': 0.2, 'candidate': ['*', '@'], 'necessary': ['*', '@'], 'start_size': 3},
+                    {'weight': 0.1, 'candidate': ['@'], 'necessary': ['@', '@'], 'start_size': 3},
+                    {'weight': 0.1, 'candidate': ['*'], 'necessary': ['*', '*'], 'start_size': 3},
+                    {'weight': 0.2, 'candidate': ['*', '@'], 'necessary': ['*', '@', '@'], 'start_size': 4},
+                    {'weight': 0.1, 'candidate': ['@'], 'necessary': ['@', '@', '@'], 'start_size': 4},
+                    {'weight': 0.2, 'candidate': ['*', '@'], 'necessary': ['*', '*', '@'], 'start_size': 4},
+                    {'weight': 0.1, 'candidate': ['*'], 'necessary': ['*', '*', '*'], 'start_size': 4}
                 ]
-            },
-            # Group 2: division-based operations  
-            #{
-            #    'name': '3',
-            #    'distributions': [
-            #        {'weight': 0.25, 'candidate': ['+', '*', '/'], 'necessary': ['+', '*', '/'], 'start_size': 4},
-            #        {'weight': 0.25, 'candidate': ['-', '*', '/'], 'necessary': ['-', '*', '/'], 'start_size': 4},
-            #        {'weight': 0.25, 'candidate': ['*', '/'], 'necessary': ['*', '/'], 'start_size': 3},
-            #        {'weight': 0.25, 'candidate': ['*', '/'], 'necessary': ['*', '/'], 'start_size': 3}
-            #    ]
-            #}
-
+            }
         ]
         self.distinct = True
         os.makedirs(base_dir, exist_ok=True)
@@ -181,7 +182,7 @@ class DataGenerator:
             
             def process_fn(example, idx):
                 # Create prompt template
-                question = make_prefix(example, operators=["+", "-", "*", "/", "%"])
+                question = make_prefix(example, operators=["+", "-", "*", "/", "%", '@'])
 
                 # Add solution and metadata
                 data = {

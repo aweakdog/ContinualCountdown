@@ -192,8 +192,8 @@ echo "Phase 1 completed after $PHASE1_REPEAT_COUNT iteration(s)"
 echo "=== PHASE 2: Training Group 1 + Group 2 (${PHASE2_REPEAT_COUNT} repetition(s)) ==="
 for ((phase2_iter=1; phase2_iter<=PHASE2_REPEAT_COUNT; phase2_iter++)); do
   echo "--- Phase 2 Iteration $phase2_iter/$PHASE2_REPEAT_COUNT ---"
-  TRAIN_FILES_STR="[\"./data/continual/1/train.parquet\", \"./data/continual/4/train.parquet\"]"
-  VAL_FILES_STR="[\"./data/continual/1/test.parquet\", \"./data/continual/4/test.parquet\"]"
+  TRAIN_FILES_STR="[\"./data/continual/1/train.parquet\", \"./data/continual/5/train.parquet\"]"
+  VAL_FILES_STR="[\"./data/continual/1/test.parquet\", \"./data/continual/5/test.parquet\"]"
   TRAIN_SAMPLE_SIZE="[2560, 2560]"  # Sample sizes for group1 and group2
   RUN_NAME="Phase2_Group1and2_Iter${phase2_iter}_SFT_${SFT_CHECKPOINT}_$(date +%Y%m%d_%H%M%S)"
   export RUN_NAME

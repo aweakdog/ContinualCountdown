@@ -3,8 +3,8 @@
 SFT_CHECKPOINT=global_step_0
 
 # Phase repetition control parameters
-export PHASE1_REPEAT_COUNT=${PHASE1_REPEAT_COUNT:-1}  # Default: run Phase 1 once
-export PHASE2_REPEAT_COUNT=${PHASE2_REPEAT_COUNT:-0}  # Default: run Phase 2 twice
+export PHASE1_REPEAT_COUNT=${PHASE1_REPEAT_COUNT:-0}  # Default: run Phase 1 once
+export PHASE2_REPEAT_COUNT=${PHASE2_REPEAT_COUNT:-1}  # Default: run Phase 2 twice
 export PHASE3_REPEAT_COUNT=${PHASE3_REPEAT_COUNT:-0}  # Default: run Phase 3 twice
 
 echo "[Phase Config] Phase 1 will run $PHASE1_REPEAT_COUNT time(s)"
@@ -36,7 +36,7 @@ echo "[GPU Config] Training will use GPUs 0-3, Analyzers will use GPUs 4-7"
 
 # Layer Reset Configuration (OPTIONAL - defaults to disabled)
 # Uncomment and modify the following lines to enable layer reset functionality:
-export LAYER_RESET_ENABLE=${LAYER_RESET_ENABLE:-true}
+export LAYER_RESET_ENABLE=${LAYER_RESET_ENABLE:-false}
 export LAYER_RESET_K_FIRST=${LAYER_RESET_K_FIRST:-0}    # Reset first 4 transformer layers
 export LAYER_RESET_K_LAST=${LAYER_RESET_K_LAST:-20}      # Reset last 2 transformer layers
 export LAYER_RESET_STEPS=${LAYER_RESET_STEPS:-"[40,80,120,150]"}  # Reset at global steps 120 and 200
@@ -192,8 +192,8 @@ echo "Phase 1 completed after $PHASE1_REPEAT_COUNT iteration(s)"
 echo "=== PHASE 2: Training Group 1 + Group 2 (${PHASE2_REPEAT_COUNT} repetition(s)) ==="
 for ((phase2_iter=1; phase2_iter<=PHASE2_REPEAT_COUNT; phase2_iter++)); do
   echo "--- Phase 2 Iteration $phase2_iter/$PHASE2_REPEAT_COUNT ---"
-  TRAIN_FILES_STR="[\"./data/continual/1/train.parquet\", \"./data/continual/2/train.parquet\"]"
-  VAL_FILES_STR="[\"./data/continual/1/test.parquet\", \"./data/continual/2/test.parquet\"]"
+  TRAIN_FILES_STR="[\"./data/continual/1/train.parquet\", \"./data/continual/5/train.parquet\"]"
+  VAL_FILES_STR="[\"./data/continual/1/test.parquet\", \"./data/continual/5/test.parquet\"]"
   TRAIN_SAMPLE_SIZE="[2560, 2560]"  # Sample sizes for group1 and group2
   RUN_NAME="Phase2_Group1and2_Iter${phase2_iter}_SFT_${SFT_CHECKPOINT}_$(date +%Y%m%d_%H%M%S)"
   export RUN_NAME

@@ -259,6 +259,15 @@ def tokenize_and_postprocess_data(prompt: str,
             input_ids = input_ids[:, :max_length]
             attention_mask = attention_mask[:, :max_length]
         elif truncation == 'error':
+            # Debug: log the problematic prompt for analysis
+            print(f"\n=== SEQUENCE LENGTH ERROR DEBUG ===")
+            print(f"sequence_length={sequence_length}, max_length={max_length}")
+            print(f"Prompt length: {len(prompt)} characters")
+            print(f"Prompt content (first 500 chars):")
+            print(repr(prompt[:500]))
+            print(f"Prompt content (last 200 chars):")
+            print(repr(prompt[-200:]))
+            print("=" * 50)
             raise NotImplementedError(f'{sequence_length=} is larger than {max_length=}')
         else:
             raise NotImplementedError(f'Unknown truncation method {truncation}')

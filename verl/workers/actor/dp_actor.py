@@ -391,10 +391,17 @@ class DataParallelPPOActor(BasePPOActor):
         metrics = {}
         
         # Check if any analysis should be performed (defined early for use in mini-batch loop)
-        should_analyze_gradients = (self.grad_analyzer is not None and 
-                                  self.global_steps % self.config.get("redo_analysis_freq", 1) == 0)
-        should_analyze_fisher = (self.fisher_info_analyzer is not None and 
-                               self.global_steps % self.fisher_analysis_freq == 0)
+        gradient_analysis_enabled = self.config.get("enable_gradient_analysis", True)
+        gradient_analysis_freq = self.config.get("gradient_analysis_freq", 1)
+        fisher_analysis_enabled = self.config.get("enable_fisher_analysis", True)
+        fisher_analysis_freq = self.config.get("fisher_analysis_freq", 1)
+        
+        should_analyze_gradients = (gradient_analysis_enabled and 
+                                  self.grad_analyzer is not None and 
+                                  self.global_steps % gradient_analysis_freq == 0)
+        should_analyze_fisher = (fisher_analysis_enabled and 
+                               self.fisher_info_analyzer is not None and 
+                               self.global_steps % fisher_analysis_freq == 0)
         
         #should_analyze_gradients = False
         #should_analyze_fisher = False

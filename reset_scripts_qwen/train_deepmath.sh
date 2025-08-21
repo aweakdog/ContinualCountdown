@@ -1,9 +1,9 @@
 #!/bin/bash
 
-# GSM8K PPO RLHF training script for llama2.5-3B (FSDP + vLLM rollout)
-# Single-phase training on data/gsm8k/{train,test}.parquet
+# DeepMath-103K PPO RLHF training script for Qwen2.5-3B (FSDP + vLLM rollout)
+# Single-phase training on data/deepmath/{train,test}.parquet
 
-SFT_CHECKPOINT=${SFT_CHECKPOINT:-global_step_0_instruct}
+SFT_CHECKPOINT=${SFT_CHECKPOINT:-global_step_0}
 
 # Safety for git in shared mounts
 if ! git config --global --get-all safe.directory | grep -q "."; then
@@ -12,15 +12,15 @@ fi
 
 # ===== Environment config =====
 export NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-all}
-export CHECKPOINT_BASE_DIR=${CHECKPOINT_BASE_DIR:-/nas/shared/sys2/yuanhangli/tmp/checkpoints/gsm8k_llama3b_ppo}
-export BASE_MODEL=${BASE_MODEL:-"/nas/shared/sys2/yuanhangli/tmp/llama_sft_model/${SFT_CHECKPOINT}"}
+export CHECKPOINT_BASE_DIR=${CHECKPOINT_BASE_DIR:-/nas/shared/sys2/yuanhangli/tmp/checkpoints/deepmath_qwen3b_ppo}
+export BASE_MODEL=${BASE_MODEL:-"/nas/shared/sys2/yuanhangli/tmp/qwen_sft_model/${SFT_CHECKPOINT}"}
 export N_GPUS=${N_GPUS:-4}
 export ROLLOUT_TP_SIZE=${ROLLOUT_TP_SIZE:-1}
 export WANDB_MODE=${WANDB_MODE:-offline}
 export VLLM_ATTENTION_BACKEND=${VLLM_ATTENTION_BACKEND:-XFORMERS}
 export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0,1,2,3,4,5,6,7}
 export NCCL_DEBUG=${NCCL_DEBUG:-INFO}
-# Known upstream bug: disable attention logging on llama2
+# Known upstream bug: disable attention logging on Qwen2
 export ATTENTION_LOGGING_ENABLED=${ATTENTION_LOGGING_ENABLED:-false}
 
 # Analyzer GPU reservation (kept for consistency)
@@ -29,7 +29,7 @@ export RAY_ANALYZER_GPU_COUNT=${RAY_ANALYZER_GPU_COUNT:-4}
 
 echo "[GPU Config] Training uses GPUs 0-3 by default; analyzers 4-7 if enabled"
 
-# ===== Layer Reset (disabled by default for GSM8K) =====
+# ===== Layer Reset (disabled by default for DeepMath) =====
 export LAYER_RESET_ENABLE=${LAYER_RESET_ENABLE:-false}
 export LAYER_RESET_K_FIRST=${LAYER_RESET_K_FIRST:-0}
 export LAYER_RESET_K_LAST=${LAYER_RESET_K_LAST:-0}
@@ -37,9 +37,9 @@ export LAYER_RESET_STEPS=${LAYER_RESET_STEPS:-"[]"}
 
 # ===== Logging setup =====
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-EXP_LOG_DIR=./llama_logs/train_gsm8k_llama3b_sft_${SFT_CHECKPOINT}
+EXP_LOG_DIR=./qwen_logs/train_deepmath_qwen3b_sft_${SFT_CHECKPOINT}
 mkdir -p "$EXP_LOG_DIR"
-cp tmp/monitor_master.sh "$EXP_LOG_DIR/"
+cp tmp/monitor_master.sh "$EXP_LOG_DIR/" 2>/dev/null || echo "Warning: monitor_master.sh not found"
 MASTER_LOG_FILE="$EXP_LOG_DIR/experiment_master.log"
 
 # Cleanup old run artifacts
@@ -62,8 +62,8 @@ if [ ! -f "$BASE_MODEL/config.json" ]; then
   exit 1
 fi
 
-# Data paths with curriculum group support (mirror countdown style)
-export DATA_ROOT=${DATA_ROOT:-./data/gsm8k}
+# Data paths with curriculum group support (mirror GSM8K style)
+export DATA_ROOT=${DATA_ROOT:-./data/deepmath}
 export GROUPS=${GROUPS:-"0"}  # comma-separated list, e.g., "0" or "0,1,2"
 
 IFS=',' read -ra GROUP_LIST <<< "$GROUPS"
@@ -74,7 +74,7 @@ for g in "${GROUP_LIST[@]}"; do
   TRAIN_FILES+=("\"${DATA_ROOT}/${g}/train.parquet\"")
   VAL_FILES+=("\"${DATA_ROOT}/${g}/test.parquet\"")
   if [ ! -f "${DATA_ROOT}/${g}/train.parquet" ] || [ ! -f "${DATA_ROOT}/${g}/test.parquet" ]; then
-    echo "[Warn] Missing parquet for group ${g} under ${DATA_ROOT}/${g}/. You can generate with:\n  python examples/data_preprocess/gsm8k.py --from_local --source main --local_dir ${DATA_ROOT}/${g}" | tee -a "$MASTER_LOG_FILE"
+    echo "[Warn] Missing parquet for group ${g} under ${DATA_ROOT}/${g}/. You can generate with:\n  python examples/data_preprocess/deepmath.py --from_local --local_dir ${DATA_ROOT}/${g} --prepend_cot_examples --max_samples 5000" | tee -a "$MASTER_LOG_FILE"
   fi
 done
 
@@ -104,10 +104,10 @@ else
   echo "[Layer Reset] Disabled" | tee -a "$MASTER_LOG_FILE"
 fi
 
-# ===== Single-phase PPO training on GSM8K =====
-RUN_NAME="GSM8K_SFT_${SFT_CHECKPOINT}_${TIMESTAMP}"
+# ===== Single-phase PPO training on DeepMath-103K =====
+RUN_NAME="DeepMath_SFT_${SFT_CHECKPOINT}_${TIMESTAMP}"
 LOG_FILE="$EXP_LOG_DIR/${RUN_NAME}.log"
-echo "Starting PPO RLHF on GSM8K with base model: $BASE_MODEL" | tee -a "$LOG_FILE" | tee -a "$MASTER_LOG_FILE"
+echo "Starting PPO RLHF on DeepMath-103K with base model: $BASE_MODEL" | tee -a "$LOG_FILE" | tee -a "$MASTER_LOG_FILE"
 echo "Train files: $TRAIN_FILES_STR" | tee -a "$LOG_FILE" | tee -a "$MASTER_LOG_FILE"
 echo "Val files:   $VAL_FILES_STR" | tee -a "$LOG_FILE" | tee -a "$MASTER_LOG_FILE"
 
@@ -152,9 +152,9 @@ python3 -m verl.trainer.main_ppo \
   critic.ppo_mini_batch_size=32 \
   critic.ppo_micro_batch_size=8 \
   ++actor_rollout_ref.actor.redo_tau=0.1 \
-  ++actor_rollout_ref.actor.enable_gradient_analysis=true \
+  ++actor_rollout_ref.actor.enable_gradient_analysis=false \
   ++actor_rollout_ref.actor.gradient_analysis_freq=1 \
-  ++actor_rollout_ref.actor.enable_fisher_analysis=true \
+  ++actor_rollout_ref.actor.enable_fisher_analysis=false \
   ++actor_rollout_ref.actor.fisher_analysis_freq=1 \
   algorithm.kl_ctrl.kl_coef=0.001 \
   trainer.logger=['wandb','console'] \
@@ -165,7 +165,7 @@ python3 -m verl.trainer.main_ppo \
   trainer.nnodes=1 \
   trainer.save_freq=1200 \
   trainer.test_freq=30 \
-  trainer.project_name=GSM8K_llama3B \
+  trainer.project_name=DeepMath_Qwen3B \
   trainer.experiment_name=$RUN_NAME \
   trainer.total_epochs=1 \
   +trainer.val_before_train=true \
@@ -178,4 +178,4 @@ python3 -m verl.trainer.main_ppo \
 ray stop
 sleep 5
 
-echo "[DONE] PPO RLHF on GSM8K completed: $RUN_NAME" | tee -a "$MASTER_LOG_FILE"
+echo "[DONE] PPO RLHF on DeepMath-103K completed: $RUN_NAME" | tee -a "$MASTER_LOG_FILE"

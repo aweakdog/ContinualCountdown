@@ -1,44 +1,70 @@
 #!/bin/bash
 
-# IFeval PPO RLHF training script for Qwen2.5-3B (FSDP + vLLM rollout)
-# Single-phase training on data/ifeval/0/{train,test}.parquet
+# ifeval-103K PPO RLHF training script for Qwen2.5-3B (FSDP + vLLM rollout)
+# Single-phase training on data/ifeval/{train,test}.parquet
 
-SFT_CHECKPOINT=${SFT_CHECKPOINT:-global_step_0_instruct}
+SFT_CHECKPOINT=${SFT_CHECKPOINT:-global_step_0}
 
-# Model configuration
-BASE_MODEL=${BASE_MODEL:-/nas/shared/sys2/yuanhangli/tmp/qwen_sft_model}
-CHECKPOINT_BASE_DIR=${CHECKPOINT_BASE_DIR:-/nas/shared/sys2/yuanhangli/tmp/qwen_ifeval_rlhf}
-
-# Training configuration
-N_GPUS=${N_GPUS:-8}
-export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
-
-# Logging configuration
-export WANDB_PROJECT=${WANDB_PROJECT:-qwen_ifeval_rlhf}
-export WANDB_RUN_NAME=${WANDB_RUN_NAME:-qwen_3b_ifeval_$(date +%Y%m%d_%H%M%S)}
-
-# Create directories
-mkdir -p "$CHECKPOINT_BASE_DIR"
-mkdir -p "./ifeval_logs"
-
-# Set log file
-MASTER_LOG_FILE="./ifeval_logs/train_ifeval_$(date +%Y%m%d_%H%M%S).log"
-
-echo "Starting IFeval RLHF training..." | tee "$MASTER_LOG_FILE"
-echo "Base model: $BASE_MODEL" | tee -a "$MASTER_LOG_FILE"
-echo "Checkpoint dir: $CHECKPOINT_BASE_DIR" | tee -a "$MASTER_LOG_FILE"
-echo "Log file: $MASTER_LOG_FILE" | tee -a "$MASTER_LOG_FILE"
-
-# Check if preprocessed data exists
-if [ ! -f "./data/ifeval/0/train.parquet" ] || [ ! -f "./data/ifeval/0/test.parquet" ]; then
-    echo "[Error] Missing IFeval parquet files. Please run preprocessing first:" | tee -a "$MASTER_LOG_FILE"
-    echo "  python examples/data_preprocess/ifeval.py --from_local --local_dir ./data/RLVR-IFeval/data --max_prompt_length 800 --output_dir ./data/ifeval/0" | tee -a "$MASTER_LOG_FILE"
-    exit 1
+# Safety for git in shared mounts
+if ! git config --global --get-all safe.directory | grep -q "."; then
+    git config --global --add safe.directory .
 fi
 
-# Data paths
+# ===== Environment config =====
+export NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-all}
+export CHECKPOINT_BASE_DIR=${CHECKPOINT_BASE_DIR:-/nas/shared/sys2/yuanhangli/tmp/checkpoints/ifeval_qwen3b_ppo}
+export BASE_MODEL=${BASE_MODEL:-"/nas/shared/sys2/yuanhangli/tmp/qwen_sft_model/${SFT_CHECKPOINT}"}
+export N_GPUS=${N_GPUS:-4}
+export ROLLOUT_TP_SIZE=${ROLLOUT_TP_SIZE:-1}
+export WANDB_MODE=${WANDB_MODE:-offline}
+export VLLM_ATTENTION_BACKEND=${VLLM_ATTENTION_BACKEND:-XFORMERS}
+export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0,1,2,3,4,5,6,7}
+export NCCL_DEBUG=${NCCL_DEBUG:-INFO}
+# Known upstream bug: disable attention logging on Qwen2
+export ATTENTION_LOGGING_ENABLED=${ATTENTION_LOGGING_ENABLED:-false}
+
+# Analyzer GPU reservation (kept for consistency)
+export RAY_ANALYZER_GPU_START=${RAY_ANALYZER_GPU_START:-4}
+export RAY_ANALYZER_GPU_COUNT=${RAY_ANALYZER_GPU_COUNT:-4}
+
+echo "[GPU Config] Training uses GPUs 0-3 by default; analyzers 4-7 if enabled"
+
+# ===== Layer Reset (disabled by default for ifeval) =====
+export LAYER_RESET_ENABLE=${LAYER_RESET_ENABLE:-false}
+export LAYER_RESET_K_FIRST=${LAYER_RESET_K_FIRST:-0}
+export LAYER_RESET_K_LAST=${LAYER_RESET_K_LAST:-0}
+export LAYER_RESET_STEPS=${LAYER_RESET_STEPS:-"[]"}
+
+# ===== Logging setup =====
+TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+EXP_LOG_DIR=./qwen_logs/train_ifeval_qwen3b_sft_${SFT_CHECKPOINT}
+mkdir -p "$EXP_LOG_DIR"
+cp tmp/monitor_master.sh "$EXP_LOG_DIR/" 2>/dev/null || echo "Warning: monitor_master.sh not found"
+MASTER_LOG_FILE="$EXP_LOG_DIR/experiment_master.log"
+
+# Cleanup old run artifacts
+rm -rf ${CHECKPOINT_BASE_DIR}
+rm -rf ./wandb/*
+
+# General runtime env
+export FSDP_GRAD_METRIC_ENABLED=${FSDP_GRAD_METRIC_ENABLED:-true}
+export PYTHONUNBUFFERED=1
+export PYTHONFAULTHANDLER=1
+export PYTHONPATH=.:$PYTHONPATH
+
+# Sanity checks
+if [ ! -d "$BASE_MODEL" ]; then
+  echo "Error: Base model directory $BASE_MODEL does not exist" | tee -a "$MASTER_LOG_FILE"
+  exit 1
+fi
+if [ ! -f "$BASE_MODEL/config.json" ]; then
+  echo "Error: No config.json found in base model ($BASE_MODEL)" | tee -a "$MASTER_LOG_FILE"
+  exit 1
+fi
+
+# Data paths with curriculum group support (mirror GSM8K style)
 export DATA_ROOT=${DATA_ROOT:-./data/ifeval}
-export GROUPS=${GROUPS:-"0"}  # comma-separated list
+export GROUPS=${GROUPS:-"0"}  # comma-separated list, e.g., "0" or "0,1,2"
 
 IFS=',' read -ra GROUP_LIST <<< "$GROUPS"
 
@@ -48,39 +74,69 @@ for g in "${GROUP_LIST[@]}"; do
   TRAIN_FILES+=("\"${DATA_ROOT}/${g}/train.parquet\"")
   VAL_FILES+=("\"${DATA_ROOT}/${g}/test.parquet\"")
   if [ ! -f "${DATA_ROOT}/${g}/train.parquet" ] || [ ! -f "${DATA_ROOT}/${g}/test.parquet" ]; then
-    echo "[Warn] Missing parquet for group ${g} under ${DATA_ROOT}/${g}/." | tee -a "$MASTER_LOG_FILE"
+    echo "[Warn] Missing parquet for group ${g} under ${DATA_ROOT}/${g}/. You can generate with:\n  python examples/data_preprocess/ifeval.py --from_local --local_dir ${DATA_ROOT}/${g} --prepend_cot_examples --max_samples 5000" | tee -a "$MASTER_LOG_FILE"
   fi
 done
 
-# Convert arrays to comma-separated strings
-TRAIN_FILES_STR=$(IFS=,; echo "${TRAIN_FILES[*]}")
-VAL_FILES_STR=$(IFS=,; echo "${VAL_FILES[*]}")
+TRAIN_FILES_STR="[${TRAIN_FILES[*]}]"
+VAL_FILES_STR="[${VAL_FILES[*]}]"
 
-echo "Training files: $TRAIN_FILES_STR" | tee -a "$MASTER_LOG_FILE"
-echo "Validation files: $VAL_FILES_STR" | tee -a "$MASTER_LOG_FILE"
+# Curriculum controls
+export CURRICULUM_LEARNING=${CURRICULUM_LEARNING:-true}
+export EPOCHS_PER_GROUP=${EPOCHS_PER_GROUP:-15}
+export TOTAL_ROUNDS=${TOTAL_ROUNDS:-1}
 
-# Run training
-python -m verl.trainer.main_ppo \
-  data.train_files=[$TRAIN_FILES_STR] \
-  data.val_files=[$VAL_FILES_STR] \
-  data.prompt_key=prompt \
-  data.response_key=response \
-  data.micro_batch_size=16 \
-  data.max_prompt_length=1024 \
-  data.max_response_length=512 \
-  actor_rollout_ref.model.path=$BASE_MODEL/$SFT_CHECKPOINT \
+# Per-group sample sizes (default 2560 each if not provided)
+if [ -z "${TRAIN_SAMPLE_SIZE}" ]; then
+  DEFAULT_SIZES=()
+  for _ in "${GROUP_LIST[@]}"; do DEFAULT_SIZES+=(2560); done
+  TRAIN_SAMPLE_SIZE_STR="[${DEFAULT_SIZES[*]}]"
+else
+  TRAIN_SAMPLE_SIZE_STR="${TRAIN_SAMPLE_SIZE}"
+fi
+
+# Build layer reset hydra args
+LAYER_RESET_CONFIG=""
+if [ "${LAYER_RESET_ENABLE}" = "true" ]; then
+  echo "[Layer Reset] Enabled k_first=${LAYER_RESET_K_FIRST}, k_last=${LAYER_RESET_K_LAST}, steps=${LAYER_RESET_STEPS}" | tee -a "$MASTER_LOG_FILE"
+  LAYER_RESET_CONFIG="++layer_reset.enable_reset=${LAYER_RESET_ENABLE} ++layer_reset.reset_k_first=${LAYER_RESET_K_FIRST} ++layer_reset.reset_k_last=${LAYER_RESET_K_LAST} ++layer_reset.reset_steps=\"${LAYER_RESET_STEPS}\""
+else
+  echo "[Layer Reset] Disabled" | tee -a "$MASTER_LOG_FILE"
+fi
+
+# ===== Single-phase PPO training on ifeval-103K =====
+RUN_NAME="ifeval_SFT_${SFT_CHECKPOINT}_${TIMESTAMP}"
+LOG_FILE="$EXP_LOG_DIR/${RUN_NAME}.log"
+echo "Starting PPO RLHF on ifeval-103K with base model: $BASE_MODEL" | tee -a "$LOG_FILE" | tee -a "$MASTER_LOG_FILE"
+echo "Train files: $TRAIN_FILES_STR" | tee -a "$LOG_FILE" | tee -a "$MASTER_LOG_FILE"
+echo "Val files:   $VAL_FILES_STR" | tee -a "$LOG_FILE" | tee -a "$MASTER_LOG_FILE"
+
+python3 -m verl.trainer.main_ppo \
+  fsdp_grad_metric_enabled=$FSDP_GRAD_METRIC_ENABLED \
+  data.train_files="$TRAIN_FILES_STR" \
+  data.val_files="$VAL_FILES_STR" \
+  data.train_batch_size=256 \
+  data.val_batch_size=256 \
+  data.max_response_length=1024 \
+  ++data.curriculum_learning=$CURRICULUM_LEARNING \
+  ++data.epochs_per_group=$EPOCHS_PER_GROUP \
+  ++data.total_rounds=$TOTAL_ROUNDS \
+  ++data.train_sample_size="$TRAIN_SAMPLE_SIZE_STR" \
+  actor_rollout_ref.model.path=$BASE_MODEL \
+  actor_rollout_ref.model.use_remove_padding=True \
+  actor_rollout_ref.actor.use_dynamic_bsz=True \
   +actor_rollout_ref.model.trust_remote_code=true \
   +actor_rollout_ref.model.torch_dtype=bfloat16 \
+  +actor_rollout_ref.model.low_cpu_mem_usage=true \
   +actor_rollout_ref.model.device_map=auto \
   +actor_rollout_ref.model.attn_implementation=flash_attention_2 \
   +actor_rollout_ref.model.use_cache=false \
   actor_rollout_ref.actor.optim.lr=1e-6 \
   actor_rollout_ref.actor.ppo_mini_batch_size=32 \
   actor_rollout_ref.actor.ppo_micro_batch_size=8 \
-  actor_rollout_ref.rollout.name=vllm \
-  actor_rollout_ref.rollout.gpu_memory_utilization=0.85 \
-  actor_rollout_ref.rollout.tensor_parallel_size=1 \
-  actor_rollout_ref.rollout.max_model_len=1536 \
+  actor_rollout_ref.rollout.log_prob_micro_batch_size=8 \
+  actor_rollout_ref.rollout.tensor_model_parallel_size=$ROLLOUT_TP_SIZE \
+  actor_rollout_ref.rollout.gpu_memory_utilization=0.6 \
   actor_rollout_ref.rollout.enforce_eager=true \
   actor_rollout_ref.rollout.free_cache_engine=false \
   actor_rollout_ref.ref.log_prob_micro_batch_size=8 \
@@ -95,6 +151,7 @@ python -m verl.trainer.main_ppo \
   +critic.model.use_cache=false \
   critic.ppo_mini_batch_size=32 \
   critic.ppo_micro_batch_size=8 \
+  ++actor_rollout_ref.actor.redo_tau=0.1 \
   ++actor_rollout_ref.actor.enable_gradient_analysis=false \
   ++actor_rollout_ref.actor.gradient_analysis_freq=1 \
   ++actor_rollout_ref.actor.enable_fisher_analysis=false \
@@ -108,11 +165,17 @@ python -m verl.trainer.main_ppo \
   trainer.nnodes=1 \
   trainer.save_freq=1200 \
   trainer.test_freq=30 \
-  trainer.total_epochs=3 \
-  trainer.max_steps=2000 \
-  reward_model.enable=true \
-  reward_model.style=rule 2>&1 | tee -a "$MASTER_LOG_FILE"
+  trainer.project_name=ifeval_Qwen3B \
+  trainer.experiment_name=$RUN_NAME \
+  trainer.total_epochs=1 \
+  +trainer.val_before_train=true \
+  ++reward_model.enable=False \
+  ++reward_model.model.path=$BASE_MODEL \
+  $LAYER_RESET_CONFIG \
+  2>&1 | tee -a "$LOG_FILE" | tee -a "$MASTER_LOG_FILE"
 
-echo "IFeval RLHF training completed!" | tee -a "$MASTER_LOG_FILE"
-echo "Results saved to: $CHECKPOINT_BASE_DIR" | tee -a "$MASTER_LOG_FILE"
-echo "Log file: $MASTER_LOG_FILE" | tee -a "$MASTER_LOG_FILE"
+# Cleanup ray between runs
+ray stop
+sleep 5
+
+echo "[DONE] PPO RLHF on ifeval-103K completed: $RUN_NAME" | tee -a "$MASTER_LOG_FILE"

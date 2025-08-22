@@ -128,11 +128,19 @@ def validate_json_format(response: str, gt_data: Dict[str, Any]) -> bool:
 
 
 def validate_title(response: str, gt_data: Dict[str, Any]) -> bool:
-    """Validate response contains a title (line starting with #)"""
+    """Validate response contains a title (markdown # or angular brackets <<title>>)"""
+    import re
+    # Check for markdown-style titles
     lines = response.split('\n')
     for line in lines:
         if line.strip().startswith('#'):
             return True
+    
+    # Check for angular bracket titles like <<title>>
+    angular_pattern = r'<<.*?>>'
+    if re.search(angular_pattern, response):
+        return True
+    
     return False
 
 
@@ -140,6 +148,148 @@ def validate_postscript(response: str, gt_data: Dict[str, Any]) -> bool:
     """Validate response contains a postscript (P.S. or PS:)"""
     response_lower = response.lower()
     return 'p.s.' in response_lower or 'ps:' in response_lower or 'postscript' in response_lower
+
+
+# Additional constraint validation functions
+def verify_bullet_points(response: str, gt_data: Dict[str, Any]) -> bool:
+    """Verify response contains bullet points"""
+    lines = response.split('\n')
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith('•') or stripped.startswith('*') or stripped.startswith('-') or stripped.startswith('◦'):
+            return True
+    return False
+
+
+def validate_end(response: str, gt_data: Dict[str, Any]) -> bool:
+    """Validate response ends with specific phrase"""
+    end_phrase = gt_data.get('end_phrase', '')
+    if not end_phrase:
+        return True
+    return response.strip().endswith(end_phrase)
+
+
+def verify_keyword_frequency(response: str, gt_data: Dict[str, Any]) -> bool:
+    """Verify keyword appears with specified frequency"""
+    keyword = gt_data.get('keyword', '')
+    frequency = gt_data.get('frequency', 1)
+    if not keyword:
+        return True
+    return response.lower().count(keyword.lower()) >= frequency
+
+
+def validate_placeholders(response: str, gt_data: Dict[str, Any]) -> bool:
+    """Validate response contains placeholders like [placeholder]"""
+    import re
+    placeholders = re.findall(r'\[.*?\]', response)
+    return len(placeholders) > 0
+
+
+def validate_choice(response: str, gt_data: Dict[str, Any]) -> bool:
+    """Validate response contains one of the specified choices"""
+    options = gt_data.get('options', [])
+    if not options:
+        return True
+    response_lower = response.lower()
+    return any(option.lower() in response_lower for option in options)
+
+
+def verify_letter_frequency(response: str, gt_data: Dict[str, Any]) -> bool:
+    """Verify specific letter appears with required frequency"""
+    letter = gt_data.get('letter', '')
+    frequency = gt_data.get('frequency', 1)
+    if not letter:
+        return True
+    return response.lower().count(letter.lower()) >= frequency
+
+
+def validate_repeat_prompt(response: str, gt_data: Dict[str, Any]) -> bool:
+    """Validate response repeats the original prompt"""
+    original_prompt = gt_data.get('original_prompt', '')
+    if not original_prompt:
+        return True
+    return original_prompt.lower() in response.lower()
+
+
+def verify_postscript(response: str, gt_data: Dict[str, Any]) -> bool:
+    """Verify response contains postscript with specific marker"""
+    postscript_marker = gt_data.get('postscript_marker', 'P.S.')
+    return postscript_marker.lower() in response.lower()
+
+
+def validate_highlighted_sections(response: str, gt_data: Dict[str, Any]) -> bool:
+    """Validate response contains highlighted sections (markdown or HTML)"""
+    import re
+    # Check for markdown bold/italic or HTML tags
+    markdown_pattern = r'\*\*.*?\*\*|\*.*?\*|__.*?__|_.*?_'
+    html_pattern = r'<[^>]+>.*?</[^>]+>'
+    return bool(re.search(markdown_pattern, response) or re.search(html_pattern, response))
+
+
+def validate_word_constraint(response: str, gt_data: Dict[str, Any]) -> bool:
+    """Validate response meets word-related constraints"""
+    word = gt_data.get('word', '')
+    if not word:
+        return True
+    return word.lower() in response.lower()
+
+
+def validate_sections(response: str, gt_data: Dict[str, Any]) -> bool:
+    """Validate response is divided into sections"""
+    section_splitter = gt_data.get('section_splitter', '\n\n')
+    sections = response.split(section_splitter)
+    return len(sections) >= 2
+
+
+def validate_paragraphs(response: str, gt_data: Dict[str, Any]) -> bool:
+    """Validate response has required number of paragraphs"""
+    N = gt_data.get('N', 1)
+    paragraphs = [p.strip() for p in response.split('\n\n') if p.strip()]
+    return len(paragraphs) >= N
+
+
+def verify_sentence_constraint(response: str, gt_data: Dict[str, Any]) -> bool:
+    """Verify sentence-level constraints"""
+    import re
+    sentences = re.split(r'[.!?]+', response)
+    sentences = [s.strip() for s in sentences if s.strip()]
+    N = gt_data.get('N', 1)
+    return len(sentences) >= N
+
+
+def validate_uppercase(response: str, gt_data: Dict[str, Any]) -> bool:
+    """Validate response is in uppercase"""
+    return response.isupper()
+
+
+def validate_frequency_capital_words(response: str, gt_data: Dict[str, Any]) -> bool:
+    """Validate frequency of capitalized words"""
+    import re
+    words = re.findall(r'\b[A-Z][a-z]*\b', response)
+    frequency = gt_data.get('frequency', 1)
+    return len(words) >= frequency
+
+
+def validate_two_responses(response: str, gt_data: Dict[str, Any]) -> bool:
+    """Validate response contains two separate responses"""
+    # Look for common separators or numbered responses
+    import re
+    separators = ['\n\n', '---', '***', 'Response 1:', 'Response 2:', '1.', '2.']
+    for sep in separators:
+        if sep in response:
+            parts = response.split(sep)
+            if len([p for p in parts if p.strip()]) >= 2:
+                return True
+    return False
+
+
+def verify_keywords(response: str, gt_data: Dict[str, Any]) -> bool:
+    """Verify response contains required keywords"""
+    keyword_list = gt_data.get('keyword_list', [])
+    if not keyword_list:
+        return True
+    response_lower = response.lower()
+    return all(keyword.lower() in response_lower for keyword in keyword_list)
 
 
 # Constraint function mapping
@@ -157,6 +307,24 @@ CONSTRAINT_FUNCTIONS = {
     'validate_json_format': validate_json_format,
     'validate_title': validate_title,
     'validate_postscript': validate_postscript,
+    # Additional constraint functions
+    'verify_bullet_points': verify_bullet_points,
+    'validate_end': validate_end,
+    'verify_keyword_frequency': verify_keyword_frequency,
+    'validate_placeholders': validate_placeholders,
+    'validate_choice': validate_choice,
+    'verify_letter_frequency': verify_letter_frequency,
+    'validate_repeat_prompt': validate_repeat_prompt,
+    'verify_postscript': verify_postscript,
+    'validate_highlighted_sections': validate_highlighted_sections,
+    'validate_word_constraint': validate_word_constraint,
+    'validate_sections': validate_sections,
+    'validate_paragraphs': validate_paragraphs,
+    'verify_sentence_constraint': verify_sentence_constraint,
+    'validate_uppercase': validate_uppercase,
+    'validate_frequency_capital_words': validate_frequency_capital_words,
+    'validate_two_responses': validate_two_responses,
+    'verify_keywords': verify_keywords,
 }
 
 
@@ -196,7 +364,22 @@ def compute_score(solution_str: str, ground_truth: str) -> float:
             print(f"--------------------------------")
             print(f"IFeval Constraint: {func_name}")
             print(f"Ground truth: {ground_truth}")
-            print(f"Response (first 200 chars): {solution_str[:200]}...")
+            
+            # Special handling for validate_repeat_prompt to show prompt vs response
+            if func_name == 'validate_repeat_prompt':
+                original_prompt = gt_data.get('original_prompt', '')
+                print(f"ORIGINAL PROMPT (should be repeated): {original_prompt}")
+                print(f"FULL MODEL RESPONSE: {solution_str}")
+                if original_prompt and solution_str.startswith(original_prompt):
+                    remaining = solution_str[len(original_prompt):]
+                    print(f"✓ REPEATED PART: {original_prompt}")
+                    print(f"✓ ADDITIONAL CONTENT: {remaining.strip()}")
+                    print(f"Validation logic: Check if original_prompt is contained in response")
+                else:
+                    print(f"Response does not start with original prompt")
+            else:
+                print(f"Full Response: {solution_str}")
+            
             print(f"Validation result: {is_valid}")
             print(f"Score: {score}")
             print(f"--------------------------------")

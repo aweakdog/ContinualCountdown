@@ -13,9 +13,11 @@ def extract_constraint_info(ground_truth_str):
     """Extract constraint validation function from ground_truth JSON string"""
     try:
         gt_data = json.loads(ground_truth_str)
-        return gt_data.get('func_name', 'unknown')
+        # Return the full JSON string for the scorer to parse
+        return ground_truth_str
     except:
-        return 'unknown'
+        # Return a default JSON structure if parsing fails
+        return '{"func_name": "unknown", "N": null}'
 
 def process_fn(example, idx, tokenizer, args, data_source):
     """Process a single IFeval example into RLHF format"""

@@ -29,7 +29,8 @@ def _select_rm_score_fn(data_source):
     elif data_source == 'zwhe99/DeepMath-103K':
         return deepmath.compute_score
     elif data_source == 'RLVR-IFeval':
-        return ifeval.compute_score
+        from verl.utils.reward_score import ifeval_official
+        return ifeval_official.compute_score
     elif "multiply" in data_source or "arithmetic" in data_source:
         return multiply.compute_score
     elif "countdown" in data_source:

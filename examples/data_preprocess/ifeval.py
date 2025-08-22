@@ -19,7 +19,7 @@ def extract_constraint_info(ground_truth_str):
         # Return a default JSON structure if parsing fails
         return '{"func_name": "unknown", "N": null}'
 
-def process_fn(example, idx, tokenizer, args, data_source):
+def process_fn(example, idx, tokenizer, args, data_source, tokenizer_path=None):
     """Process a single IFeval example into RLHF format"""
     
     # Extract the user message content
@@ -39,11 +39,28 @@ def process_fn(example, idx, tokenizer, args, data_source):
     
     # Check prompt length using chat template (same as training) and filter if too long
     messages_for_template = [{"role": "user", "content": prompt_body}]
-    prompt_with_chat_template = tokenizer.apply_chat_template(messages_for_template, tokenize=False, add_generation_prompt=True)
-    tokens = tokenizer.encode(prompt_with_chat_template, add_special_tokens=True)
+    
+    # Handle different tokenizer types and their chat templates
+    if hasattr(tokenizer, 'chat_template') and tokenizer.chat_template is not None:
+        # Use built-in chat template (Qwen, etc.)
+        prompt_with_chat_template = tokenizer.apply_chat_template(messages_for_template, tokenize=False, add_generation_prompt=True)
+    else:
+        # Manual chat template for Llama and others without built-in template
+        if tokenizer_path and "llama" in tokenizer_path.lower():
+            # Llama 3.2 chat format
+            prompt_with_chat_template = f"<|begin_of_text|><|start_header_id|>user<|end_header_id|>\n\n{prompt_body}<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n"
+        else:
+            # Generic format as fallback
+            prompt_with_chat_template = f"User: {prompt_body}\n\nAssistant: "
+    
+    # Use same tokenization as training: add_special_tokens=False
+    tokens = tokenizer.encode(prompt_with_chat_template, add_special_tokens=False)
     prompt_token_length = len(tokens)
     
-    if prompt_token_length > args.max_prompt_length:
+    # Dynamic filtering based on actual prompt length after chat template
+    # Allow up to 950 tokens for prompt, leaving ~74 tokens for generation
+    max_allowed_prompt_tokens = min(args.max_prompt_length, 950)
+    if prompt_token_length > max_allowed_prompt_tokens:
         return None
 
     # Extract ground truth constraint validation function
@@ -93,7 +110,7 @@ if __name__ == '__main__':
     # Data sampling options
     parser.add_argument('--max_samples', type=int, default=None,
                         help='Maximum number of samples to process (useful for creating smaller datasets)')
-    parser.add_argument('--max_prompt_length', type=int, default=800,
+    parser.add_argument('--max_prompt_length', type=int, default=700,
                         help='Maximum prompt length in tokens. Samples exceeding this will be filtered out. Should be lower than model max_length to account for chat template overhead.')
 
     args = parser.parse_args()
@@ -101,15 +118,15 @@ if __name__ == '__main__':
     data_source = 'RLVR-IFeval'
     
     # Initialize tokenizer for token-based length filtering
-    # Use the local Qwen tokenizer from SFT model
-    tokenizer_path = "/nas/shared/sys2/yuanhangli/tmp/qwen_sft_model/global_step_0"
+    # Use the local Llama tokenizer from SFT model
+    tokenizer_path = "/nas/shared/sys2/yuanhangli/tmp/llama_sft_model/global_step_0"
     if not os.path.exists(tokenizer_path):
         raise FileNotFoundError(f"Local tokenizer not found at {tokenizer_path}")
     
     tokenizer = AutoTokenizer.from_pretrained(tokenizer_path, trust_remote_code=True)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
-    print(f"Using local Qwen tokenizer from: {tokenizer_path}")
+    print(f"Using local tokenizer from: {tokenizer_path}")
 
     # Load dataset: from local parquet if requested; otherwise from HF Hub
     if args.from_local:
@@ -143,7 +160,7 @@ if __name__ == '__main__':
         train_dataset = train_dataset.select(range(args.max_samples))
     
     train_dataset = train_dataset.map(function=process_fn, with_indices=True, 
-                                     fn_kwargs={'tokenizer': tokenizer, 'args': args, 'data_source': data_source})
+                                     fn_kwargs={'tokenizer': tokenizer, 'args': args, 'data_source': data_source, 'tokenizer_path': tokenizer_path})
     
     # Filter out None values (filtered samples)
     train_dataset = train_dataset.filter(lambda x: x is not None)

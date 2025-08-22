@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# ifeval-103K PPO RLHF training script for Qwen2.5-3B (FSDP + vLLM rollout)
+# ifeval-103K PPO RLHF training script for llama2.5-3B (FSDP + vLLM rollout)
 # Single-phase training on data/ifeval/{train,test}.parquet
 
 SFT_CHECKPOINT=${SFT_CHECKPOINT:-global_step_0}
@@ -12,15 +12,15 @@ fi
 
 # ===== Environment config =====
 export NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-all}
-export CHECKPOINT_BASE_DIR=${CHECKPOINT_BASE_DIR:-/nas/shared/sys2/yuanhangli/tmp/checkpoints/ifeval_qwen3b_ppo}
-export BASE_MODEL=${BASE_MODEL:-"/nas/shared/sys2/yuanhangli/tmp/qwen_sft_model/${SFT_CHECKPOINT}"}
+export CHECKPOINT_BASE_DIR=${CHECKPOINT_BASE_DIR:-/nas/shared/sys2/yuanhangli/tmp/checkpoints/ifeval_llama3b_ppo}
+export BASE_MODEL=${BASE_MODEL:-"/nas/shared/sys2/yuanhangli/tmp/llama_sft_model/${SFT_CHECKPOINT}"}
 export N_GPUS=${N_GPUS:-4}
 export ROLLOUT_TP_SIZE=${ROLLOUT_TP_SIZE:-1}
 export WANDB_MODE=${WANDB_MODE:-offline}
 export VLLM_ATTENTION_BACKEND=${VLLM_ATTENTION_BACKEND:-XFORMERS}
 export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0,1,2,3,4,5,6,7}
 export NCCL_DEBUG=${NCCL_DEBUG:-INFO}
-# Known upstream bug: disable attention logging on Qwen2
+# Known upstream bug: disable attention logging on llama2
 export ATTENTION_LOGGING_ENABLED=${ATTENTION_LOGGING_ENABLED:-false}
 
 # Analyzer GPU reservation (kept for consistency)
@@ -37,7 +37,7 @@ export LAYER_RESET_STEPS=${LAYER_RESET_STEPS:-"[]"}
 
 # ===== Logging setup =====
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-EXP_LOG_DIR=./qwen_logs/train_ifeval_qwen3b_sft_${SFT_CHECKPOINT}
+EXP_LOG_DIR=./llama_logs/train_ifeval_llama3b_sft_${SFT_CHECKPOINT}
 mkdir -p "$EXP_LOG_DIR"
 cp tmp/monitor_master.sh "$EXP_LOG_DIR/" 2>/dev/null || echo "Warning: monitor_master.sh not found"
 MASTER_LOG_FILE="$EXP_LOG_DIR/experiment_master.log"
@@ -165,7 +165,7 @@ python3 -m verl.trainer.main_ppo \
   trainer.nnodes=1 \
   trainer.save_freq=1200 \
   trainer.test_freq=30 \
-  trainer.project_name=ifeval_Qwen3B \
+  trainer.project_name=ifeval_llama3B \
   trainer.experiment_name=$RUN_NAME \
   trainer.total_epochs=1 \
   +trainer.val_before_train=true \

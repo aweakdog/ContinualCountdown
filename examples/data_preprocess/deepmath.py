@@ -132,7 +132,7 @@ if __name__ == '__main__':
     # Template support
     parser.add_argument('--template_type', default='all', choices=['base', 'qwen-instruct', 'llama-instruct', 'all'],
                         help='Template type to generate. "all" generates all templates in the same dataset')
-    parser.add_argument('--model_type', default='single', choices=['base', 'qwen', 'llama', 'all', 'single'],
+    parser.add_argument('--model_type', default='all', choices=['base', 'qwen', 'llama', 'all', 'single'],
                         help='Model type for directory structure. "all" generates separate datasets for each template')
     parser.add_argument('--tokenizer_path', default=None,
                         help='Path to tokenizer for length filtering. If not set, uses default paths based on template')
@@ -265,13 +265,16 @@ def process_single_model_type(args, data_source):
         if not valid_templates:
             return None
         
-        # Keep backward compatibility with single prompt field for non-all modes
+        # Set unified prompt field for consistency with other datasets
         if args.template_type != 'all':
-            if f"prompt_{args.template_type.replace('-', '_')}" in data:
-                data["prompt"] = [{
-                    "role": "user",
-                    "content": data[f"prompt_{args.template_type.replace('-', '_')}"],
-                }]
+            # For single template mode, use the template-specific prompt as string
+            template_key = f"prompt_{args.template_type.replace('-', '_')}"
+            if template_key in data:
+                data["prompt"] = data[template_key]  # Use string directly, not dict format
+        else:
+            # For 'all' mode, set default prompt to llama_instruct for consistency
+            if "prompt_llama_instruct" in data:
+                data["prompt"] = data["prompt_llama_instruct"]
         
         return data
 

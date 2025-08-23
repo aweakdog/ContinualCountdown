@@ -77,11 +77,23 @@ class RewardManager():
             sequences_str = self.tokenizer.decode(sequences)
 
             # Prepare ground truth data structure for reward computation
-            ground_truth = {
-                'target': data_item.non_tensor_batch['target'],
-                'numbers': data_item.non_tensor_batch['numbers'],
-                'ground_truth': data_item.non_tensor_batch['reward_model']['ground_truth']
-            }
+            # Handle different dataset formats (countdown vs deepmath)
+            data_source = data_item.non_tensor_batch['data_source']
+            
+            if 'target' in data_item.non_tensor_batch and 'numbers' in data_item.non_tensor_batch:
+                # Countdown dataset format
+                ground_truth = {
+                    'target': data_item.non_tensor_batch['target'],
+                    'numbers': data_item.non_tensor_batch['numbers'],
+                    'ground_truth': data_item.non_tensor_batch['reward_model']['ground_truth']
+                }
+            else:
+                # Deepmath dataset format
+                ground_truth = {
+                    'question': data_item.non_tensor_batch.get('question', ''),
+                    'final_answer': data_item.non_tensor_batch.get('final_answer', ''),
+                    'ground_truth': data_item.non_tensor_batch['reward_model']['ground_truth']
+                }
 
             # select rm_score
             data_source = data_item.non_tensor_batch['data_source']

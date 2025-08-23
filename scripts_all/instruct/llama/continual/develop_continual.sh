@@ -1,12 +1,12 @@
 #!/bin/bash
 
 # Parse command line arguments
-EXPERIMENT_TYPE=${1:-train}  # Default to 'train' if no argument provided
+EXPERIMENT_TYPE=${1:-develop}  # Default to 'train' if no argument provided
 
 # Model configuration parameters
 SFT_MODEL_BASE_DIR=${SFT_MODEL_BASE_DIR:-"/nas/shared/sys2/yuanhangli/tmp"}
 SFT_MODEL_NAME=${SFT_MODEL_NAME:-"llama_instruct_sft_model"}
-SFT_CHECKPOINT=${SFT_CHECKPOINT:-"global_step_0"}
+SFT_CHECKPOINT=${SFT_CHECKPOINT:-"global_step_5"}
 
 echo "[Experiment Type] Using type: $EXPERIMENT_TYPE"
 echo "[Model Config] SFT model base directory: $SFT_MODEL_BASE_DIR"
@@ -225,10 +225,10 @@ echo "Experiment 1 completed after $EXP1_REPEAT_COUNT iteration(s)"
 echo "=== EXPERIMENT 2: Training Group 1 + Group 2 (${EXP2_REPEAT_COUNT} repetition(s)) ==="
 for ((exp2_iter=1; exp2_iter<=EXP2_REPEAT_COUNT; exp2_iter++)); do
   echo "--- Experiment 2 Iteration $exp2_iter/$EXP2_REPEAT_COUNT ---"
-  TRAIN_FILES_STR="[\"./data/llama_instruct/deepmath/train.parquet\", \"./data/llama_instruct/deepmath/train.parquet\"]"
-  VAL_FILES_STR="[\"./data/llama_instruct/deepmath/test.parquet\", \"./data/llama_instruct/deepmath/test.parquet\"]"
-  #TRAIN_SAMPLE_SIZE="[2560, 2560]"
-  TRAIN_SAMPLE_SIZE="[512, 512]"
+  TRAIN_FILES_STR="[\"./data/llama_instruct/group_1/train.parquet\", \"./data/llama_instruct/deepmath/train.parquet\"]"
+  VAL_FILES_STR="[\"./data/llama_instruct/group_1/test.parquet\", \"./data/llama_instruct/deepmath/test.parquet\"]"
+  TRAIN_SAMPLE_SIZE="[2560, 2560]"
+  #TRAIN_SAMPLE_SIZE="[512, 512]"
   RUN_NAME="Exp2_Group1and2_Iter${exp2_iter}_SFT_${SFT_CHECKPOINT}_$(date +%Y%m%d_%H%M%S)"
   export RUN_NAME
   LOG_FILE="$EXP_LOG_DIR/${RUN_NAME}.log"
@@ -246,7 +246,7 @@ python3 -m verl.trainer.main_ppo \
   data.val_batch_size=256 \
   data.max_response_length=1024 \
   ++data.curriculum_learning=true \
-  ++data.epochs_per_group=1 \
+  ++data.epochs_per_group=15 \
   ++data.total_rounds=1 \
   ++data.train_sample_size="$TRAIN_SAMPLE_SIZE" \
   actor_rollout_ref.model.path=$BASE_MODEL \

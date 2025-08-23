@@ -131,11 +131,11 @@ def evaluate_step_by_step(expression_str):
 
 
 def generate_incorrect_solutions(source_numbers, target_num, num_incorrect=3):
-    """Generate incorrect solutions with step-by-step reasoning using source numbers and random operators."""
+    """Generate incorrect solutions with complex expressions similar to correct solutions."""
     incorrect_solutions = []
     operators = ['+', '-', '*']
     
-    # Try to generate different incorrect solutions
+    # Try to generate different incorrect solutions with complex expressions
     attempts = 0
     max_attempts = 50
     
@@ -146,56 +146,70 @@ def generate_incorrect_solutions(source_numbers, target_num, num_incorrect=3):
         nums = source_numbers.copy()
         random.shuffle(nums)
         
-        # Generate random operators for the expression
-        if len(nums) >= 2:
-            # For simplicity, create expressions with 2-4 numbers
-            expr_length = min(len(nums), random.randint(4, 4))
-            selected_nums = nums[:expr_length]
+        if len(nums) >= 4:
+            # Generate complex expressions similar to correct solutions
+            # Pattern 1: (a op b) op (c op d)
+            # Pattern 2: ((a op b) op c) op d
+            # Pattern 3: a op ((b op c) op d)
             
-            # Generate random operators between numbers
-            selected_ops = [random.choice(operators) for _ in range(expr_length - 1)]
+            pattern = random.choice([1, 2, 3])
+            ops = [random.choice(operators) for _ in range(3)]
             
-            # Build expression string
-            expr_parts = []
-            for i, num in enumerate(selected_nums):
-                expr_parts.append(str(num))
-                if i < len(selected_ops):
-                    expr_parts.append(selected_ops[i])
+            if pattern == 1:
+                # (a op b) op (c op d)
+                expr_str = f"({nums[0]} {ops[0]} {nums[1]}) {ops[1]} ({nums[2]} {ops[2]} {nums[3]})"
+            elif pattern == 2:
+                # ((a op b) op c) op d
+                expr_str = f"(({nums[0]} {ops[0]} {nums[1]}) {ops[1]} {nums[2]}) {ops[2]} {nums[3]}"
+            else:
+                # a op ((b op c) op d)
+                expr_str = f"{nums[0]} {ops[0]} (({nums[1]} {ops[1]} {nums[2]}) {ops[2]} {nums[3]})"
+        
+        elif len(nums) >= 3:
+            # For 3 numbers: a op (b op c) or (a op b) op c
+            ops = [random.choice(operators) for _ in range(2)]
+            if random.choice([True, False]):
+                expr_str = f"{nums[0]} {ops[0]} ({nums[1]} {ops[1]} {nums[2]})"
+            else:
+                expr_str = f"({nums[0]} {ops[0]} {nums[1]}) {ops[1]} {nums[2]}"
+        
+        else:
+            # Fallback for 2 numbers
+            op = random.choice(operators)
+            expr_str = f"{nums[0]} {op} {nums[1]}"
+        
+        try:
+            # Get step-by-step evaluation
+            steps, result = evaluate_step_by_step(expr_str)
             
-            expr_str = ' '.join(expr_parts)
-            
-            try:
-                # Get step-by-step evaluation
-                steps, result = evaluate_step_by_step(expr_str)
-                
-                # Only add if result is different from target and is a reasonable number
-                if result != target_num and isinstance(result, (int, float)) and -1000 < result < 1000:
-                    # Create step-by-step solution string
-                    if len(steps) > 1:
-                        # Extract intermediate steps, avoiding trivial final steps
-                        intermediate_steps = []
-                        for step in steps:
-                            parts = step.split(' = ')
-                            if len(parts) >= 2:
-                                intermediate_steps.append(parts[1])
-                        
-                        # Remove the last step if it's trivial (same as result)
-                        if intermediate_steps and intermediate_steps[-1] == str(result):
-                            intermediate_steps = intermediate_steps[:-1]
-                        
-                        if intermediate_steps:
-                            step_by_step = ' = '.join(intermediate_steps)
-                            bad_solution = f"{expr_str} = {step_by_step} = {result}"
-                        else:
-                            bad_solution = f"{expr_str} = {result}"
+            # Only add if result is different from target and is a reasonable number
+            if result != target_num and isinstance(result, (int, float)) and -1000 < result < 1000:
+                # Create step-by-step solution string
+                if len(steps) > 1:
+                    # Extract intermediate steps, avoiding trivial final steps
+                    intermediate_steps = []
+                    for step in steps:
+                        parts = step.split(' = ')
+                        if len(parts) >= 2:
+                            intermediate_steps.append(parts[1])
+                    
+                    # Remove the last step if it's trivial (same as result)
+                    if intermediate_steps and intermediate_steps[-1] == str(result):
+                        intermediate_steps = intermediate_steps[:-1]
+                    
+                    if intermediate_steps:
+                        step_by_step = ' = '.join(intermediate_steps)
+                        bad_solution = f"{expr_str} = {step_by_step} = {result}"
                     else:
                         bad_solution = f"{expr_str} = {result}"
-                    
-                    if bad_solution not in incorrect_solutions:
-                        incorrect_solutions.append(bad_solution)
-            except:
-                # Skip invalid expressions
-                continue
+                else:
+                    bad_solution = f"{expr_str} = {result}"
+                
+                if bad_solution not in incorrect_solutions:
+                    incorrect_solutions.append(bad_solution)
+        except:
+            # Skip invalid expressions
+            continue
     
     # If we couldn't generate enough, pad with simple incorrect ones
     while len(incorrect_solutions) < num_incorrect:
@@ -226,16 +240,43 @@ def generate_incorrect_solutions(source_numbers, target_num, num_incorrect=3):
 def make_prefix(dp, operators, template_type='base'):
     target = dp['target']
     numbers = dp['nums']
+    user_message = f"Using the numbers {numbers}, create an equation that equals {target}. You can use basic arithmetic operations ({', '.join(operators)}) and each number should be used exactly once. Show your work in <think> </think> tags. And return the final answer in <answer> </answer> tags, for example <answer> (1 + 2) / 3 </answer>."
+    
     if template_type == 'base':
-        prefix = f"""A conversation between User and Assistant. The user asks a question, and the Assistant solves it. The assistant first thinks about the reasoning process in the mind and then provides the user with the answer.\nUser: Using the numbers {numbers}, create an equation that equals {target}. You can use basic arithmetic operations ({', '.join(operators)}) and each number should be used exactly once. Show your work in <think> </think> tags. And return the final answer in <answer> </answer> tags, for example <answer> (1 + 2) / 3 </answer>.\nAssistant: Let me solve this step by step.\n<think>"""
+        prefix = f"""A conversation between User and Assistant. The user asks a question, and the Assistant solves it. The assistant first thinks about the reasoning process in the mind and then provides the user with the answer.\nUser: {user_message}\nAssistant: Let me solve this step by step.\n<think>"""
     elif template_type == 'qwen-instruct':
-        prefix = f"""Assistant\nYou are a helpful assistant. You first thinks about the reasoning process in the mind and then provides the user with the answer. \nUser\n Using the numbers {numbers}, create an equation that equals {target}. You can use basic arithmetic operations ({', '.join(operators)}) and each number should be used exactly once. Show your work in <think> </think> tags. And return the final answer in <answer> </answer> tags, for example <answer> (1 + 2) / 3 </answer>.\nAssistant\nLet me solve this step by step.\n<think>"""
+        # Qwen2.5-Instruct format: <|im_start|>system\n...<|im_end|>\n<|im_start|>user\n...<|im_end|>\n<|im_start|>assistant\n
+        prefix = f"""<|im_start|>system
+You are a helpful assistant. You first think about the reasoning process in the mind and then provide the user with the answer.<|im_end|>
+<|im_start|>user
+{user_message}<|im_end|>
+<|im_start|>assistant
+Let me solve this step by step.
+<think>"""
+    elif template_type == 'llama-instruct':
+        # Llama3.2-Instruct format: <|begin_of_text|><|start_header_id|>system<|end_header_id|>\n...<|eot_id|><|start_header_id|>user<|end_header_id|>\n...<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n
+        prefix = f"""<|begin_of_text|><|start_header_id|>system<|end_header_id|>
+
+You are a helpful assistant. You first think about the reasoning process in the mind and then provide the user with the answer.<|eot_id|><|start_header_id|>user<|end_header_id|>
+
+{user_message}<|eot_id|><|start_header_id|>assistant<|end_header_id|>
+
+Let me solve this step by step.
+<think>"""
     return prefix
 
 
 class SFTDataGenerator:
-    def __init__(self, base_dir: str = "./data/continual/sft/0"):
+    def __init__(self, base_dir: str = "./data/continual/sft/0", model_type: str = "base"):
         self.base_dir = base_dir
+        self.model_type = model_type
+        # Map model_type to template_type
+        template_mapping = {
+            'llama': 'llama-instruct',
+            'qwen': 'qwen-instruct', 
+            'base': 'base'
+        }
+        self.template_type = template_mapping.get(model_type, 'base')
         # Group 0 operator configurations with exact proportions
         self.operator_configs = [
             {
@@ -329,12 +370,21 @@ class SFTDataGenerator:
         test_samples = generate_samples(test_size, seed_offset=100)
 
         def create_dataset(samples, split: str) -> Dataset:
-            # Only keep prompt/response in the final dataset
+            # Create datasets for all template types
             data = {
-                "prompt": [],
-                "response": []
+                "prompt": [],  # Unified field for default template
+                "response": [],  # Unified field for response
+                "prompt_base": [],
+                "response_base": [],
+                "prompt_qwen_instruct": [],
+                "response_qwen_instruct": [],
+                "prompt_llama_instruct": [],
+                "response_llama_instruct": [],
+                "target": [],
+                "nums": [],
+                "full_expr": []
             }
-            for s in samples:
+            for idx, s in enumerate(samples):
                 # Determine operators based on config_name
                 config_name = s.get("config_name", "plus_minus_mul_4nums")
                 if "plus_minus_mul" in config_name:
@@ -346,73 +396,78 @@ class SFTDataGenerator:
                 else:
                     operators = ["+", "-", "*"]  # fallback
                 
-                # Compose prompt/response as in process_fn, but ensure string type
-                question = make_prefix(s, operators=operators)
+                # Generate prompts for all template types
+                template_types = ['base', 'qwen-instruct', 'llama-instruct']
+                questions = {}
+                for template_type in template_types:
+                    questions[template_type] = make_prefix(s, operators=operators, template_type=template_type)
+                
                 steps = s["solution"]
                 full_expr = s.get("full_expr", None)
                 target_num = s.get("target", None)
                 source_number = s.get("nums", None)
-                # Generate incorrect solutions
-                num_incorrect = random.randint(0, 1)
-                incorrect_solutions = generate_incorrect_solutions(source_number, target_num, num_incorrect)
                 
-                # Generate step-by-step reasoning for the correct solution
+                # Generate response (same for all templates)
+                response = f"Looking at this problem, I need to use the numbers {source_number} exactly once each to create an equation that equals {target_num}.\n\n"
+                
+                # Randomly decide number of incorrect attempts (0-2)
+                import random
+                num_incorrect = random.randint(0, 2)
+                incorrect_solutions = generate_incorrect_solutions(source_number, target_num, num_incorrect=num_incorrect) if num_incorrect > 0 else []
+                
+                response += "Let me try some approaches:\n\n"
+                
+                # Add incorrect attempts
+                if incorrect_solutions:
+                    for i, incorrect in enumerate(incorrect_solutions):
+                        response += f"Attempt {i+1}: {incorrect}, Not correct. Let's try another one.\n\n"
+                
+                # Add correct solution as the final attempt
                 try:
-                    if full_expr:
-                        correct_steps, correct_result = evaluate_step_by_step(full_expr)
-                        if len(correct_steps) > 1:
-                            # Extract intermediate steps, avoiding trivial final steps
-                            intermediate_steps = []
-                            for step in correct_steps:
-                                parts = step.split(' = ')
-                                if len(parts) >= 2:
-                                    intermediate_steps.append(parts[1])
-                            
-                            # Remove the last step if it's trivial (same as target)
-                            if intermediate_steps and intermediate_steps[-1] == str(target_num):
-                                intermediate_steps = intermediate_steps[:-1]
-                            
-                            if intermediate_steps:
-                                step_by_step_correct = ' = '.join(intermediate_steps)
-                                correct_solution_text = f"{full_expr} = {step_by_step_correct} = {target_num}"
-                            else:
-                                correct_solution_text = f"{full_expr} = {target_num}"
-                        else:
-                            correct_solution_text = f"{full_expr} = {target_num}"
+                    steps_result, final_result = evaluate_step_by_step(full_expr)
+                    # Format the correct solution in the same style as incorrect ones
+                    thinking_process = " = ".join([step.split(" = ")[1] for step in steps_result if " = " in step])
+                    attempt_num = len(incorrect_solutions) + 1
+                    if thinking_process:
+                        response += f"Attempt {attempt_num}: {full_expr} = {thinking_process} Correct!\n"
                     else:
-                        correct_solution_text = f"No valid solution found"
+                        response += f"Attempt {attempt_num}: {full_expr} = {final_result} Correct!\n"
                 except:
-                    correct_solution_text = f"{full_expr} = {target_num}"
+                    attempt_num = len(incorrect_solutions) + 1
+                    response += f"Attempt {attempt_num}: {full_expr} Correct!\n"
                 
-                if isinstance(steps, list):
-                    st = "\n".join(steps)
-                    # Build response with incorrect solutions first, then correct one
-                    solution_text = "One possible solution is:\n"
-                    for bad_sol in incorrect_solutions:
-                        solution_text += f"{bad_sol}, Incorrect! So Let's try next one.\n"
-                    solution_text += f"{correct_solution_text}, Correct!"
-                    
-                    response = f"Our source number is: {source_number}, and our target is {target_num}.\n{solution_text}\n</think>"
-                else:
-                    # Build response with incorrect solutions first, then correct one
-                    solution_text = "One possible solution is:\n"
-                    for bad_sol in incorrect_solutions:
-                        solution_text += f"{bad_sol}, Incorrect!\n"
-                    solution_text += f"{correct_solution_text}, Correct!"
-                    
-                    response = f"{solution_text}\n</think>"
-                if not full_expr:
-                    response += "\n<answer>None</answer>"
-                else:
-                    response += f"\n<answer>{full_expr}</answer>"
-                data["prompt"].append(str(question))
+                response += f"</think>\n\n<answer>{full_expr}</answer>"
+                
+                # Debug: print response for verification
+                if idx < 10:  # Only print first 2 samples to avoid spam
+                    print(f"\n[DEBUG] Sample {idx} Response:")
+                    print(f"Target: {target_num}, Numbers: {source_number}")
+                    print(f"Full Expression: {full_expr}")
+                    print(f"Response:\n{response}")
+                    print("=" * 60)
+                
+                # Set unified fields based on model_type
+                data["prompt"].append(str(questions[self.template_type]))
                 data["response"].append(str(response))
-            # Debug: print the first 100 prompt/response pairs
-            print(f"\n[DEBUG] First 100 {split} samples:")
-            for i in range(min(10, len(data["prompt"]))):
-                prompt = data["prompt"][i]
-                response = data["response"][i]
-                print(f"Sample {i}:\n  Prompt: {prompt[:1000]}{'...' if len(prompt)>1000 else ''}\n  Response: {response[:1000]}{'...' if len(response)>1000 else ''}\n")
+                
+                # Store all template versions for compatibility
+                data["prompt_base"].append(str(questions['base']))
+                data["response_base"].append(str(response))
+                data["prompt_qwen_instruct"].append(str(questions['qwen-instruct']))
+                data["response_qwen_instruct"].append(str(response))
+                data["prompt_llama_instruct"].append(str(questions['llama-instruct']))
+                data["response_llama_instruct"].append(str(response))
+                
+                # Store metadata
+                data["target"].append(target_num)
+                data["nums"].append(source_number)
+                data["full_expr"].append(full_expr)
+            # Debug: print the first few samples for each template
+            print(f"\n[DEBUG] First few {split} samples for each template:")
+            for i in range(min(3, len(data["prompt_base"]))):
+                print(f"Sample {i} (Base):\n  Prompt: {data['prompt_base'][i][:1000]}{'...' if len(data['prompt_base'][i])>1000 else ''}\n")
+                print(f"Sample {i} (Qwen):\n  Prompt: {data['prompt_qwen_instruct'][i][:1000]}{'...' if len(data['prompt_qwen_instruct'][i])>1000 else ''}\n")
+                print(f"Sample {i} (Llama):\n  Prompt: {data['prompt_llama_instruct'][i][:1000]}{'...' if len(data['prompt_llama_instruct'][i])>1000 else ''}\n")
             dataset = Dataset.from_dict(data)
             output_path = os.path.join(group_dir, f"{split}.parquet")
             dataset.to_parquet(output_path)
@@ -425,6 +480,25 @@ class SFTDataGenerator:
 
 
 if __name__ == "__main__":
-    rprint("[bold blue]Countdown SFT Data Generator - Group 0 Only[/bold blue]")
-    generator = SFTDataGenerator()
-    generator.generate_group_data()
+    import argparse
+    
+    parser = argparse.ArgumentParser(description="Generate SFT data for Countdown task")
+    parser.add_argument("--model_type", default="base", choices=['llama', 'qwen', 'base'], 
+                       help="Model type for template selection (default: base)")
+    parser.add_argument("--base_dir", default="./data/continual/sft/0", 
+                       help="Base directory for output data")
+    parser.add_argument("--train_size", type=int, default=10000,
+                       help="Number of training samples")
+    parser.add_argument("--test_size", type=int, default=1000,
+                       help="Number of test samples")
+    
+    args = parser.parse_args()
+    
+    # Update base_dir to include model_type
+    model_base_dir = f"{args.base_dir.rstrip('/')}/{args.model_type}"
+    
+    rprint(f"[bold blue]Countdown SFT Data Generator - Model Type: {args.model_type}[/bold blue]")
+    rprint(f"[yellow]Output directory: {model_base_dir}[/yellow]")
+    
+    generator = SFTDataGenerator(base_dir=model_base_dir, model_type=args.model_type)
+    generator.generate_group_data(train_size=args.train_size, test_size=args.test_size)

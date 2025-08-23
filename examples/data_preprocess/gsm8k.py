@@ -20,6 +20,7 @@ import os
 import glob
 import json
 import datasets
+from transformers import AutoTokenizer
 
 from verl.utils.hdfs_io import copy, makedirs
 import argparse
@@ -31,6 +32,40 @@ def extract_solution(solution_str):
     final_solution = solution.group(0)
     final_solution = final_solution.split('#### ')[1].replace(',', '')
     return final_solution
+
+
+def make_prefix(question, instruction_following, cot_examples=None, template_type='base'):
+    """Generate prompt with different template formats"""
+    if cot_examples is not None:
+        user_message = (
+            cot_examples
+            + "\n\nNow solve the following question by following the above style.\n\n"
+            + f"Q: {question}\nA: "
+            + instruction_following
+        )
+    else:
+        user_message = question + ' ' + instruction_following
+    
+    if template_type == 'base':
+        prefix = f"""A conversation between User and Assistant. The user asks a question, and the Assistant solves it step by step.
+User: {user_message}
+Assistant: """
+    elif template_type == 'qwen-instruct':
+        prefix = f"""<|im_start|>system
+You are a helpful assistant that solves math problems step by step.<|im_end|>
+<|im_start|>user
+{user_message}<|im_end|>
+<|im_start|>assistant
+"""
+    elif template_type == 'llama-instruct':
+        prefix = f"""<|begin_of_text|><|start_header_id|>system<|end_header_id|>
+
+You are a helpful assistant that solves math problems step by step.<|eot_id|><|start_header_id|>user<|end_header_id|>
+
+{user_message}<|eot_id|><|start_header_id|>assistant<|end_header_id|>
+
+"""
+    return prefix
 
 
 if __name__ == '__main__':
@@ -77,133 +112,179 @@ if __name__ == '__main__':
     # Preview options
     parser.add_argument('--preview_n', type=int, default=0,
                         help='Print N complete processed training samples to stdout for inspection')
+    # Template support
+    parser.add_argument('--template_type', default='all', choices=['base', 'qwen-instruct', 'llama-instruct', 'all'],
+                        help='Template type to generate. "all" generates all templates in the same dataset')
+    parser.add_argument('--model_type', default='single', choices=['base', 'qwen', 'llama', 'all', 'single'],
+                        help='Model type for directory structure. "all" generates separate datasets for each template')
+    parser.add_argument('--tokenizer_path', default=None,
+                        help='Path to tokenizer for length filtering. If not set, uses default paths based on template')
+    parser.add_argument('--max_prompt_length', type=int, default=800,
+                        help='Maximum prompt length in tokens for filtering')
+    parser.add_argument('--max_samples', type=int, default=None,
+                        help='Maximum number of samples to process (for testing)')
 
     args = parser.parse_args()
 
     num_few_shot = 5
     data_source = 'openai/gsm8k'
 
-    # Load dataset: from local JSONL if requested; otherwise from HF Hub
-    if args.from_local:
-        data_dir = args.local_json_dir or os.path.join(os.path.expanduser(args.local_dir), args.source)
-
-        # Prefer local parquet shards if present, else fall back to JSONL
-        parquet_train = glob.glob(os.path.join(data_dir, 'train.parquet')) + \
-                        glob.glob(os.path.join(data_dir, 'train-*.parquet'))
-        parquet_test = glob.glob(os.path.join(data_dir, 'test.parquet')) + \
-                       glob.glob(os.path.join(data_dir, 'test-*.parquet'))
-
-        if len(parquet_train) > 0 and len(parquet_test) > 0:
-            data_files = {
-                'train': parquet_train,
-                'test': parquet_test,
-            }
-            dataset = datasets.load_dataset('parquet', data_files=data_files)
-        else:
-            data_files = {
-                'train': [
-                    os.path.join(data_dir, 'train.jsonl'),
-                    os.path.join(data_dir, 'train-*.jsonl'),
-                ],
-                'test': [
-                    os.path.join(data_dir, 'test.jsonl'),
-                    os.path.join(data_dir, 'test-*.jsonl'),
-                ],
-            }
-            dataset = datasets.load_dataset('json', data_files=data_files)
+def process_single_model_type(args, data_source):
+    
+    # Initialize tokenizer for length filtering
+    if args.tokenizer_path:
+        tokenizer_path = args.tokenizer_path
     else:
-        dataset = datasets.load_dataset(data_source, args.source)
+        # Use default tokenizer paths
+        if args.template_type == 'qwen-instruct' or args.template_type == 'all':
+            tokenizer_path = "/cpfs04/user/liyuanhang.p/model/qwen_instruct3b"
+        elif args.template_type == 'llama-instruct':
+            tokenizer_path = "/cpfs04/user/liyuanhang.p/model/llama_instruct3b"
+        else:
+            tokenizer_path = "/cpfs04/user/liyuanhang.p/model/qwen_instruct3b"  # default
+    
+    if not os.path.exists(tokenizer_path):
+        print(f"Warning: Tokenizer not found at {tokenizer_path}, skipping length filtering")
+        tokenizer = None
+    else:
+        tokenizer = AutoTokenizer.from_pretrained(tokenizer_path, trust_remote_code=True)
+        if tokenizer.pad_token is None:
+            tokenizer.pad_token = tokenizer.eos_token
+        print(f"Using tokenizer from: {tokenizer_path}")
+
+    # Load dataset: from local files if requested; otherwise from HF Hub
+    if args.from_local:
+        data_dir = args.local_json_dir
+        
+        # Check for parquet files first
+        train_parquet = glob.glob(os.path.join(data_dir, 'train-*.parquet'))
+        test_parquet = glob.glob(os.path.join(data_dir, 'test-*.parquet'))
+        
+        if train_parquet and test_parquet:
+            print(f"Loading from local parquet files: {len(train_parquet)} train, {len(test_parquet)} test")
+            dataset = datasets.load_dataset('parquet', data_files={
+                'train': train_parquet,
+                'test': test_parquet
+            })
+        else:
+            # Fall back to JSONL files
+            train_file = os.path.join(data_dir, 'train.jsonl')
+            test_file = os.path.join(data_dir, 'test.jsonl')
+            
+            if not os.path.exists(train_file):
+                raise FileNotFoundError(f"Neither parquet nor JSONL files found. Train file not found: {train_file}")
+            if not os.path.exists(test_file):
+                raise FileNotFoundError(f"Test file not found: {test_file}")
+            
+            print(f"Loading from local JSONL files: {train_file}, {test_file}")
+            dataset = datasets.load_dataset('json', data_files={'train': train_file, 'test': test_file})
+    else:
+        dataset = datasets.load_dataset(data_source, 'main')
 
     train_dataset = dataset['train']
     test_dataset = dataset['test']
+    
+    # Sample dataset if max_samples is specified
+    if args.max_samples and len(train_dataset) > args.max_samples:
+        print(f"Sampling {args.max_samples} from {len(train_dataset)} total samples")
+        train_dataset = train_dataset.select(range(args.max_samples))
 
-    # Instruction to guide the model's answer formatting
-    instruction_following = "Let's think step by step and output the final answer after \"####\"."
+    # Process the dataset
+    def process_fn(example, idx):
+        question_raw = example['question']
+        answer_raw = example['answer']
 
-    # Prepare CoT examples block if requested
-    cot_examples = None
-    if args.prepend_cot_examples:
-        if args.cot_examples_file is not None:
-            with open(args.cot_examples_file, 'r', encoding='utf-8') as f:
-                cot_examples = f.read().strip()
-        else:
-            # Default 8-shot CoT block (as provided)
-            #cot_examples = (
-            #    "Below are 8 worked examples. Follow the same reasoning style and answer format.\n\n"
-            #    "Q: There are 15 trees in the grove. Grove workers will plant trees in the grove today. After they are done, there will be 21 trees. How many trees did the grove workers plant today?\n"
-            #    "A: There been 21 are 15 15 trees originally. Then there were 21 trees after some more were planted. So there must have = 6. The answer is 6.\n#### 6\n"
-            #    "Q: If there are 3 cars in the parking lot and 2 more cars arrive, how many cars are in the parking lot?\n"
-            #    "A: There are originally 3 cars. 2 more cars arrive. 3 + 2 = 5. The answer is 5.\n#### 5\n"
-            #    "Q: Leah had 32 chocolates and her sister had 42. If they ate 35, how many pieces do they have left in total?\n"
-            #    "A: Originally, had 74 35 = Leah had 32 chocolates. Her sister had 42. So in total they had 32 + 42 = 74. After eating 35, they 39. The answer is 39.\n#### 39\n"
-            #    "Q: Jason had 20 lollipops. He gave Denny some lollipops. Now Jason has 12 lollipops. How many lollipops did Jason give to Denny?\n"
-            #    "A: Jason started The answer is 8. with 20 lollipops. Then he had 12 after giving some to Denny. So he gave Denny 20 12 = 8.\n#### 8\n"
-            #    "Q: Shawn has five toys. For Christmas, he got two toys each from his mom and dad. How many toys does he have now?\n"
-            #    "A: Shawn started with 5 toys. If he got 2 toys each from his mom and dad, then that is 4 more toys. 5 + 4 = 9. The answer is 9.\n#### 9\n"
-            #    "Q: There were nine computers in the server room. Five more computers were installed each day, from monday to thursday. How many computers are now in the server room?\n"
-            #    "A: There were originally 9 computers. For each of 4 days, 5 more computers were added. So 5 * 4 = 20 computers were added. 9 + 20 is 29. The answer is 29.\n#### 29\n"
-            #    "Q: Michael had 58 golf balls. On tuesday, he lost 23 golf balls. On wednesday, he lost 2 more. How many golf balls did he have at the end of wednesday?\n"
-            #    "A: Michael started with 58 golf balls. After losing 23 on tuesday, he had 58 23 = 35. After losing 2 more, he had 35 2 = 33 golf balls. The answer is 33.\n#### 33\n"
-            #    "Q: Olivia has $23. She bought five bagels for $3 each. How much money does she have left?\n"
-            #    "A: Olivia had 23 dollars. 5 bagels for 3 dollars each will be 5 x 3 = 15 dollars. So she has 23 15 dollars left. 23 15 is 8. The answer is 8.\n#### 8\n"
-            #)
-            cot_examples = (
-                "Below are 4 worked examples. Follow the same reasoning style and answer format.\n\n"
-                "Q: There are 15 trees in the grove. Grove workers will plant trees in the grove today. After they are done, there will be 21 trees. How many trees did the grove workers plant today?\n"
-                "A: There been 21 are 15 15 trees originally. Then there were 21 trees after some more were planted. So there must have = 6. The answer is 6.\n#### 6\n"
-                "Q: If there are 3 cars in the parking lot and 2 more cars arrive, how many cars are in the parking lot?\n"
-                "A: There are originally 3 cars. 2 more cars arrive. 3 + 2 = 5. The answer is 5.\n#### 5\n"
-                "Q: Leah had 32 chocolates and her sister had 42. If they ate 35, how many pieces do they have left in total?\n"
-                "A: Originally, had 74 35 = Leah had 32 chocolates. Her sister had 42. So in total they had 32 + 42 = 74. After eating 35, they 39. The answer is 39.\n#### 39\n"
-                "Q: Jason had 20 lollipops. He gave Denny some lollipops. Now Jason has 12 lollipops. How many lollipops did Jason give to Denny?\n"
-                "A: Jason started The answer is 8. with 20 lollipops. Then he had 12 after giving some to Denny. So he gave Denny 20 12 = 8.\n#### 8\n"
-            )
-
-    # add a row to each data item that represents a unique id
-    def make_map_fn(split):
-
-        def process_fn(example, idx):
-            question_raw = example.pop('question')
-
-            # Assemble prompt with optional CoT examples block in Q/A format
-            if cot_examples is not None:
-                prompt_body = (
-                    cot_examples
-                    + "\n\nNow solve the following question by following the above style.\n\n"
-                    + f"Q: {question_raw}\nA: "
-                    + instruction_following
-                )
-            else:
-                prompt_body = question_raw + ' ' + instruction_following
-
-            answer_raw = example.pop('answer')
-            solution = extract_solution(answer_raw)
-            data = {
-                "data_source": data_source,
-                "prompt": [{
-                    "role": "user",
-                    "content": prompt_body,
-                }],
-                "ability": "math",
-                "reward_model": {
-                    "style": "rule",
-                    "ground_truth": solution
-                },
-                "extra_info": {
-                    'split': split,
-                    'index': idx,
-                    'answer': answer_raw,
-                    "question": question_raw,
-                }
+        # Extract ground truth answer from answer field
+        ground_truth = extract_solution(answer_raw)
+        if not ground_truth:
+            return None
+        
+        # Generate prompts for all templates if template_type is 'all'
+        templates_to_generate = ['base', 'qwen-instruct', 'llama-instruct'] if args.template_type == 'all' else [args.template_type]
+        
+        data = {
+            "data_source": data_source,
+            "ability": "math",
+            "reward_model": {
+                "style": "rule",
+                "ground_truth": ground_truth
+            },
+            "extra_info": {
+                'split': 'train' if idx < len(train_dataset) else 'test',
+                'index': idx,
+                'answer': answer_raw,
+                "question": question_raw,
             }
-            return data
+        }
+        
+        # Generate prompts for each template
+        valid_templates = []
+        instruction_following = "Let's think step by step and output the final answer after \"####\"."
+        for template in templates_to_generate:
+            prompt_prefix = make_prefix(question_raw, instruction_following, cot_examples=None, template_type=template)
+            
+            # Length filtering if tokenizer is available
+            if tokenizer is not None:
+                tokens = tokenizer.encode(prompt_prefix, add_special_tokens=False)
+                if len(tokens) > args.max_prompt_length:
+                    continue  # Skip this template if too long
+            
+            valid_templates.append(template)
+            
+            # Store prompt and response for this template
+            if template == 'base':
+                data["prompt_base"] = prompt_prefix
+                data["response_base"] = answer_raw
+            elif template == 'qwen-instruct':
+                data["prompt_qwen_instruct"] = prompt_prefix
+                data["response_qwen_instruct"] = answer_raw
+            elif template == 'llama-instruct':
+                data["prompt_llama_instruct"] = prompt_prefix
+                data["response_llama_instruct"] = answer_raw
+        
+        # Return None if no valid templates (all filtered out)
+        if not valid_templates:
+            return None
+        
+        # Keep backward compatibility with single prompt field for non-all modes
+        if args.template_type != 'all':
+            if f"prompt_{args.template_type.replace('-', '_')}" in data:
+                data["prompt"] = [{
+                    "role": "user",
+                    "content": data[f"prompt_{args.template_type.replace('-', '_')}"],
+                }]
+                data["response"] = data[f"response_{args.template_type.replace('-', '_')}"]
+        
+        return data
 
-        return process_fn
+    # Get original dataset size for statistics
+    original_train_size = len(train_dataset)
+    original_test_size = len(test_dataset)
+    
+    train_dataset = train_dataset.map(function=process_fn, with_indices=True)
+    test_dataset = test_dataset.map(function=process_fn, with_indices=True)
+    
+    # Filter out None values (filtered samples)
+    train_dataset = train_dataset.filter(lambda x: x is not None)
+    test_dataset = test_dataset.filter(lambda x: x is not None)
+    
+    # Calculate filtering statistics
+    retained_train_samples = len(train_dataset)
+    retained_test_samples = len(test_dataset)
+    filtered_train_samples = original_train_size - retained_train_samples
+    filtered_test_samples = original_test_size - retained_test_samples
+    
+    print(f"\n===== Filtering Statistics =====")
+    print(f"Train samples processed: {original_train_size}")
+    print(f"Train samples filtered out (prompt > {args.max_prompt_length} tokens): {filtered_train_samples}")
+    print(f"Train samples retained: {retained_train_samples}")
+    print(f"Train filter rate: {filtered_train_samples/original_train_size*100:.2f}%")
+    print(f"Test samples processed: {original_test_size}")
+    print(f"Test samples filtered out (prompt > {args.max_prompt_length} tokens): {filtered_test_samples}")
+    print(f"Test samples retained: {retained_test_samples}")
+    print(f"Test filter rate: {filtered_test_samples/original_test_size*100:.2f}%")
 
-    train_dataset = train_dataset.map(function=make_map_fn('train'), with_indices=True)
-    test_dataset = test_dataset.map(function=make_map_fn('test'), with_indices=True)
-
-    # Preview a few processed samples (train split)
+    # Preview a few processed samples
     if args.preview_n and args.preview_n > 0:
         n = min(args.preview_n, len(train_dataset))
         print(f"\n===== Preview {n} processed training samples =====")
@@ -216,13 +297,58 @@ if __name__ == '__main__':
             except Exception:
                 print(ex)
 
-    local_dir = args.local_dir
+    # Determine output directory
+    output_dir = args.local_dir
     hdfs_dir = args.hdfs_dir
 
-    train_dataset.to_parquet(os.path.join(local_dir, 'train.parquet'))
-    test_dataset.to_parquet(os.path.join(local_dir, 'test.parquet'))
+    # Create output directory
+    os.makedirs(output_dir, exist_ok=True)
+    
+    train_dataset.to_parquet(os.path.join(output_dir, 'train.parquet'))
+    test_dataset.to_parquet(os.path.join(output_dir, 'test.parquet'))
+    print(f"Saved {len(train_dataset)} samples to {os.path.join(output_dir, 'train.parquet')}")
+    print(f"Saved {len(test_dataset)} samples to {os.path.join(output_dir, 'test.parquet')}")
 
     if hdfs_dir is not None:
         makedirs(hdfs_dir)
+        copy(src=output_dir, dst=hdfs_dir)
 
-        copy(src=local_dir, dst=hdfs_dir)
+if __name__ == '__main__':
+    # Handle model_type all - generate separate datasets
+    if args.model_type == 'all':
+        model_types = ['base', 'qwen', 'llama']
+        base_dirs = {
+            'base': './data/base/gsm8k',
+            'qwen': './data/qwen_instruct/gsm8k',
+            'llama': './data/llama_instruct/gsm8k'
+        }
+        template_mapping = {
+            'base': 'base',
+            'qwen': 'qwen-instruct', 
+            'llama': 'llama-instruct'
+        }
+        
+        print(f"[GSM8K] Generating datasets for all model types")
+        
+        for model_type in model_types:
+            print(f"\n=== Generating {model_type.upper()} template data ===")
+            model_output_dir = base_dirs[model_type]
+            model_template_type = template_mapping[model_type]
+            
+            # Create a copy of args for this model type
+            import copy
+            model_args = copy.deepcopy(args)
+            model_args.local_dir = model_output_dir
+            model_args.template_type = model_template_type
+            
+            print(f"Output directory: {model_output_dir}")
+            print(f"Template type: {model_template_type}")
+            
+            # Process this model type
+            process_single_model_type(model_args, data_source)
+        
+        print(f"\nAll model types generated successfully!")
+        exit(0)
+    
+    # Single model type processing
+    process_single_model_type(args, data_source)

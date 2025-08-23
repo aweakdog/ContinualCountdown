@@ -76,7 +76,12 @@ class RewardManager():
             sequences = torch.cat((valid_prompt_ids, valid_response_ids))
             sequences_str = self.tokenizer.decode(sequences)
 
-            ground_truth = data_item.non_tensor_batch['reward_model']['ground_truth']
+            # Prepare ground truth data structure for reward computation
+            ground_truth = {
+                'target': data_item.non_tensor_batch['target'],
+                'numbers': data_item.non_tensor_batch['numbers'],
+                'ground_truth': data_item.non_tensor_batch['reward_model']['ground_truth']
+            }
 
             # select rm_score
             data_source = data_item.non_tensor_batch['data_source']

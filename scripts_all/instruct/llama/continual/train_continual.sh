@@ -1,15 +1,26 @@
 #!/bin/bash
 
-SFT_CHECKPOINT=global_step_15
+# Parse command line arguments
+EXPERIMENT_TYPE=${1:-train}  # Default to 'train' if no argument provided
 
-# Phase repetition control parameters
-export PHASE1_REPEAT_COUNT=${PHASE1_REPEAT_COUNT:-0}  # Default: run Phase 1 once
-export PHASE2_REPEAT_COUNT=${PHASE2_REPEAT_COUNT:-1}  # Default: run Phase 2 twice
-export PHASE3_REPEAT_COUNT=${PHASE3_REPEAT_COUNT:-0}  # Default: run Phase 3 twice
+# Model configuration parameters
+SFT_MODEL_BASE_DIR=${SFT_MODEL_BASE_DIR:-"/nas/shared/sys2/yuanhangli/tmp"}
+SFT_MODEL_NAME=${SFT_MODEL_NAME:-"llama_instruct_sft_model"}
+SFT_CHECKPOINT=${SFT_CHECKPOINT:-"global_step_15"}
 
-echo "[Phase Config] Phase 1 will run $PHASE1_REPEAT_COUNT time(s)"
-echo "[Phase Config] Phase 2 will run $PHASE2_REPEAT_COUNT time(s)"
-echo "[Phase Config] Phase 3 will run $PHASE3_REPEAT_COUNT time(s)"
+echo "[Experiment Type] Using type: $EXPERIMENT_TYPE"
+echo "[Model Config] SFT model base directory: $SFT_MODEL_BASE_DIR"
+echo "[Model Config] SFT model name: $SFT_MODEL_NAME"
+echo "[Model Config] SFT checkpoint: $SFT_CHECKPOINT"
+
+# Experiment repetition control parameters
+export EXP1_REPEAT_COUNT=${EXP1_REPEAT_COUNT:-0}  # Default: run Experiment 1 once
+export EXP2_REPEAT_COUNT=${EXP2_REPEAT_COUNT:-2}  # Default: run Experiment 2 twice
+export EXP3_REPEAT_COUNT=${EXP3_REPEAT_COUNT:-0}  # Default: run Experiment 3 twice
+
+echo "[Experiment Config] Experiment 1 will run $EXP1_REPEAT_COUNT time(s)"
+echo "[Experiment Config] Experiment 2 will run $EXP2_REPEAT_COUNT time(s)"
+echo "[Experiment Config] Experiment 3 will run $EXP3_REPEAT_COUNT time(s)"
 
 # Activate conda environment
 # Use a more cautious approach to Git configuration
@@ -19,8 +30,13 @@ fi
 
 # Configuration - Set environment variables
 export NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-all}
-export CHECKPOINT_BASE_DIR=${CHECKPOINT_BASE_DIR:-/nas/shared/sys2/yuanhangli/tmp/checkpoints/continual_countdown3b_qwen_curriculum}
-export BASE_MODEL=${BASE_MODEL:-"/nas/shared/sys2/yuanhangli/tmp/qwen_instruct_sft_model/${SFT_CHECKPOINT}"}  # Path to mounted Qwen Instruct SFT model
+export CHECKPOINT_BASE_DIR=${CHECKPOINT_BASE_DIR:-/nas/shared/sys2/yuanhangli/tmp/checkpoints/llama_instruct/continual_countdown3b_llama_curriculum}
+# Construct BASE_MODEL path - handle empty SFT_MODEL_NAME
+if [ -z "$SFT_MODEL_NAME" ]; then
+    export BASE_MODEL=${BASE_MODEL:-"${SFT_MODEL_BASE_DIR}/${SFT_CHECKPOINT}"}
+else
+    export BASE_MODEL=${BASE_MODEL:-"${SFT_MODEL_BASE_DIR}/${SFT_MODEL_NAME}/${SFT_CHECKPOINT}"}
+fi
 export N_GPUS=${N_GPUS:-4}  # Using 8 A100 GPUs
 export ROLLOUT_TP_SIZE=${ROLLOUT_TP_SIZE:-1}  # Tensor parallel size optimized for 8 GPUs
 export WANDB_MODE=${WANDB_MODE:-offline}  # Run WandB in offline mode
@@ -37,19 +53,34 @@ echo "[GPU Config] Training will use GPUs 0-3, Analyzers will use GPUs 4-7"
 # Layer Reset Configuration (OPTIONAL - defaults to disabled)
 # Uncomment and modify the following lines to enable layer reset functionality:
 export LAYER_RESET_ENABLE=${LAYER_RESET_ENABLE:-false}
-export LAYER_RESET_K_FIRST=${LAYER_RESET_K_FIRST:-0}    # Reset first 4 transformer layers
-export LAYER_RESET_K_LAST=${LAYER_RESET_K_LAST:-0}      # Reset last 2 transformer layers
-export LAYER_RESET_STEPS=${LAYER_RESET_STEPS:-"[40,80,120,150]"}  # Reset at global steps 120 and 200
 
-# Set up logging with backup
-LOG_FILE="./qwen_logs/ContinualCountdown3B_Qwen_Curriculum.log"
+# If layer reset is disabled, force reset parameters to 0
+if [ "$LAYER_RESET_ENABLE" = "false" ]; then
+    export LAYER_RESET_K_FIRST=0
+    export LAYER_RESET_K_LAST=0
+    echo "[Layer Reset] Disabled - K_FIRST and K_LAST set to 0"
+else
+    export LAYER_RESET_K_FIRST=${LAYER_RESET_K_FIRST:-0}    # Reset first 4 transformer layers
+    export LAYER_RESET_K_LAST=${LAYER_RESET_K_LAST:-0}      # Reset last 2 transformer layers
+    echo "[Layer Reset] Enabled - K_FIRST=$LAYER_RESET_K_FIRST, K_LAST=$LAYER_RESET_K_LAST"
+fi
+
+export LAYER_RESET_STEPS=${LAYER_RESET_STEPS:-"[40,80,120]"}  # Reset at global steps 120 and 200
+
+# Set up logging with backup - organized by script location
+LOG_BASE_DIR="./logs/instruct/llama/continual"
+LOG_FILE="$LOG_BASE_DIR/ContinualCountdown3B_llama_Curriculum.log"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-BACKUP_DIR="./qwen_logs/run"
+BACKUP_DIR="$LOG_BASE_DIR/run"
+
+# Create log directories
+mkdir -p "$LOG_BASE_DIR"
+mkdir -p "$BACKUP_DIR"
 
 # Create backup of existing log if it exists
 if [ -f "$LOG_FILE" ]; then
     mkdir -p "$BACKUP_DIR"
-    cp "$LOG_FILE" "$BACKUP_DIR/ContinualCountdown3B_Qwen_Curriculum_${TIMESTAMP}.log"
+    cp "$LOG_FILE" "$BACKUP_DIR/ContinualCountdown3B_llama_Curriculum_${TIMESTAMP}.log"
 fi
 
 # Clean up previous checkpoints
@@ -58,8 +89,8 @@ rm -rf ${CHECKPOINT_BASE_DIR}
 # Clean up current log and wandb
 rm -f "$LOG_FILE"
 rm -rf ./wandb/*
-chmod -R 755 ./qwen_logs
-chmod -R 755 ./qwen_logs/run
+chmod -R 755 "$LOG_BASE_DIR"
+chmod -R 755 "$BACKUP_DIR"
 
 # Set FSDP gradient metric flag (set to true to enable FSDP gradient metrics)
 export FSDP_GRAD_METRIC_ENABLED=true
@@ -80,8 +111,9 @@ if [ ! -f "$BASE_MODEL/config.json" ]; then
     exit 1
 fi
 
-# Create a unique subdirectory for this experiment's qwen_logs
-EXP_LOG_DIR=./qwen_logs/train_countdown3b_qwen_sft_${SFT_CHECKPOINT}_reset_k${LAYER_RESET_K_FIRST}f_k${LAYER_RESET_K_LAST}l
+# Create a unique subdirectory for this experiment's logs with timestamp
+EXPERIMENT_TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+EXP_LOG_DIR=$LOG_BASE_DIR/${EXPERIMENT_TYPE}_continual_llama_sft_${SFT_CHECKPOINT}_reset_k${LAYER_RESET_K_FIRST}f_k${LAYER_RESET_K_LAST}l_${EXPERIMENT_TIMESTAMP}
 mkdir -p "$EXP_LOG_DIR"
 cp tmp/monitor_master.sh "$EXP_LOG_DIR/"
 MASTER_LOG_FILE="$EXP_LOG_DIR/experiment_master.log"
@@ -107,26 +139,25 @@ else
     echo "[LAYER_RESET_DEBUG] Layer reset is disabled because LAYER_RESET_ENABLE != 'true'"
 fi
 
-# Three-phase training: Phase 1 (group0 only), Phase 2 (group1 + group2 in same session), Phase 3 (group2 only)
+# Three-experiment training: Experiment 1 (group0 only), Experiment 2 (group1 + group2 in same session), Experiment 3 (group2 only)
 
-# Phase 1: Train only group0 (repeat $PHASE1_REPEAT_COUNT times)
-echo "=== PHASE 1: Training Group 0 (${PHASE1_REPEAT_COUNT} repetition(s)) ==="
-for ((phase1_iter=1; phase1_iter<=PHASE1_REPEAT_COUNT; phase1_iter++)); do
-  echo "--- Phase 1 Iteration $phase1_iter/$PHASE1_REPEAT_COUNT ---"
-  group=0
-  TRAIN_FILES_STR="[\"./data/continual/${group}/train.parquet\"]"
-  VAL_FILES_STR="[\"./data/continual/${group}/test.parquet\"]"
+# Experiment 1: Train only group0 (repeat $EXP1_REPEAT_COUNT times)
+echo "=== EXPERIMENT 1: Training Group 0 (${EXP1_REPEAT_COUNT} repetition(s)) ==="
+for ((exp1_iter=1; exp1_iter<=EXP1_REPEAT_COUNT; exp1_iter++)); do
+  echo "--- Experiment 1 Iteration $exp1_iter/$EXP1_REPEAT_COUNT ---"
+  TRAIN_FILES_STR="[\"./data/llama_instruct/group_0/train.parquet\"]"
+  VAL_FILES_STR="[\"./data/llama_instruct/group_0/test.parquet\"]"
   TRAIN_SAMPLE_SIZE="[2560]"
-  RUN_NAME="Phase1_Group${group}_Iter${phase1_iter}_SFT_${SFT_CHECKPOINT}_$(date +%Y%m%d_%H%M%S)"
+  RUN_NAME="Exp1_Group0_Iter${exp1_iter}_SFT_${SFT_CHECKPOINT}_$(date +%Y%m%d_%H%M%S)"
   export RUN_NAME
   LOG_FILE="$EXP_LOG_DIR/${RUN_NAME}.log"
-  echo "Training group $group (iteration $phase1_iter) with SFT model from checkpoint $SFT_CHECKPOINT" | tee -a "$LOG_FILE" | tee -a "$MASTER_LOG_FILE"
+  echo "Training group0 (iteration $exp1_iter) with SFT model from checkpoint $SFT_CHECKPOINT" | tee -a "$LOG_FILE" | tee -a "$MASTER_LOG_FILE"
   echo "Train files: $TRAIN_FILES_STR" | tee -a "$LOG_FILE" | tee -a "$MASTER_LOG_FILE"
   echo "Val files: $VAL_FILES_STR" | tee -a "$LOG_FILE" | tee -a "$MASTER_LOG_FILE"
   
   python3 -m verl.trainer.main_ppo \
-  --config-path ./verl/trainer/config \
-  --config-name ppo_trainer_qwen \
+  --config-path /cpfs04/user/liyuanhang.p/src/ContinualCountdown/verl/trainer/config \
+  --config-name ppo_trainer \
     fsdp_grad_metric_enabled=$FSDP_GRAD_METRIC_ENABLED \
     data.train_files="$TRAIN_FILES_STR" \
     data.val_files="$VAL_FILES_STR" \
@@ -176,7 +207,7 @@ for ((phase1_iter=1; phase1_iter<=PHASE1_REPEAT_COUNT; phase1_iter++)); do
     trainer.nnodes=1 \
     trainer.save_freq=1200 \
     trainer.test_freq=30 \
-    trainer.project_name=ContinualCountdown3B_Qwen \
+    trainer.project_name=ContinualCountdown3B_llama \
     trainer.experiment_name=$RUN_NAME \
     trainer.total_epochs=1 \
     +trainer.val_before_train=true \
@@ -186,27 +217,28 @@ for ((phase1_iter=1; phase1_iter<=PHASE1_REPEAT_COUNT; phase1_iter++)); do
     2>&1 | tee -a "$LOG_FILE" | tee -a "$MASTER_LOG_FILE"
   ray stop
   sleep 10
-  echo "Phase 1 Iteration $phase1_iter completed"
+  echo "Experiment 1 Iteration $exp1_iter completed"
 done
-echo "Phase 1 completed after $PHASE1_REPEAT_COUNT iteration(s)"
+echo "Experiment 1 completed after $EXP1_REPEAT_COUNT iteration(s)"
 
-# Phase 2: Train group1 and group2 in the same training session (repeat $PHASE2_REPEAT_COUNT times)
-echo "=== PHASE 2: Training Group 1 + Group 2 (${PHASE2_REPEAT_COUNT} repetition(s)) ==="
-for ((phase2_iter=1; phase2_iter<=PHASE2_REPEAT_COUNT; phase2_iter++)); do
-  echo "--- Phase 2 Iteration $phase2_iter/$PHASE2_REPEAT_COUNT ---"
-  TRAIN_FILES_STR="[\"./data/continual/1/train.parquet\", \"./data/continual/5/train.parquet\"]"
-  VAL_FILES_STR="[\"./data/continual/1/test.parquet\", \"./data/continual/5/test.parquet\"]"
-  TRAIN_SAMPLE_SIZE="[2560, 2560]"  # Sample sizes for group1 and group2
-  RUN_NAME="Phase2_Group1and2_Iter${phase2_iter}_SFT_${SFT_CHECKPOINT}_$(date +%Y%m%d_%H%M%S)"
+# Experiment 2: Train group1 and group2 in the same training session (repeat $EXP2_REPEAT_COUNT times)
+echo "=== EXPERIMENT 2: Training Group 1 + Group 2 (${EXP2_REPEAT_COUNT} repetition(s)) ==="
+for ((exp2_iter=1; exp2_iter<=EXP2_REPEAT_COUNT; exp2_iter++)); do
+  echo "--- Experiment 2 Iteration $exp2_iter/$EXP2_REPEAT_COUNT ---"
+  TRAIN_FILES_STR="[\"./data/llama_instruct/group_1/train.parquet\", \"./data/llama_instruct/deepmath/train.parquet\"]"
+  VAL_FILES_STR="[\"./data/llama_instruct/group_1/test.parquet\", \"./data/llama_instruct/deepmath/test.parquet\"]"
+  TRAIN_SAMPLE_SIZE="[2560, 2560]"
+  #TRAIN_SAMPLE_SIZE="[512, 512]"
+  RUN_NAME="Exp2_Group1and2_Iter${exp2_iter}_SFT_${SFT_CHECKPOINT}_$(date +%Y%m%d_%H%M%S)"
   export RUN_NAME
   LOG_FILE="$EXP_LOG_DIR/${RUN_NAME}.log"
-  echo "Training groups 1 and 2 sequentially (iteration $phase2_iter) with SFT model from checkpoint $SFT_CHECKPOINT" | tee -a "$LOG_FILE" | tee -a "$MASTER_LOG_FILE"
+  echo "Training groups 1 and 2 sequentially (iteration $exp2_iter) with SFT model from checkpoint $SFT_CHECKPOINT" | tee -a "$LOG_FILE" | tee -a "$MASTER_LOG_FILE"
   echo "Train files: $TRAIN_FILES_STR" | tee -a "$LOG_FILE" | tee -a "$MASTER_LOG_FILE"
   echo "Val files: $VAL_FILES_STR" | tee -a "$LOG_FILE" | tee -a "$MASTER_LOG_FILE"
 
 python3 -m verl.trainer.main_ppo \
-  --config-path ./verl/trainer/config \
-  --config-name ppo_trainer_qwen \
+  --config-path /cpfs04/user/liyuanhang.p/src/ContinualCountdown/verl/trainer/config \
+  --config-name ppo_trainer \
   fsdp_grad_metric_enabled=$FSDP_GRAD_METRIC_ENABLED \
   data.train_files="$TRAIN_FILES_STR" \
   data.val_files="$VAL_FILES_STR" \
@@ -214,7 +246,7 @@ python3 -m verl.trainer.main_ppo \
   data.val_batch_size=256 \
   data.max_response_length=1024 \
   ++data.curriculum_learning=true \
-  ++data.epochs_per_group=15 \
+  ++data.epochs_per_group=1 \
   ++data.total_rounds=1 \
   ++data.train_sample_size="$TRAIN_SAMPLE_SIZE" \
   actor_rollout_ref.model.path=$BASE_MODEL \
@@ -247,9 +279,9 @@ python3 -m verl.trainer.main_ppo \
   critic.ppo_mini_batch_size=32 \
   critic.ppo_micro_batch_size=8 \
   ++actor_rollout_ref.actor.redo_tau=0.1 \
-  ++actor_rollout_ref.actor.enable_gradient_analysis=true \
+  ++actor_rollout_ref.actor.enable_gradient_analysis=false \
   ++actor_rollout_ref.actor.gradient_analysis_freq=1 \
-  ++actor_rollout_ref.actor.enable_fisher_analysis=true \
+  ++actor_rollout_ref.actor.enable_fisher_analysis=false \
   ++actor_rollout_ref.actor.fisher_analysis_freq=1 \
   algorithm.kl_ctrl.kl_coef=0.001 \
   trainer.logger=['wandb','console'] \
@@ -260,7 +292,7 @@ python3 -m verl.trainer.main_ppo \
   trainer.nnodes=1 \
   trainer.save_freq=1200 \
   trainer.test_freq=30 \
-  trainer.project_name=ContinualCountdown3B_Qwen \
+  trainer.project_name=ContinualCountdown3B_llama \
   trainer.experiment_name=$RUN_NAME \
   trainer.total_epochs=1 \
   +trainer.val_before_train=true \
@@ -270,28 +302,27 @@ python3 -m verl.trainer.main_ppo \
   2>&1 | tee -a "$LOG_FILE" | tee -a "$MASTER_LOG_FILE"
   ray stop
   sleep 10
-  echo "Phase 2 Iteration $phase2_iter completed"
+  echo "Experiment 2 Iteration $exp2_iter completed"
 done
-echo "Phase 2 completed after $PHASE2_REPEAT_COUNT iteration(s)"
+echo "Experiment 2 completed after $EXP2_REPEAT_COUNT iteration(s)"
 
-# Phase 3: Train only group2 (repeat $PHASE3_REPEAT_COUNT times)
-echo "=== PHASE 3: Training Group 2 (${PHASE3_REPEAT_COUNT} repetition(s)) ==="
-for ((phase3_iter=1; phase3_iter<=PHASE3_REPEAT_COUNT; phase3_iter++)); do
-  echo "--- Phase 3 Iteration $phase3_iter/$PHASE3_REPEAT_COUNT ---"
-  group=2
-  TRAIN_FILES_STR="[\"./data/continual/${group}/train.parquet\"]"
-  VAL_FILES_STR="[\"./data/continual/${group}/test.parquet\"]"
+# Experiment 3: Train only group2 (repeat $EXP3_REPEAT_COUNT times)
+echo "=== EXPERIMENT 3: Training Group 2 (${EXP3_REPEAT_COUNT} repetition(s)) ==="
+for ((exp3_iter=1; exp3_iter<=EXP3_REPEAT_COUNT; exp3_iter++)); do
+  echo "--- Experiment 3 Iteration $exp3_iter/$EXP3_REPEAT_COUNT ---"
+  TRAIN_FILES_STR="[\"./data/llama_instruct/deepmath/train.parquet\"]"
+  VAL_FILES_STR="[\"./data/llama_instruct/deepmath/test.parquet\"]"
   TRAIN_SAMPLE_SIZE="[2560]"
-  RUN_NAME="Phase3_Group${group}_Iter${phase3_iter}_SFT_${SFT_CHECKPOINT}_$(date +%Y%m%d_%H%M%S)"
+  RUN_NAME="Exp3_deepmath_Iter${exp3_iter}_SFT_${SFT_CHECKPOINT}_$(date +%Y%m%d_%H%M%S)"
   export RUN_NAME
   LOG_FILE="$EXP_LOG_DIR/${RUN_NAME}.log"
-  echo "Training group $group (iteration $phase3_iter) with SFT model from checkpoint $SFT_CHECKPOINT" | tee -a "$LOG_FILE" | tee -a "$MASTER_LOG_FILE"
+  echo "Training deepmath (iteration $exp3_iter) with SFT model from checkpoint $SFT_CHECKPOINT" | tee -a "$LOG_FILE" | tee -a "$MASTER_LOG_FILE"
   echo "Train files: $TRAIN_FILES_STR" | tee -a "$LOG_FILE" | tee -a "$MASTER_LOG_FILE"
   echo "Val files: $VAL_FILES_STR" | tee -a "$LOG_FILE" | tee -a "$MASTER_LOG_FILE"
 
   python3 -m verl.trainer.main_ppo \
-  --config-path ./verl/trainer/config \
-  --config-name ppo_trainer_qwen \
+  --config-path /cpfs04/user/liyuanhang.p/src/ContinualCountdown/verl/trainer/config \
+  --config-name ppo_trainer \
     fsdp_grad_metric_enabled=$FSDP_GRAD_METRIC_ENABLED \
     data.train_files="$TRAIN_FILES_STR" \
     data.val_files="$VAL_FILES_STR" \
@@ -341,7 +372,7 @@ for ((phase3_iter=1; phase3_iter<=PHASE3_REPEAT_COUNT; phase3_iter++)); do
     trainer.nnodes=1 \
     trainer.save_freq=1200 \
     trainer.test_freq=30 \
-    trainer.project_name=ContinualCountdown3B_Qwen \
+    trainer.project_name=ContinualCountdown3B_llama \
     trainer.experiment_name=$RUN_NAME \
     trainer.total_epochs=1 \
     +trainer.val_before_train=true \
@@ -351,13 +382,13 @@ for ((phase3_iter=1; phase3_iter<=PHASE3_REPEAT_COUNT; phase3_iter++)); do
     2>&1 | tee -a "$LOG_FILE" | tee -a "$MASTER_LOG_FILE"
   ray stop
   sleep 10
-  echo "Phase 3 Iteration $phase3_iter completed"
+  echo "Experiment 3 Iteration $exp3_iter completed"
 done
-echo "Phase 3 completed after $PHASE3_REPEAT_COUNT iteration(s)"
+echo "Experiment 3 completed after $EXP3_REPEAT_COUNT iteration(s)"
 
-echo "=== ALL PHASES COMPLETED ==="
-echo "Phase 1: $PHASE1_REPEAT_COUNT iteration(s)"
-echo "Phase 2: $PHASE2_REPEAT_COUNT iteration(s)"
-echo "Phase 3: $PHASE3_REPEAT_COUNT iteration(s)"
-echo "Total iterations: $((PHASE1_REPEAT_COUNT + PHASE2_REPEAT_COUNT + PHASE3_REPEAT_COUNT))"
+echo "=== ALL EXPERIMENTS COMPLETED ==="
+echo "Experiment 1: $EXP1_REPEAT_COUNT iteration(s)"
+echo "Experiment 2: $EXP2_REPEAT_COUNT iteration(s)"
+echo "Experiment 3: $EXP3_REPEAT_COUNT iteration(s)"
+echo "Total iterations: $((EXP1_REPEAT_COUNT + EXP2_REPEAT_COUNT + EXP3_REPEAT_COUNT))"
 echo "Training completed successfully!"

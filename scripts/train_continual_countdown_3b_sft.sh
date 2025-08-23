@@ -6,7 +6,7 @@ usage() {
     echo "  SFT_SIZE: Number of training samples (default: 2048)"
     echo "  OPTIONS:"
     echo "    --gpus N          Number of GPUs to use (default: 8)"
-    echo "    --model PATH      Path to base model (default: /cpfs04/user/liyuanhang.p/model/qwen3b)"
+    echo "    --model PATH      Path to base model (default: /cpfs04/user/liyuanhang.p/model/qwen_instruct3b)"
     echo "    --wandb MODE      WANDB mode: online/offline (default: offline)"
     echo "    --help            Show this help message"
     echo ""
@@ -58,7 +58,7 @@ fi
 # Configuration - Set environment variables
 export NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-all}
 export CHECKPOINT_BASE_DIR=${CHECKPOINT_BASE_DIR:-/cpfs04/user/liyuanhang.p/tmp/checkpoints/continual_countdown3b_sft}
-export BASE_MODEL=${BASE_MODEL:-"/cpfs04/user/liyuanhang.p/model/qwen3b"}  # Path to mounted Qwen model
+export BASE_MODEL=${BASE_MODEL:-"/cpfs04/user/liyuanhang.p/model/qwen_instruct3b"}  # Path to mounted Qwen model
 export N_GPUS=${N_GPUS:-8}
 export WANDB_MODE=${WANDB_MODE:-offline}
 export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0,1,2,3,4,5,6,7}
@@ -92,6 +92,10 @@ export PYTHONUNBUFFERED=1
 export PYTHONFAULTHANDLER=1
 export PYTHONPATH=.:$PYTHONPATH
 
+# Create logs directory if it doesn't exist (moved earlier to fix tee error)
+mkdir -p ./logs
+chmod -R 777 ./logs
+
 # Check if base model exists
 if [ ! -d "$BASE_MODEL" ]; then
     echo "Error: Base model directory $BASE_MODEL does not exist"
@@ -113,8 +117,8 @@ from experiments.continual.data_gen_sft_efficient import SFTDataGenerator
 # Calculate test size as 25% of train size, minimum 128
 test_size = max(128, int($SFT_SIZE * 0.25))
 
-print(f'Generating SFT data: train_size={$SFT_SIZE}, test_size={test_size}')
-generator = SFTDataGenerator()
+print(f'Generating SFT data for Qwen: train_size={$SFT_SIZE}, test_size={test_size}')
+generator = SFTDataGenerator(model_type='qwen')  # Use qwen template
 generator.generate_group_data(train_size=$SFT_SIZE, test_size=test_size)
 print('SFT data generation completed!')
 " 2>&1 | tee -a "$LOG_FILE"
@@ -142,9 +146,8 @@ fi
 # Prevent model downloads
 export TRANSFORMERS_OFFLINE=1
 
-# Create logs directory if it doesn't exist
-mkdir -p ./logs
-chmod -R 777 ./logs
+# Create data directory if it doesn't exist
+mkdir -p ./data/continual/sft/0
 chmod -R 777 ./data/continual/sft/0
 
 # Print debug info

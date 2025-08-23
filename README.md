@@ -17,17 +17,17 @@ The countdown problem involves using a set of source numbers and basic arithmeti
 
 We generate three distinct groups of countdown problems, each with 512,000 problems:
 
-### Group 0 (Known Group)
+### Group 0 (Multiplication-based)
 - **50%**: 4 source numbers, operators `[+, -, *]`
 - **25%**: 3 source numbers, operators `[+, *]`
 - **25%**: 3 source numbers, operators `[-, *]`
 
-### Group 1 (Unknown Group)
+### Group 1 (Division-based)
 - **50%**: 4 source numbers, operators `[+, -, /]`
 - **25%**: 3 source numbers, operators `[+, /]`
 - **25%**: 3 source numbers, operators `[-, /]`
 
-### Group 2 (Unknown Group)
+### Group 2 (Mixed operations)
 - **25%**: 4 source numbers, operators `[+, *, /]`
 - **25%**: 4 source numbers, operators `[-, *, /]`
 - **50%**: 3 source numbers, operators `[*, /]`
@@ -144,39 +144,168 @@ ContinualCountdown/
 │   ├── train_continual_countdown_3b_curriculum_after_sft_llama.sh
 │   ├── debug_train_continual_countdown_3b_curriculum_after_sft_llama.sh
 │   └── develop_train_continual_countdown_3b_curriculum_after_sft_llama.sh
+├── examples/data_preprocess/  # Data preprocessing scripts
+│   ├── gsm8k.py              # GSM8K dataset preprocessing
+│   ├── ifeval.py             # IFEval dataset preprocessing
+│   ├── deepmath.py           # DeepMath-103K dataset preprocessing
+│   └── countdown.py          # Countdown dataset generation
+├── verl/trainer/config/       # Training configuration files
+│   ├── sft_trainer.yaml      # Qwen instruct SFT config
+│   ├── sft_trainer_llama.yaml # Llama instruct SFT config
+│   ├── sft_trainer_gsm8k*.yaml # GSM8K SFT configs
+│   ├── sft_trainer_ifeval*.yaml # IFEval SFT configs
+│   └── sft_trainer_deepmath*.yaml # DeepMath SFT configs
 └── README.md                  # This file
 ```
 
-## Running Experiments
+## Data Generation
+
+### Multi-Template Dataset Generation
+
+All data generation scripts support `--model_type all` to automatically generate datasets for all three model templates (base, qwen-instruct, llama-instruct) in separate directories. This ensures each model type gets properly formatted data without manual configuration.
+
+#### Countdown Dataset (Primary)
+```bash
+# Generate all model types (recommended)
+python experiments/continual/data_gen_efficient_simpler.py \
+    --model_type all \
+    --train_size 512000 \
+    --test_size 512
+
+# Generate specific group for all model types
+python experiments/continual/data_gen_efficient_simpler.py \
+    --model_type all \
+    --group 0 \
+    --train_size 512000 \
+    --test_size 512
+```
+
+#### GSM8K Dataset
+```bash
+# Generate all model types
+python examples/data_preprocess/gsm8k.py \
+    --model_type all \
+    --from_local \
+    --local_json_dir ./data/gsm8k/main \
+    --prepend_cot_examples \
+    --max_prompt_length 800
+```
+
+#### DeepMath Dataset
+```bash
+# Generate all model types with CoT examples
+python examples/data_preprocess/deepmath.py \
+    --model_type all \
+    --from_local \
+    --local_parquet_dir ./data/DeepMath-103K/data \
+    --prepend_cot_examples \
+    --max_prompt_length 800
+```
+
+#### IFEval Dataset
+```bash
+# Generate all model types
+python examples/data_preprocess/ifeval.py \
+    --model_type all \
+    --from_local \
+    --local_parquet_dir ./data/RLVR-IFeval/data \
+    --max_prompt_length 700
+```
+
+### Generated Directory Structure
+```
+./data/
+├── base/
+│   ├── continual/     # Countdown data (base template)
+│   ├── gsm8k/         # GSM8K data (base template)
+│   ├── deepmath/      # DeepMath data (base template)
+│   └── ifeval/        # IFEval data (base template)
+├── qwen_instruct/
+│   ├── continual/     # Countdown data (qwen instruct template)
+│   ├── gsm8k/         # GSM8K data (qwen instruct template)
+│   ├── deepmath/      # DeepMath data (qwen instruct template)
+│   └── ifeval/        # IFEval data (qwen instruct template)
+└── llama_instruct/
+    ├── continual/     # Countdown data (llama instruct template)
+    ├── gsm8k/         # GSM8K data (llama instruct template)
+    ├── deepmath/      # DeepMath data (llama instruct template)
+    └── ifeval/        # IFEval data (llama instruct template)
+```
+
+### Key Features
+- **Unified Field Names**: All datasets use `prompt` and `response` fields
+- **Automatic Template Selection**: Each directory contains data formatted for the corresponding model type
+- **One-Command Generation**: Use `--model_type all` to generate all templates at once
+- **Consistent Structure**: Same directory layout across all datasets
+
+## Supervised Fine-Tuning (SFT)
+
+### Training SFT Models
+
+Use the provided training scripts to train SFT models on the Countdown dataset:
+
+#### Qwen SFT Training
+```bash
+# Train Qwen instruct model on Countdown data
+bash scripts/train_continual_countdown_3b_sft.sh 2048 --gpus 8 --wandb offline
+```
+
+#### Llama SFT Training
+```bash
+# Train Llama instruct model on Countdown data
+bash llama_scripts/train_continual_countdown_3b_sft_llama.sh 2048 --gpus 8 --wandb offline
+```
+
+### SFT Model Output Locations
+- **Qwen SFT Model**: `/nas/shared/sys2/yuanhangli/tmp/qwen_instruct_sft_model`
+- **Llama SFT Model**: `/nas/shared/sys2/yuanhangli/tmp/llama_instruct_sft_model`
+
+### SFT Training Format
+Each SFT sample contains a countdown equation example with:
+- Step-by-step reasoning process
+- Proper answer submission format with `<answer>` tags
+
+## Continual Learning Training
 
 ### Prerequisites
 - Ray cluster setup
 - CUDA environment with 8 GPUs
-- Model checkpoints in specified paths
+- Trained SFT models (see above)
 
-### Execution
+### Running Continual Learning Experiments
+
+#### Qwen Continual Training
 ```bash
-# For Qwen2.5 experiments
+# Run continual learning experiments on Qwen model
 bash scripts/train_continual_countdown_3b_curriculum_after_sft.sh
+```
 
-# For Llama3.2 experiments  
+#### Llama Continual Training
+```bash
+# Run continual learning experiments on Llama model
 bash llama_scripts/train_continual_countdown_3b_curriculum_after_sft_llama.sh
 ```
+
+### Experimental Design
+
+The continual learning experiments follow this sequence:
+1. **Phase 1**: Train on Group 0 (multiplication-based operations)
+2. **Phase 2**: Train on Group 1 (division-based operations) 
+3. **Phase 3**: Train on Group 2 (mixed operations)
+
+Each phase uses PPO reinforcement learning with curriculum learning enabled.
+
+### Key Configuration
+- **Batch Size**: 256
+- **PPO Mini/Micro Batch**: 32/8
+- **Actor Learning Rate**: 1e-6
+- **Critic Learning Rate**: 1e-5
+- **Epochs per Group**: 15
+- **Total Rounds**: 1
 
 ## Metrics and Analysis
 
 ### Plasticity Metrics
-- **C_K**: Fisher Infor Matrix eigenvalues-based plasticity metric
-- **GRAMA**: A Gradient-based plasticity analysis
-
-## Results and Findings
-
-*[TODO]*
-
-## Citation
-
-*[TODO]*
-
-## Contact
-
-*[TODO]*
+- **C_K**: Fisher Information Matrix eigenvalues-based plasticity metric
+- **GRAMA**: Gradient-based plasticity analysis
+- **REDO**: Plasticity analysis with threshold mode (τ=0.1)

@@ -29,11 +29,10 @@ optim:
 
 trainer:
   default_local_dir: /nas/shared/sys2/yuanhangli/tmp/qwen_instruct_sft_model
-  default_hdfs_dir: /cpfs04/user/liyuanhang.p/tmp/experiments/continual_countdown3b/ # change the hdfs path here
+  default_hdfs_dir: /cpfs04/user/liyuanhang.p/tmp/experiments/continual_countdown3b_qwen_instruct/
   resume_path: null
-  project_name: countdown-sft
+  project_name: countdown-sft-qwen-instruct
   experiment_name: test
   total_epochs: 1
   logger: ['console']
   seed: 1
-

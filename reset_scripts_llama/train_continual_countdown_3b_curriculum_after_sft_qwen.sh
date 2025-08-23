@@ -20,7 +20,7 @@ fi
 # Configuration - Set environment variables
 export NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-all}
 export CHECKPOINT_BASE_DIR=${CHECKPOINT_BASE_DIR:-/nas/shared/sys2/yuanhangli/tmp/checkpoints/continual_countdown3b_llama_curriculum}
-export BASE_MODEL=${BASE_MODEL:-"/nas/shared/sys2/yuanhangli/tmp/llama_sft_model/${SFT_CHECKPOINT}"}  # Path to mounted llama SFT model
+export BASE_MODEL=${BASE_MODEL:-"/nas/shared/sys2/yuanhangli/tmp/llama_instruct_sft_model/${SFT_CHECKPOINT}"}  # Path to mounted Llama Instruct SFT model
 export N_GPUS=${N_GPUS:-4}  # Using 8 A100 GPUs
 export ROLLOUT_TP_SIZE=${ROLLOUT_TP_SIZE:-1}  # Tensor parallel size optimized for 8 GPUs
 export WANDB_MODE=${WANDB_MODE:-offline}  # Run WandB in offline mode
@@ -125,6 +125,8 @@ for ((phase1_iter=1; phase1_iter<=PHASE1_REPEAT_COUNT; phase1_iter++)); do
   echo "Val files: $VAL_FILES_STR" | tee -a "$LOG_FILE" | tee -a "$MASTER_LOG_FILE"
   
   python3 -m verl.trainer.main_ppo \
+  --config-path ./verl/trainer/config \
+  --config-name ppo_trainer_llama \
     fsdp_grad_metric_enabled=$FSDP_GRAD_METRIC_ENABLED \
     data.train_files="$TRAIN_FILES_STR" \
     data.val_files="$VAL_FILES_STR" \
@@ -203,6 +205,8 @@ for ((phase2_iter=1; phase2_iter<=PHASE2_REPEAT_COUNT; phase2_iter++)); do
   echo "Val files: $VAL_FILES_STR" | tee -a "$LOG_FILE" | tee -a "$MASTER_LOG_FILE"
 
 python3 -m verl.trainer.main_ppo \
+  --config-path ./verl/trainer/config \
+  --config-name ppo_trainer_llama \
   fsdp_grad_metric_enabled=$FSDP_GRAD_METRIC_ENABLED \
   data.train_files="$TRAIN_FILES_STR" \
   data.val_files="$VAL_FILES_STR" \
@@ -286,6 +290,8 @@ for ((phase3_iter=1; phase3_iter<=PHASE3_REPEAT_COUNT; phase3_iter++)); do
   echo "Val files: $VAL_FILES_STR" | tee -a "$LOG_FILE" | tee -a "$MASTER_LOG_FILE"
 
   python3 -m verl.trainer.main_ppo \
+  --config-path ./verl/trainer/config \
+  --config-name ppo_trainer_llama \
     fsdp_grad_metric_enabled=$FSDP_GRAD_METRIC_ENABLED \
     data.train_files="$TRAIN_FILES_STR" \
     data.val_files="$VAL_FILES_STR" \

@@ -13,7 +13,7 @@ show_usage() {
     echo "Arguments:"
     echo "  SFT_SIZE       Number of SFT training samples (default: 2048)"
     echo "  --gpus         Number of GPUs to use (default: 8)"
-    echo "  --model        Path to base model (default: /cpfs04/user/liyuanhang.p/model/llama3b)"
+    echo "  --model        Path to base model (default: /cpfs04/user/liyuanhang.p/model/llama_instruct3b)"
     echo "  --wandb        Wandb mode: online, offline, or disabled (default: disabled)"
     echo ""
     echo "Examples:"
@@ -28,7 +28,7 @@ show_usage() {
 # Parse command line arguments
 SFT_SIZE=${1:-2048}
 NUM_GPUS=8
-BASE_MODEL="/cpfs04/user/liyuanhang.p/model/llama3b"
+BASE_MODEL="/cpfs04/user/liyuanhang.p/model/llama_instruct3b"
 WANDB_MODE="disabled"
 
 # Parse optional arguments
@@ -119,8 +119,8 @@ from experiments.continual.data_gen_sft_efficient import SFTDataGenerator
 # Calculate test size as 25% of train size, minimum 128
 test_size = max(128, int($SFT_SIZE * 0.25))
 
-print(f'Generating SFT data: train_size={$SFT_SIZE}, test_size={test_size}')
-generator = SFTDataGenerator()
+print(f'Generating SFT data for Llama: train_size={$SFT_SIZE}, test_size={test_size}')
+generator = SFTDataGenerator(model_type='llama')  # Use llama template
 generator.generate_group_data(train_size=$SFT_SIZE, test_size=test_size)
 print('SFT data generation completed!')
 " 2>&1 | tee -a "$LOG_FILE"
@@ -149,7 +149,7 @@ echo "Training data: $TRAIN_DATA" | tee -a "$LOG_FILE"
 echo "Test data: $TEST_DATA" | tee -a "$LOG_FILE"
 
 # Verify config file exists
-CONFIG_PATH="/cpfs04/user/liyuanhang.p/src/ContinualCountdown/verl/trainer/config/sft_trainer_llama.yaml"
+CONFIG_PATH="/cpfs04/user/liyuanhang.p/src/ContinualCountdown/verl/trainer/config/sft_llama_instruct_trainer.yaml"
 if [ ! -f "$CONFIG_PATH" ]; then
     echo "Error: Config file not found: $CONFIG_PATH" | tee -a "$LOG_FILE"
     exit 1
@@ -164,7 +164,7 @@ echo "Starting SFT training with $NUM_GPUS GPUs..." | tee -a "$LOG_FILE"
 torchrun --standalone --nnodes=1 --nproc_per_node=$NUM_GPUS --master_port=29500 \
     -m verl.trainer.fsdp_sft_trainer \
     --config-path /cpfs04/user/liyuanhang.p/src/ContinualCountdown/verl/trainer/config \
-    --config-name sft_trainer_llama.yaml \
+    --config-name sft_llama_instruct_trainer \
     2>&1 | tee -a "$LOG_FILE"
 
 TRAINING_EXIT_CODE=$?

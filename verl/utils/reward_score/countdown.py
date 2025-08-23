@@ -14,13 +14,17 @@ from pyparsing import (Word, nums, oneOf, Forward, Group, Suppress,
 
 def extract_solution(solution_str):
     """Extract the equation from the solution string."""
-    # Remove everything before the first "Assistant:"
+    # Remove everything before the assistant response for different templates
     if "Assistant:" in solution_str:
         solution_str = solution_str.split("Assistant:", 1)[1]
         solution_str = solution_str.split('\n')[-1]
     elif "<|im_start|>assistant" in solution_str:
         solution_str = solution_str.split("<|im_start|>assistant", 1)[1]
         solution_str = solution_str.split('\n')[-1]
+    elif "<|start_header_id|>assistant<|end_header_id|>" in solution_str:
+        # Handle Llama template format
+        solution_str = solution_str.split("<|start_header_id|>assistant<|end_header_id|>", 1)[1]
+        solution_str = solution_str.strip()
     else:
         lines = solution_str.splitlines()
         if len(lines) > 2:
@@ -72,6 +76,8 @@ def evaluate_equation(equation_str):
         return None
 
 def extract_complex_expressions(s, number_of_numbers):
+    if s is None or not isinstance(s, str):
+        return []
     allowed_chars = set('0123456789+-*/%@(). ')
     start_chars = set('0123456789(')
     digits = set('0123456789')
@@ -190,6 +196,9 @@ def estimate_thought_reward(thoughts, available_numbers, do_print=False):
     Calculate the reward for the thought: 0.01 per unique, valid result, up to a maximum of 0.1.
     Only count if the expression uses all available numbers exactly once and produces a new result.
     """
+    if thoughts is None or not thoughts:
+        return 0.0
+    
     seen_results = dict()
     for expr in set(thoughts):
         if validate_equation(expr, available_numbers):
@@ -210,12 +219,8 @@ def compute_score(solution_str, ground_truth, method='strict', format_score=0.1,
         solution_str: the solution text
         ground_truth: dictionary containing target number and available numbers
         method: the method to extract the solution
-        format_score: the score for correct format but wrong answer
-        score: the score for the correct answer
     """
-    # Handle both simple and extenged ground truth formats
-    if isinstance(ground_truth, dict) and 'ground_truth' in ground_truth:
-        ground_truth = ground_truth['ground_truth']
+    
     target = ground_truth['target']
     numbers = ground_truth['numbers']
     if isinstance(numbers, list):

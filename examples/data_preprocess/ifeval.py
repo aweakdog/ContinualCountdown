@@ -5,6 +5,7 @@ import json
 import os
 import re
 import glob
+import datasets
 from datasets import Dataset, load_dataset
 from transformers import AutoTokenizer
 import pandas as pd
@@ -19,7 +20,34 @@ def extract_constraint_info(ground_truth_str):
         # Return a default JSON structure if parsing fails
         return '{"func_name": "unknown", "N": null}'
 
-def process_fn(example, idx, tokenizer, args, data_source, tokenizer_path=None):
+
+def make_prefix(user_message, template_type='base'):
+    """Generate prompt with different template formats"""
+    instruction_following = "Follow the given constraints carefully and provide a helpful response."
+    prompt_body = f"{user_message}\n\n{instruction_following}"
+    
+    if template_type == 'base':
+        prefix = f"""A conversation between User and Assistant. The user gives instructions with constraints, and the Assistant follows them carefully.
+User: {prompt_body}
+Assistant: """
+    elif template_type == 'qwen-instruct':
+        prefix = f"""<|im_start|>system
+You are a helpful assistant that follows instructions and constraints carefully.<|im_end|>
+<|im_start|>user
+{prompt_body}<|im_end|>
+<|im_start|>assistant
+"""
+    elif template_type == 'llama-instruct':
+        prefix = f"""<|begin_of_text|><|start_header_id|>system<|end_header_id|>
+
+You are a helpful assistant that follows instructions and constraints carefully.<|eot_id|><|start_header_id|>user<|end_header_id|>
+
+{prompt_body}<|eot_id|><|start_header_id|>assistant<|end_header_id|>
+
+"""
+    return prefix
+
+def process_fn(example, idx, tokenizer, args, data_source, template_type='all'):
     """Process a single IFeval example into RLHF format"""
     
     # Extract the user message content
@@ -31,47 +59,14 @@ def process_fn(example, idx, tokenizer, args, data_source, tokenizer_path=None):
     constraint = example.get('constraint', '')
     constraint_type = example.get('constraint_type', '')
     
-    # Create instruction following prompt
-    instruction_following = "Follow the given constraints carefully and provide a helpful response."
+    # Generate prompts for all templates if template_type is 'all'
+    templates_to_generate = ['base', 'qwen-instruct', 'llama-instruct'] if template_type == 'all' else [template_type]
     
-    # Combine user message with instruction
-    prompt_body = f"{user_message}\n\n{instruction_following}"
-    
-    # Check prompt length using chat template (same as training) and filter if too long
-    messages_for_template = [{"role": "user", "content": prompt_body}]
-    
-    # Handle different tokenizer types and their chat templates
-    if hasattr(tokenizer, 'chat_template') and tokenizer.chat_template is not None:
-        # Use built-in chat template (Qwen, etc.)
-        prompt_with_chat_template = tokenizer.apply_chat_template(messages_for_template, tokenize=False, add_generation_prompt=True)
-    else:
-        # Manual chat template for Llama and others without built-in template
-        if tokenizer_path and "llama" in tokenizer_path.lower():
-            # Llama 3.2 chat format
-            prompt_with_chat_template = f"<|begin_of_text|><|start_header_id|>user<|end_header_id|>\n\n{prompt_body}<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n"
-        else:
-            # Generic format as fallback
-            prompt_with_chat_template = f"User: {prompt_body}\n\nAssistant: "
-    
-    # Use same tokenization as training: add_special_tokens=False
-    tokens = tokenizer.encode(prompt_with_chat_template, add_special_tokens=False)
-    prompt_token_length = len(tokens)
-    
-    # Dynamic filtering based on actual prompt length after chat template
-    # Allow up to 950 tokens for prompt, leaving ~74 tokens for generation
-    max_allowed_prompt_tokens = min(args.max_prompt_length, 950)
-    if prompt_token_length > max_allowed_prompt_tokens:
-        return None
-
     # Extract ground truth constraint validation function
     ground_truth = extract_constraint_info(example['ground_truth'])
     
     data = {
         "data_source": data_source,
-        "prompt": [{
-            "role": "user",
-            "content": prompt_body,
-        }],
         "ability": "instruction_following",
         "reward_model": {
             "style": "rule",
@@ -85,6 +80,42 @@ def process_fn(example, idx, tokenizer, args, data_source, tokenizer_path=None):
             'dataset': example.get('dataset', 'ifeval'),
         }
     }
+    
+    # Generate prompts for each template
+    valid_templates = []
+    for template in templates_to_generate:
+        prompt_prefix = make_prefix(user_message, template)
+        
+        # Length filtering if tokenizer is available
+        if tokenizer is not None:
+            tokens = tokenizer.encode(prompt_prefix, add_special_tokens=False)
+            if len(tokens) > args.max_prompt_length:
+                continue  # Skip this template if too long
+        
+        valid_templates.append(template)
+        
+        # Store prompt for this template
+        if template == 'base':
+            data["prompt_base"] = prompt_prefix
+            data["response_base"] = ""  # IFEval doesn't have reference responses
+        elif template == 'qwen-instruct':
+            data["prompt_qwen_instruct"] = prompt_prefix
+            data["response_qwen_instruct"] = ""
+        elif template == 'llama-instruct':
+            data["prompt_llama_instruct"] = prompt_prefix
+            data["response_llama_instruct"] = ""
+    
+    # Return None if no valid templates (all filtered out)
+    if not valid_templates:
+        return None
+    
+    # Keep backward compatibility with single prompt field for non-all modes
+    if template_type != 'all':
+        if f"prompt_{template_type.replace('-', '_')}" in data:
+            data["prompt"] = [{
+                "role": "user",
+                "content": data[f"prompt_{template_type.replace('-', '_')}"],
+            }]
     
     return data
 
@@ -112,21 +143,40 @@ if __name__ == '__main__':
                         help='Maximum number of samples to process (useful for creating smaller datasets)')
     parser.add_argument('--max_prompt_length', type=int, default=700,
                         help='Maximum prompt length in tokens. Samples exceeding this will be filtered out. Should be lower than model max_length to account for chat template overhead.')
+    # Template support
+    parser.add_argument('--template_type', default='all', choices=['base', 'qwen-instruct', 'llama-instruct', 'all'],
+                        help='Template type to generate. "all" generates all templates in the same dataset')
+    parser.add_argument('--model_type', default='single', choices=['base', 'qwen', 'llama', 'all', 'single'],
+                        help='Model type for directory structure. "all" generates separate datasets for each template')
+    parser.add_argument('--tokenizer_path', default=None,
+                        help='Path to tokenizer for length filtering. If not set, uses default paths based on template')
 
     args = parser.parse_args()
 
     data_source = 'RLVR-IFeval'
+
+def process_single_model_type(args, data_source):
     
     # Initialize tokenizer for token-based length filtering
-    # Use the local Llama tokenizer from SFT model
-    tokenizer_path = "/nas/shared/sys2/yuanhangli/tmp/llama_sft_model/global_step_0"
-    if not os.path.exists(tokenizer_path):
-        raise FileNotFoundError(f"Local tokenizer not found at {tokenizer_path}")
+    if args.tokenizer_path:
+        tokenizer_path = args.tokenizer_path
+    else:
+        # Use default tokenizer paths
+        if args.template_type == 'qwen-instruct' or args.template_type == 'all':
+            tokenizer_path = "/cpfs04/user/liyuanhang.p/model/qwen_instruct3b"
+        elif args.template_type == 'llama-instruct':
+            tokenizer_path = "/cpfs04/user/liyuanhang.p/model/llama_instruct3b"
+        else:
+            tokenizer_path = "/cpfs04/user/liyuanhang.p/model/qwen_instruct3b"  # default
     
-    tokenizer = AutoTokenizer.from_pretrained(tokenizer_path, trust_remote_code=True)
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
-    print(f"Using local tokenizer from: {tokenizer_path}")
+    if not os.path.exists(tokenizer_path):
+        print(f"Warning: Tokenizer not found at {tokenizer_path}, skipping length filtering")
+        tokenizer = None
+    else:
+        tokenizer = AutoTokenizer.from_pretrained(tokenizer_path, trust_remote_code=True)
+        if tokenizer.pad_token is None:
+            tokenizer.pad_token = tokenizer.eos_token
+        print(f"Using tokenizer from: {tokenizer_path}")
 
     # Load dataset: from local parquet if requested; otherwise from HF Hub
     if args.from_local:
@@ -137,30 +187,100 @@ if __name__ == '__main__':
         
         if len(parquet_files) > 0:
             print(f"Found {len(parquet_files)} parquet files in {data_dir}")
-            # Load all parquet files
-            dfs = []
-            for file in parquet_files:
-                df = pd.read_parquet(file)
-                dfs.append(df)
-            combined_df = pd.concat(dfs, ignore_index=True)
-            train_dataset = Dataset.from_pandas(combined_df)
+            dataset = datasets.load_dataset('parquet', data_files={'train': parquet_files})
         else:
             raise FileNotFoundError(f"No train-*.parquet files found in {data_dir}")
     else:
-        # Load from Hugging Face Hub (if available)
-        print("Loading from Hugging Face Hub not implemented yet. Use --from_local flag.")
-        exit(1)
+        dataset = datasets.load_dataset(data_source)
 
-    original_size = len(train_dataset)
-    print(f"Loaded {original_size} samples from IFeval dataset")
-
-    # Sample if requested
-    if args.max_samples is not None and args.max_samples < len(train_dataset):
+    train_dataset = dataset['train']
+    
+    # Sample dataset if max_samples is specified
+    if args.max_samples and len(train_dataset) > args.max_samples:
         print(f"Sampling {args.max_samples} from {len(train_dataset)} total samples")
         train_dataset = train_dataset.select(range(args.max_samples))
+
+    # Process the dataset
+    def process_fn(example, idx):
+        # Extract prompt from messages field
+        messages = example['messages']
+        if isinstance(messages, list) and len(messages) > 0:
+            prompt_raw = messages[0]['content']
+        else:
+            prompt_raw = str(messages)
+        
+        # IFeval doesn't have response field - we'll generate empty response for training
+        response_raw = ""
+        
+        # Extract constraint information
+        constraint_type = example.get('constraint_type', '')
+        constraint = example.get('constraint', '')
+        ground_truth = example.get('ground_truth', '')
+
+        # Generate prompts for all templates if template_type is 'all'
+        templates_to_generate = ['base', 'qwen-instruct', 'llama-instruct'] if args.template_type == 'all' else [args.template_type]
+        
+        data = {
+            "data_source": data_source,
+            "ability": "instruction_following",
+            "reward_model": {
+                "style": "rule",
+                "ground_truth": None  # IFEval uses rule-based evaluation
+            },
+            "extra_info": {
+                'split': 'train',
+                'index': idx,
+                'constraint_type': constraint_type,
+                'constraint': constraint,
+                'ground_truth': ground_truth,
+                "prompt": prompt_raw,
+                "response": response_raw,
+            }
+        }
+        
+        # Generate prompts for each template
+        valid_templates = []
+        for template in templates_to_generate:
+            prompt_prefix = make_prefix(prompt_raw, template)
+            
+            # Length filtering if tokenizer is available
+            if tokenizer is not None:
+                tokens = tokenizer.encode(prompt_prefix, add_special_tokens=False)
+                if len(tokens) > args.max_prompt_length:
+                    continue  # Skip this template if too long
+            
+            valid_templates.append(template)
+            
+            # Store prompt and response for this template
+            if template == 'base':
+                data["prompt_base"] = prompt_prefix
+                data["response_base"] = response_raw
+            elif template == 'qwen-instruct':
+                data["prompt_qwen_instruct"] = prompt_prefix
+                data["response_qwen_instruct"] = response_raw
+            elif template == 'llama-instruct':
+                data["prompt_llama_instruct"] = prompt_prefix
+                data["response_llama_instruct"] = response_raw
+        
+        # Return None if no valid templates (all filtered out)
+        if not valid_templates:
+            return None
+        
+        # Keep backward compatibility with single prompt field for non-all modes
+        if args.template_type != 'all':
+            if f"prompt_{args.template_type.replace('-', '_')}" in data:
+                data["prompt"] = [{
+                    "role": "user",
+                    "content": data[f"prompt_{args.template_type.replace('-', '_')}"],
+                }]
+                data["response"] = data[f"response_{args.template_type.replace('-', '_')}"]
+        
+        return data
+
+    # Get original dataset size for statistics
+    original_size = len(train_dataset)
     
-    train_dataset = train_dataset.map(function=process_fn, with_indices=True, 
-                                     fn_kwargs={'tokenizer': tokenizer, 'args': args, 'data_source': data_source, 'tokenizer_path': tokenizer_path})
+    train_dataset = train_dataset.map(function=process_fn, with_indices=True)
     
     # Filter out None values (filtered samples)
     train_dataset = train_dataset.filter(lambda x: x is not None)
@@ -175,14 +295,20 @@ if __name__ == '__main__':
     print(f"Samples retained: {retained_samples}")
     print(f"Filter rate: {filtered_samples/original_size*100:.2f}%")
 
-    # Create test dataset by splitting from train
+    # Create test dataset by splitting from train (IFEval doesn't have separate test set)
     # Use fixed 1024 samples for test, rest for train
     total_samples_after_filter = len(train_dataset)
-    test_size = min(1024, total_samples_after_filter)  # At most 1025 samples for test
+    test_size = min(1024, total_samples_after_filter // 10)  # Use 10% for test, max 1024
+    test_size = max(1, test_size)  # At least 1 sample for test
     train_size = total_samples_after_filter - test_size
     
-    test_dataset = train_dataset.select(range(test_size))
-    train_dataset = train_dataset.select(range(test_size, total_samples_after_filter))
+    if train_size <= 0:
+        # If dataset is too small, use all for train and duplicate first sample for test
+        test_dataset = train_dataset.select([0])
+        # Keep original train_dataset as is
+    else:
+        test_dataset = train_dataset.select(range(test_size))
+        train_dataset = train_dataset.select(range(test_size, total_samples_after_filter))
     
     print(f"Split dataset: {len(train_dataset)} train samples, {len(test_dataset)} test samples")
 
@@ -212,6 +338,45 @@ if __name__ == '__main__':
     print(f"Saved {len(test_dataset)} samples to {os.path.join(output_dir, 'test.parquet')}")
 
     if hdfs_dir is not None:
-        from verl.utils.hdfs_io import copy, makedirs
         makedirs(hdfs_dir)
         copy(src=output_dir, dst=hdfs_dir)
+
+if __name__ == '__main__':
+    # Handle model_type all - generate separate datasets
+    if args.model_type == 'all':
+        model_types = ['base', 'qwen', 'llama']
+        base_dirs = {
+            'base': './data/base/ifeval',
+            'qwen': './data/qwen_instruct/ifeval',
+            'llama': './data/llama_instruct/ifeval'
+        }
+        template_mapping = {
+            'base': 'base',
+            'qwen': 'qwen-instruct', 
+            'llama': 'llama-instruct'
+        }
+        
+        print(f"[IFEval] Generating datasets for all model types")
+        
+        for model_type in model_types:
+            print(f"\n=== Generating {model_type.upper()} template data ===")
+            model_output_dir = base_dirs[model_type]
+            model_template_type = template_mapping[model_type]
+            
+            # Create a copy of args for this model type
+            import copy
+            model_args = copy.deepcopy(args)
+            model_args.output_dir = model_output_dir
+            model_args.template_type = model_template_type
+            
+            print(f"Output directory: {model_output_dir}")
+            print(f"Template type: {model_template_type}")
+            
+            # Process this model type
+            process_single_model_type(model_args, data_source)
+        
+        print(f"\nAll model types generated successfully!")
+        exit(0)
+    
+    # Single model type processing
+    process_single_model_type(args, data_source)

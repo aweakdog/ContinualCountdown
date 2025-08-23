@@ -99,7 +99,13 @@ class RewardManager():
             data_source = data_item.non_tensor_batch['data_source']
             compute_score_fn = _select_rm_score_fn(data_source)
 
-            score = compute_score_fn(solution_str=sequences_str, ground_truth=ground_truth)
+            # Pass the correct ground truth format based on the scorer function
+            if data_source == 'zwhe99/DeepMath-103K':
+                # DeepMath scorer expects just the answer string, not the full dict
+                score = compute_score_fn(solution_str=sequences_str, ground_truth=ground_truth['ground_truth'])
+            else:
+                # Other scorers expect the full ground truth dict
+                score = compute_score_fn(solution_str=sequences_str, ground_truth=ground_truth)
             reward_tensor[i, valid_response_length - 1] = score
 
             if data_source not in already_print_data_sources:

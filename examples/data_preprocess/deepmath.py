@@ -106,6 +106,9 @@ if __name__ == '__main__':
     '''
     python examples/data_preprocess/deepmath.py --from_local --local_dir ./data/DeepMath-103K/data --max_prompt_length 1000 --prepend_cot_examples --output_dir ./data/deepmath/0
     '''
+    '''
+    python examples/data_preprocess/deepmath.py --from_local --local_parquet_dir ./data/DeepMath-103K/data --output_dir ./data/deepmath --max_prompt_length 1000 --prepend_cot_examples --template_type all --model_type all
+    ''' 
     parser = argparse.ArgumentParser()
     parser.add_argument('--local_dir', default='~/data/deepmath')
     parser.add_argument('--hdfs_dir', default=None)

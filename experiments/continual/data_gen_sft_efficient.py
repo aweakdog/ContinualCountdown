@@ -415,12 +415,12 @@ class SFTDataGenerator:
                 num_incorrect = random.randint(0, 2)
                 incorrect_solutions = generate_incorrect_solutions(source_number, target_num, num_incorrect=num_incorrect) if num_incorrect > 0 else []
                 
-                response += "Let me try some approaches:\n\n"
+                #response += "Let me try some approaches:\n\n"
                 
                 # Add incorrect attempts
-                if incorrect_solutions:
-                    for i, incorrect in enumerate(incorrect_solutions):
-                        response += f"Attempt {i+1}: {incorrect}, Not correct. Let's try another one.\n\n"
+                #if incorrect_solutions:
+                #    for i, incorrect in enumerate(incorrect_solutions):
+                #        response += f"Attempt {i+1}: {incorrect}, Not correct. Let's try another one.\n\n"
                 
                 # Add correct solution as the final attempt
                 try:
@@ -429,12 +429,12 @@ class SFTDataGenerator:
                     thinking_process = " = ".join([step.split(" = ")[1] for step in steps_result if " = " in step])
                     attempt_num = len(incorrect_solutions) + 1
                     if thinking_process:
-                        response += f"Attempt {attempt_num}: {full_expr} = {thinking_process} Correct!\n"
+                        response += f"{full_expr} = {thinking_process} Correct!\n"
                     else:
-                        response += f"Attempt {attempt_num}: {full_expr} = {final_result} Correct!\n"
+                        response += f"{full_expr} = {final_result} Correct!\n"
                 except:
                     attempt_num = len(incorrect_solutions) + 1
-                    response += f"Attempt {attempt_num}: {full_expr} Correct!\n"
+                    response += f"{full_expr} Correct!\n"
                 
                 response += f"</think>\n\n<answer>{full_expr}</answer>"
                 

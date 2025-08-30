@@ -163,7 +163,7 @@ echo "Starting SFT training with $NUM_GPUS GPUs..." | tee -a "$LOG_FILE"
 
 torchrun --standalone --nnodes=1 --nproc_per_node=$NUM_GPUS --master_port=29500 \
     -m verl.trainer.fsdp_sft_trainer \
-    --config-path ./verl/trainer/config \
+    --config-path $(pwd)/verl/trainer/config \
     --config-name sft_qwen_base_trainer \
     2>&1 | tee -a "$LOG_FILE"
 

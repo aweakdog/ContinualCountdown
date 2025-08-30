@@ -412,15 +412,15 @@ class SFTDataGenerator:
                 
                 # Randomly decide number of incorrect attempts (0-2)
                 import random
-                num_incorrect = random.randint(0, 2)
+                num_incorrect = random.randint(0, 1)
                 incorrect_solutions = generate_incorrect_solutions(source_number, target_num, num_incorrect=num_incorrect) if num_incorrect > 0 else []
                 
                 #response += "Let me try some approaches:\n\n"
                 
                 # Add incorrect attempts
-                #if incorrect_solutions:
-                #    for i, incorrect in enumerate(incorrect_solutions):
-                #        response += f"Attempt {i+1}: {incorrect}, Not correct. Let's try another one.\n\n"
+                if incorrect_solutions:
+                    for i, incorrect in enumerate(incorrect_solutions):
+                        response += f"{incorrect}, Not correct, Let's try another one.\n\n"
                 
                 # Add correct solution as the final attempt
                 try:

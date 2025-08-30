@@ -28,7 +28,7 @@ show_usage() {
 # Parse command line arguments
 SFT_SIZE=${1:-2048}
 NUM_GPUS=8
-BASE_MODEL="/cpfs04/user/liyuanhang.p/model/llama_base3b"
+BASE_MODEL="/mnt/shared-storage-user/liyuanhang-p/model/llama_base3b"
 WANDB_MODE="disabled"
 
 # Parse optional arguments

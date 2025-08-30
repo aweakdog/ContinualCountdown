@@ -137,11 +137,11 @@ def process_single_model_type(args, data_source):
     else:
         # Use default tokenizer paths
         if args.template_type == 'qwen-instruct' or args.template_type == 'all':
-            tokenizer_path = "/cpfs04/user/liyuanhang.p/model/qwen_instruct3b"
+            tokenizer_path = "./models/qwen_instruct3b"
         elif args.template_type == 'llama-instruct':
-            tokenizer_path = "/cpfs04/user/liyuanhang.p/model/llama_instruct3b"
+            tokenizer_path = "./models/llama_instruct3b"
         else:
-            tokenizer_path = "/cpfs04/user/liyuanhang.p/model/qwen_instruct3b"  # default
+            tokenizer_path = "./models/qwen_instruct3b"  # default
     
     if not os.path.exists(tokenizer_path):
         print(f"Warning: Tokenizer not found at {tokenizer_path}, skipping length filtering")

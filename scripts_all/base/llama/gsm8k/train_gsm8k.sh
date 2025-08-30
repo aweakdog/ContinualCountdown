@@ -12,8 +12,8 @@ fi
 
 # ===== Environment config =====
 export NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-all}
-export CHECKPOINT_BASE_DIR=${CHECKPOINT_BASE_DIR:-/nas/shared/sys2/yuanhangli/tmp/checkpoints/gsm8k_llama3b_ppo}
-export BASE_MODEL=${BASE_MODEL:-"/nas/shared/sys2/yuanhangli/tmp/llama_base_sft_model/${SFT_CHECKPOINT}"}
+export CHECKPOINT_BASE_DIR=${CHECKPOINT_BASE_DIR:-./checkpoints/gsm8k_llama3b_ppo}
+export BASE_MODEL=${BASE_MODEL:-"./models/llama_base_sft_models/${SFT_CHECKPOINT}"}
 export N_GPUS=${N_GPUS:-4}
 export ROLLOUT_TP_SIZE=${ROLLOUT_TP_SIZE:-1}
 export WANDB_MODE=${WANDB_MODE:-offline}

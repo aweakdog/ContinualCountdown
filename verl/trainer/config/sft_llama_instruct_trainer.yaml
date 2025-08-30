@@ -28,8 +28,8 @@ optim:
   clip_grad: 1.0
 
 trainer:
-  default_local_dir: /nas/shared/sys2/yuanhangli/tmp/llama_instruct_sft_model
-  default_hdfs_dir: /cpfs04/user/liyuanhang.p/tmp/experiments/continual_countdown3b_llama_instruct/
+  default_local_dir: ./models/llama_instruct_sft_models
+  default_hdfs_dir: ./temp
   resume_path: null
   project_name: countdown-sft-llama-instruct
   experiment_name: test

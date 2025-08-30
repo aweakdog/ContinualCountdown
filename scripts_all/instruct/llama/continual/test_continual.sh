@@ -4,8 +4,8 @@
 EXPERIMENT_TYPE=${1:-train}  # Default to 'train' if no argument provided
 
 # Model configuration parameters
-SFT_MODEL_BASE_DIR=${SFT_MODEL_BASE_DIR:-"/nas/shared/sys2/yuanhangli/tmp"}
-SFT_MODEL_NAME=${SFT_MODEL_NAME:-"llama_instruct_sft_model"}
+SFT_MODEL_BASE_DIR=${SFT_MODEL_BASE_DIR:-"./models"}
+SFT_MODEL_NAME=${SFT_MODEL_NAME:-"llama_instruct_sft_models"}
 SFT_CHECKPOINT=${SFT_CHECKPOINT:-"global_step_0"}
 
 echo "[Experiment Type] Using type: $EXPERIMENT_TYPE"
@@ -30,7 +30,7 @@ fi
 
 # Configuration - Set environment variables
 export NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-all}
-export CHECKPOINT_BASE_DIR=${CHECKPOINT_BASE_DIR:-/nas/shared/sys2/yuanhangli/tmp/checkpoints/llama_instruct/continual_countdown3b_llama_curriculum}
+export CHECKPOINT_BASE_DIR=${CHECKPOINT_BASE_DIR:-./models/checkpoints/llama_instruct/continual_countdown3b_llama_curriculum}
 # Construct BASE_MODEL path - handle empty SFT_MODEL_NAME
 if [ -z "$SFT_MODEL_NAME" ]; then
     export BASE_MODEL=${BASE_MODEL:-"${SFT_MODEL_BASE_DIR}/${SFT_CHECKPOINT}"}
@@ -156,7 +156,7 @@ for ((exp1_iter=1; exp1_iter<=EXP1_REPEAT_COUNT; exp1_iter++)); do
   echo "Val files: $VAL_FILES_STR" | tee -a "$LOG_FILE" | tee -a "$MASTER_LOG_FILE"
   
   python3 -m verl.trainer.main_ppo \
-  --config-path /cpfs04/user/liyuanhang.p/src/ContinualCountdown/verl/trainer/config \
+  --config-path ./verl/trainer/config \
   --config-name ppo_trainer \
     fsdp_grad_metric_enabled=$FSDP_GRAD_METRIC_ENABLED \
     data.train_files="$TRAIN_FILES_STR" \
@@ -237,7 +237,7 @@ for ((exp2_iter=1; exp2_iter<=EXP2_REPEAT_COUNT; exp2_iter++)); do
   echo "Val files: $VAL_FILES_STR" | tee -a "$LOG_FILE" | tee -a "$MASTER_LOG_FILE"
 
 python3 -m verl.trainer.main_ppo \
-  --config-path /cpfs04/user/liyuanhang.p/src/ContinualCountdown/verl/trainer/config \
+  --config-path ./verl/trainer/config \
   --config-name ppo_trainer \
   fsdp_grad_metric_enabled=$FSDP_GRAD_METRIC_ENABLED \
   data.train_files="$TRAIN_FILES_STR" \
@@ -321,7 +321,7 @@ for ((exp3_iter=1; exp3_iter<=EXP3_REPEAT_COUNT; exp3_iter++)); do
   echo "Val files: $VAL_FILES_STR" | tee -a "$LOG_FILE" | tee -a "$MASTER_LOG_FILE"
 
   python3 -m verl.trainer.main_ppo \
-  --config-path /cpfs04/user/liyuanhang.p/src/ContinualCountdown/verl/trainer/config \
+  --config-path ./verl/trainer/config \
   --config-name ppo_trainer \
     fsdp_grad_metric_enabled=$FSDP_GRAD_METRIC_ENABLED \
     data.train_files="$TRAIN_FILES_STR" \

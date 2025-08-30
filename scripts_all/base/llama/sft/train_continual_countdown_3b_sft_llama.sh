@@ -13,7 +13,7 @@ show_usage() {
     echo "Arguments:"
     echo "  SFT_SIZE       Number of SFT training samples (default: 2048)"
     echo "  --gpus         Number of GPUs to use (default: 8)"
-    echo "  --model        Path to base model (default: /cpfs04/user/liyuanhang.p/model/llama_base3b)"
+    echo "  --model        Path to base model (default: ./models/llama_base3b)"
     echo "  --wandb        Wandb mode: online, offline, or disabled (default: disabled)"
     echo ""
     echo "Examples:"
@@ -28,7 +28,7 @@ show_usage() {
 # Parse command line arguments
 SFT_SIZE=${1:-2048}
 NUM_GPUS=8
-BASE_MODEL="/mnt/shared-storage-user/liyuanhang-p/model/llama_base3b"
+BASE_MODEL="./models/llama_base3b"
 WANDB_MODE="disabled"
 
 # Parse optional arguments
@@ -149,7 +149,7 @@ echo "Training data: $TRAIN_DATA" | tee -a "$LOG_FILE"
 echo "Test data: $TEST_DATA" | tee -a "$LOG_FILE"
 
 # Verify config file exists
-CONFIG_PATH="/cpfs04/user/liyuanhang.p/src/ContinualCountdown/verl/trainer/config/sft_llama_base_trainer.yaml"
+CONFIG_PATH="./verl/trainer/config/sft_llama_base_trainer.yaml"
 if [ ! -f "$CONFIG_PATH" ]; then
     echo "Error: Config file not found: $CONFIG_PATH" | tee -a "$LOG_FILE"
     exit 1
@@ -163,7 +163,7 @@ echo "Starting SFT training with $NUM_GPUS GPUs..." | tee -a "$LOG_FILE"
 
 torchrun --standalone --nnodes=1 --nproc_per_node=$NUM_GPUS --master_port=29500 \
     -m verl.trainer.fsdp_sft_trainer \
-    --config-path /cpfs04/user/liyuanhang.p/src/ContinualCountdown/verl/trainer/config \
+    --config-path ./verl/trainer/config \
     --config-name sft_llama_base_trainer \
     2>&1 | tee -a "$LOG_FILE"
 

@@ -156,7 +156,7 @@ for ((exp1_iter=1; exp1_iter<=EXP1_REPEAT_COUNT; exp1_iter++)); do
   echo "Val files: $VAL_FILES_STR" | tee -a "$LOG_FILE" | tee -a "$MASTER_LOG_FILE"
   
   python3 -m verl.trainer.main_ppo \
-  --config-path $(pwd)/verl/trainer/config \
+  --config-path ./verl/trainer/config \
   --config-name ppo_trainer \
     fsdp_grad_metric_enabled=$FSDP_GRAD_METRIC_ENABLED \
     data.train_files="$TRAIN_FILES_STR" \
@@ -225,8 +225,8 @@ echo "Experiment 1 completed after $EXP1_REPEAT_COUNT iteration(s)"
 echo "=== EXPERIMENT 2: Training Group 1 + Group 2 (${EXP2_REPEAT_COUNT} repetition(s)) ==="
 for ((exp2_iter=1; exp2_iter<=EXP2_REPEAT_COUNT; exp2_iter++)); do
   echo "--- Experiment 2 Iteration $exp2_iter/$EXP2_REPEAT_COUNT ---"
-  TRAIN_FILES_STR="[\"./data/llama_base/group_1/train.parquet\", \"./data/llama_base/deepmath/train.parquet\"]"
-  VAL_FILES_STR="[\"./data/llama_base/group_1/test.parquet\", \"./data/llama_base/deepmath/test.parquet\"]"
+  TRAIN_FILES_STR="[\"./data/llama_base/group_1/train.parquet\", \"./data/llama_base/group_2/train.parquet\"]"
+  VAL_FILES_STR="[\"./data/llama_base/group_1/test.parquet\", \"./data/llama_base/group_2/test.parquet\"]"
   TRAIN_SAMPLE_SIZE="[2560, 2560]"
   #TRAIN_SAMPLE_SIZE="[512, 512]"
   RUN_NAME="Exp2_Group1and2_Iter${exp2_iter}_SFT_${SFT_CHECKPOINT}_$(date +%Y%m%d_%H%M%S)"
@@ -237,7 +237,7 @@ for ((exp2_iter=1; exp2_iter<=EXP2_REPEAT_COUNT; exp2_iter++)); do
   echo "Val files: $VAL_FILES_STR" | tee -a "$LOG_FILE" | tee -a "$MASTER_LOG_FILE"
 
 python3 -m verl.trainer.main_ppo \
-  --config-path $(pwd)/verl/trainer/config \
+  --config-path ./verl/trainer/config \
   --config-name ppo_trainer \
   fsdp_grad_metric_enabled=$FSDP_GRAD_METRIC_ENABLED \
   data.train_files="$TRAIN_FILES_STR" \
@@ -321,7 +321,7 @@ for ((exp3_iter=1; exp3_iter<=EXP3_REPEAT_COUNT; exp3_iter++)); do
   echo "Val files: $VAL_FILES_STR" | tee -a "$LOG_FILE" | tee -a "$MASTER_LOG_FILE"
 
   python3 -m verl.trainer.main_ppo \
-  --config-path $(pwd)/verl/trainer/config \
+  --config-path ./verl/trainer/config \
   --config-name ppo_trainer \
     fsdp_grad_metric_enabled=$FSDP_GRAD_METRIC_ENABLED \
     data.train_files="$TRAIN_FILES_STR" \

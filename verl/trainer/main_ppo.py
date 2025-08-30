@@ -120,7 +120,9 @@ class RewardManager():
 
 import ray
 import os
-os.environ["RAY_TMPDIR"] = f"/root/ray_tmp"
+import tempfile
+# Use user-accessible temporary directory instead of /root/ray_tmp
+os.environ["RAY_TMPDIR"] = os.path.join(tempfile.gettempdir(), "ray_tmp")
 import hydra
 
 

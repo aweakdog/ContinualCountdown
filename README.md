@@ -257,8 +257,8 @@ bash llama_scripts/train_continual_countdown_3b_sft_llama.sh 2048 --gpus 8 --wan
 ```
 
 ### SFT Model Output Locations
-- **Qwen SFT Model**: `/nas/shared/sys2/yuanhangli/tmp/qwen_instruct_sft_model`
-- **Llama SFT Model**: `/nas/shared/sys2/yuanhangli/tmp/llama_instruct_sft_model`
+- **Qwen SFT Model**: `./models/qwen_instruct_sft_models`
+- **Llama SFT Model**: `./models/llama_instruct_sft_models`
 
 ### SFT Training Format
 Each SFT sample contains a countdown equation example with:

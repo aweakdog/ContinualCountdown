@@ -17,7 +17,7 @@ python experiments/continual/data_gen_unified_template.py \
     --group 0 \
     --split train \
     --num_samples 1000 \
-    --output_dir /nas/shared/sys2/yuanhangli/tmp/continual_unified_data/llama
+    --output_dir ./temp/continual_unified_data/llama
 
 # 为Qwen instruct模型生成数据
 python experiments/continual/data_gen_unified_template.py \
@@ -25,7 +25,7 @@ python experiments/continual/data_gen_unified_template.py \
     --group 0 \
     --split train \
     --num_samples 1000 \
-    --output_dir /nas/shared/sys2/yuanhangli/tmp/continual_unified_data/qwen
+    --output_dir ./temp/continual_unified_data/qwen
 ```
 
 ### 批量生成示例
@@ -50,8 +50,8 @@ bash experiments/continual/generate_unified_data_example.sh
 ## 2. SFT训练阶段
 
 确保已有SFT检查点：
-- Llama: `/nas/shared/sys2/yuanhangli/tmp/llama_instruct_sft_model/global_step_15`
-- Qwen: `/nas/shared/sys2/yuanhangli/tmp/qwen_instruct_sft_model/global_step_15`
+- Llama: `./models/llama_instruct_sft_models/global_step_15`
+- Qwen: `./models/qwen_instruct_sft_models/global_step_15`
 
 ## 3. Continual训练阶段
 
@@ -125,8 +125,8 @@ export N_GPUS=4
 export ROLLOUT_TP_SIZE=1
 
 # 检查点路径
-export BASE_MODEL=/nas/shared/sys2/yuanhangli/tmp/llama_instruct_sft_model/global_step_15
-export CHECKPOINT_BASE_DIR=/nas/shared/sys2/yuanhangli/tmp/checkpoints/continual_llama
+export BASE_MODEL=./models/llama_instruct_sft_models/global_step_15
+export CHECKPOINT_BASE_DIR=./checkpoints/continual_llama
 
 # 注意力日志 (Qwen模型需要禁用)
 export ATTENTION_LOGGING_ENABLED=false  # 对于Qwen模型

@@ -32,7 +32,9 @@ BASE_MODEL="./models/llama_base3b"
 WANDB_MODE="disabled"
 
 # Parse optional arguments
-shift
+if [ $# -gt 0 ]; then
+    shift
+fi
 while [[ $# -gt 0 ]]; do
     case $1 in
         --gpus)

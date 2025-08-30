@@ -10,7 +10,7 @@ data:
   balance_dp_token: False
   chat_template: null
 model:
-  name_or_path: /cpfs04/user/liyuanhang.p/model/llama_instruct3b
+  name_or_path: ./models/llama_instruct3b
   checkpoint_path: null
   fsdp_config:
     wrap_policy:

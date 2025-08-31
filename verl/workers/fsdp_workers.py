@@ -1094,6 +1094,47 @@ class CriticWorker(Worker):
         self.config.forward_micro_batch_size //= (torch.distributed.get_world_size() //
                                                   self.ulysses_sequence_parallel_size)
 
+        # Initialize Ray shared state manager for reset synchronization
+        try:
+            from verl.utils.redo_utils.shared_reset_state import SharedResetStateManager
+            self._shared_reset_manager = SharedResetStateManager()
+            print(f"[CriticWorker] Using Ray shared state for reset synchronization")
+        except Exception as e:
+            print(f"[CriticWorker] Failed to initialize Ray shared state: {e}")
+            raise RuntimeError(f"Ray shared state synchronization is required but failed to initialize: {e}")
+
+        # Initialize C_K-based reset manager for critic
+        self.ck_reset_manager = None
+        # Check both general CK_RESET_ENABLE and specific CK_RESET_CRITIC_ENABLE
+        ck_reset_enabled = hasattr(self.config, 'ck_reset') and self.config.ck_reset.get('enable', False)
+        critic_reset_enabled = os.environ.get('CK_RESET_CRITIC_ENABLE', 'true').lower() == 'true'
+        
+        if ck_reset_enabled and critic_reset_enabled:
+            from verl.utils.redo_utils.ck_based_reset_manager import create_ck_based_reset_manager
+            self.ck_reset_manager = create_ck_based_reset_manager(self.config.ck_reset)
+            print(f"[CriticWorker] Initialized C_K-based reset manager with strategy: {self.config.ck_reset.get('reset_strategy', 'ck_guided')}")
+            print(f"[CriticWorker] Critic-specific reset enabled for countdown task group transitions")
+        else:
+            if not ck_reset_enabled:
+                print(f"[CriticWorker] C_K-based reset manager disabled (CK_RESET_ENABLE=false)")
+            elif not critic_reset_enabled:
+                print(f"[CriticWorker] Critic reset disabled (CK_RESET_CRITIC_ENABLE=false)")
+            else:
+                print(f"[CriticWorker] C_K-based reset manager disabled")
+
+    def _load_actor_reset_layers(self, current_step):
+        """Load actor's selected reset layers for synchronization."""
+        try:
+            selected_layers = self._shared_reset_manager.load_actor_reset_layers(current_step)
+            if selected_layers:
+                print(f"[CRITIC_RESET_SYNC] Loaded actor reset layers {selected_layers} for step {current_step} via Ray")
+            else:
+                print(f"[CRITIC_RESET_SYNC] No actor reset layers found for step {current_step} via Ray")
+            return selected_layers
+        except Exception as e:
+            print(f"[CRITIC_RESET_SYNC] Failed to load actor reset layers via Ray: {e}")
+            raise RuntimeError(f"Failed to load actor reset layers: {e}")
+
     def _build_critic_model_optimizer(self, config):
         # the following line is necessary
         from verl.utils.model import LambdaLayer, print_model_size, squeeze
@@ -1299,6 +1340,103 @@ class CriticWorker(Worker):
             self.critic_lr_scheduler.step()
             lr = self.critic_lr_scheduler.get_last_lr()[0]
             metrics['critic/lr'] = lr
+
+            # C_K-based layer reset logic for critic
+            if self.rank == 0 and self.ck_reset_manager is not None:
+                try:
+                    # For critic, we use a simplified approach since we don't have Fisher analysis
+                    # Check if reset should be performed based on global steps
+                    should_reset_ck, layer_ck_weights = self.ck_reset_manager.should_reset_with_ck_analysis(
+                        self.critic_update_step, None  # No Fisher stats for critic
+                    )
+                    
+                    if should_reset_ck:
+                        print(f"[CK_RESET_TRIGGER] Critic Step {self.critic_update_step}: C_K-based reset triggered!")
+                        
+                        # Log reset statistics before performing reset
+                        self.ck_reset_manager.log_reset_statistics(self.critic_update_step)
+                        
+                        # Get selected layers for reset
+                        transformer_layers = self.ck_reset_manager.get_transformer_layers(self.critic_module)
+                        total_layers = len(transformer_layers)
+                        
+                        # Use critic-specific strategy configuration
+                        critic_strategy = os.environ.get('CK_RESET_CRITIC_STRATEGY', 'random')
+                        print(f"[CK_RESET_INFO] Critic using strategy: {critic_strategy}")
+                        
+                        if critic_strategy == 'ck_guided':
+                            # For ck_guided strategy, try to use the same layers as actor
+                            print(f"[CK_RESET_INFO] Critic using ck_guided strategy - attempting to sync with actor")
+                            
+                            # Try to load actor's selected layers
+                            actor_selected_layers = self._load_actor_reset_layers(self.critic_update_step)
+                            
+                            if actor_selected_layers is not None:
+                                # Use the exact same layers as actor
+                                selected_layers = actor_selected_layers
+                                print(f"[CK_RESET_INFO] Critic using same layers as actor: {selected_layers}")
+                            else:
+                                # Fallback: use synchronized random selection
+                                print(f"[CK_RESET_INFO] Actor layers not available, using synchronized random fallback")
+                                
+                                # Temporarily change to ck_guided strategy
+                                original_strategy = self.ck_reset_manager.reset_strategy
+                                self.ck_reset_manager.reset_strategy = 'ck_guided'
+                                
+                                # Use force_random_for_sync=True to ensure synchronized random selection
+                                selected_layers = self.ck_reset_manager.select_layers_to_reset(
+                                    total_layers, {}, self.critic_update_step, force_random_for_sync=True
+                                )
+                                
+                                # Restore original strategy
+                                self.ck_reset_manager.reset_strategy = original_strategy
+                        else:
+                            # For other strategies, use critic-specific strategy
+                            # Temporarily change to critic-specific strategy
+                            original_strategy = self.ck_reset_manager.reset_strategy
+                            self.ck_reset_manager.reset_strategy = critic_strategy
+                            
+                            selected_layers = self.ck_reset_manager.select_layers_to_reset(
+                                total_layers, {}, self.critic_update_step
+                            )
+                            
+                            # Restore original strategy
+                            self.ck_reset_manager.reset_strategy = original_strategy
+                        
+                        print(f"[CK_RESET_INFO] Critic Step {self.critic_update_step}: Resetting {len(selected_layers)} layers: {selected_layers}")
+                        print(f"[CK_RESET_INFO] Critic Strategy: {self.ck_reset_manager.reset_strategy}")
+                        
+                        # Perform actual reset using the C_K-based reset manager
+                        try:
+                            # For now, create a dummy reference state dict since we need reference worker integration
+                            # This is a placeholder - in full implementation, this would come from reference worker
+                            ref_layer_state_dict = {}
+                            
+                            # Log what we would reset (actual reset needs reference model integration)
+                            print(f"[CK_RESET_PLACEHOLDER] Critic would reset layers {selected_layers} using strategy '{self.ck_reset_manager.reset_strategy}'")
+                            
+                            # Store detailed reset info in metrics
+                            metrics['critic/ck_reset_triggered'] = 1.0
+                            metrics['critic/ck_reset_layers_count'] = len(selected_layers)
+                            metrics['critic/ck_reset_strategy'] = hash(self.ck_reset_manager.reset_strategy) % 1000  # Encode strategy as number
+                            
+                            print(f"[CK_RESET_SUCCESS] Critic Step {self.critic_update_step}: Reset simulation completed for {len(selected_layers)} layers")
+                            
+                        except Exception as reset_error:
+                            print(f"[CK_RESET_ERROR] Critic Step {self.critic_update_step}: Reset failed: {reset_error}")
+                            metrics['critic/ck_reset_triggered'] = -1.0  # Indicate failure
+                            metrics['critic/ck_reset_layers_count'] = 0.0
+                            
+                    else:
+                        metrics['critic/ck_reset_triggered'] = 0.0
+                        metrics['critic/ck_reset_layers_count'] = 0.0
+                        
+                except Exception as e:
+                    print(f"[CK_RESET_ERROR] Critic Step {self.critic_update_step}: Error in C_K reset logic: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    metrics['critic/ck_reset_triggered'] = 0.0
+                    metrics['critic/ck_reset_layers_count'] = 0.0
 
             output = DataProto(batch=None, meta_info={'metrics': metrics})
             output = self.ulysses_sharding_manager.postprocess_data(data=output)

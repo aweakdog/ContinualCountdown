@@ -71,14 +71,23 @@ export LAYER_RESET_STEPS=${LAYER_RESET_STEPS:-"[40,80,120]"}  # Reset at global 
 # This enables intelligent layer reset based on Fisher Information C_K values
 export CK_RESET_ENABLE=${CK_RESET_ENABLE:-false}
 export CK_RESET_STRATEGY=${CK_RESET_STRATEGY:-"ck_guided"}  # ck_guided, random, first_k, last_k
-export CK_RESET_K_LAYERS=${CK_RESET_K_LAYERS:-4}           # Number of layers to reset
-export CK_RESET_STEPS=${CK_RESET_STEPS:-"[40,80,120]"}     # Reset at global steps
+export CK_RESET_K_LAYERS=${CK_RESET_K_LAYERS:-15}           # Number of layers to reset
+export CK_RESET_STEPS=${CK_RESET_STEPS:-"[2,40,80,120]"}     # Reset at global steps
 export CK_RESET_RANDOM_SEED=${CK_RESET_RANDOM_SEED:-42}    # Random seed for reproducible random reset
+export CK_RESET_HISTORY_WINDOW=${CK_RESET_HISTORY_WINDOW:-20}  # Sliding window size for C_K averaging
+
+# For countdown task with different operation groups, reset critic is crucial
+# due to value function bias from previous group's operation patterns
+export CK_RESET_CRITIC_ENABLE=${CK_RESET_CRITIC_ENABLE:-true}  # Enable critic reset for group transitions
+export CK_RESET_CRITIC_STRATEGY=${CK_RESET_CRITIC_STRATEGY:-"random"}  # Critic-specific strategy: random, first_k, last_k
 
 echo "[C_K Reset Config] C_K-based reset enabled: $CK_RESET_ENABLE"
-echo "[C_K Reset Config] Strategy: $CK_RESET_STRATEGY"
+echo "[C_K Reset Config] Actor strategy: $CK_RESET_STRATEGY"
+echo "[C_K Reset Config] Critic strategy: $CK_RESET_CRITIC_STRATEGY"
 echo "[C_K Reset Config] K layers: $CK_RESET_K_LAYERS"
 echo "[C_K Reset Config] Reset steps: $CK_RESET_STEPS"
+echo "[C_K Reset Config] History window: $CK_RESET_HISTORY_WINDOW steps"
+echo "[C_K Reset Config] Critic reset enabled: $CK_RESET_CRITIC_ENABLE"
 
 # Set up logging with backup - organized by script location
 LOG_BASE_DIR="./logs/base/llama/continual"

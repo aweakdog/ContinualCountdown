@@ -29,6 +29,10 @@ class FisherInfoAnalyzer:
         import os
         self.actor_pid = os.getpid()
         
+        # C_K sliding window configuration
+        self.ck_history_window = getattr(config, 'ck_history_window', 20)  # Default to 20 steps
+        print(f"[FisherInfoAnalyzer] Using C_K sliding window of {self.ck_history_window} steps")
+        
         # Multi-GPU device management
         if torch.cuda.is_available():
             self.available_devices = [torch.device(f'cuda:{i}') for i in range(torch.cuda.device_count())]
@@ -43,7 +47,7 @@ class FisherInfoAnalyzer:
         self.stats = collections.defaultdict(lambda: {'params': {}})
         # self.global_history stores aggregated metrics from ALL past analysis steps to compute running global stats
         self.global_history = collections.defaultdict(lambda: {'c_k_normalized_history': [], 'l_k_sums': []})
-        # self.param_history stores per-parameter metrics from ALL past analysis steps
+        # self.param_history stores per-parameter metrics with sliding window support
         self.param_history = collections.defaultdict(lambda: {'params': collections.defaultdict(lambda: {'c_k_history': [], 'l_k_history': []})})
         # self.param_shapes stores the original shapes of parameters for normalization
         self.param_shapes = collections.defaultdict(dict)
@@ -128,8 +132,17 @@ class FisherInfoAnalyzer:
             param_hist['c_k_history'].append(param_stats['c_k'])
             param_hist['l_k_history'].append(param_stats['l_k'])
             
+            # Apply sliding window to C_K history
+            if len(param_hist['c_k_history']) > self.ck_history_window:
+                param_hist['c_k_history'] = param_hist['c_k_history'][-self.ck_history_window:]
+            
+            # Apply sliding window to L_K history  
+            if len(param_hist['l_k_history']) > self.ck_history_window:
+                param_hist['l_k_history'] = param_hist['l_k_history'][-self.ck_history_window:]
+            
+            # Calculate sliding window averages
             C_K_param = np.mean(param_hist['c_k_history'])
-            L_K_param = np.sum(param_hist['l_k_history'])
+            L_K_param = np.sum(param_hist['l_k_history'])  # L_K is cumulative, so we sum the window
             
         
         self.stats[identifier]['params'][component_name] = component_stats

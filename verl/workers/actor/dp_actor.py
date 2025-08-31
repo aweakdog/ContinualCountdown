@@ -112,7 +112,31 @@ class DataParallelPPOActor(BasePPOActor):
             print(f"[DataParallelPPOActor] Initialized C_K-based reset manager with strategy: {self.config.ck_reset.get('reset_strategy', 'ck_guided')}")
         else:
             print(f"[DataParallelPPOActor] C_K-based reset manager disabled")
+        
+        # Initialize Ray shared state manager for reset synchronization
+        try:
+            from verl.utils.redo_utils.shared_reset_state import SharedResetStateManager
+            self._shared_reset_manager = SharedResetStateManager()
+            print(f"[DataParallelPPOActor] Using Ray shared state for reset synchronization")
+        except Exception as e:
+            print(f"[DataParallelPPOActor] Failed to initialize Ray shared state: {e}")
+            raise RuntimeError(f"Ray shared state synchronization is required but failed to initialize: {e}")
+    
+    def _save_actor_reset_layers(self, selected_layers, global_step):
+        """Save actor's selected reset layers for critic synchronization."""
+        try:
+            self._shared_reset_manager.save_actor_reset_layers(
+                global_step, selected_layers, 
+                strategy=self.ck_reset_manager.reset_strategy,
+                metadata={'actor_rank': self.rank}
+            )
+            print(f"[ACTOR_RESET_SYNC] Saved reset layers {selected_layers} for step {global_step} via Ray")
+        except Exception as e:
+            print(f"[ACTOR_RESET_SYNC] Failed to save reset layers via Ray: {e}")
+            raise RuntimeError(f"Failed to save actor reset layers: {e}")
 
+    def _init_optimizer_config(self):
+        """Initialize optimizer configuration."""
         self.optim_config = None
         if hasattr(self.config, 'optim'):
             self.optim_config = self.config.optim
@@ -844,6 +868,9 @@ class DataParallelPPOActor(BasePPOActor):
                                 selected_layers = self.ck_reset_manager.select_layers_to_reset(
                                     total_layers, layer_ck_weights, self.global_steps
                                 )
+                                
+                                # Save selected layers for critic synchronization
+                                self._save_actor_reset_layers(selected_layers, self.global_steps)
                                 
                                 print(f"[CK_RESET_INFO] Step {self.global_steps}: Resetting {len(selected_layers)} layers: {selected_layers}")
                                 print(f"[CK_RESET_INFO] Strategy: {self.ck_reset_manager.reset_strategy}")

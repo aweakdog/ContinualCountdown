@@ -53,7 +53,7 @@ class CKBasedResetManager(LayerResetManager):
         # C_K-based reset settings
         self.reset_strategy = self.config.get('reset_strategy', 'ck_guided')  # ck_guided, random, first_k, last_k
         self.reset_k_layers = self.config.get('reset_k_layers', 4)  # Number of layers to reset
-        self.ck_history_window = self.config.get('ck_history_window', 5)  # Steps to average C_K over
+        self.ck_history_window = self.config.get('ck_history_window', 20)  # Steps to average C_K over (sliding window)
         
         # Logging and tracking
         self.reset_history = []  # Track which layers were reset at each step
@@ -143,74 +143,49 @@ class CKBasedResetManager(LayerResetManager):
         
         return layer_weights
     
-    def select_layers_to_reset(self, total_layers: int, 
-                              layer_ck_weights: Dict[int, float] = None,
-                              global_step: int = None) -> List[int]:
+    def select_layers_to_reset(self, total_layers: int, layer_ck_weights: Dict[int, float], global_step: int, 
+                              force_random_for_sync: bool = False) -> List[int]:
         """
-        Select layers to reset based on the configured strategy.
+        Select layers to reset based on strategy and C_K weights.
         
         Args:
             total_layers: Total number of transformer layers
-            layer_ck_weights: C_K weighted values for each layer (for ck_guided strategy)
-            global_step: Current global step (for logging)
+            layer_ck_weights: Dictionary mapping layer_index -> weighted_c_k_value
+            global_step: Current global training step
+            force_random_for_sync: If True, force random selection for actor-critic sync
             
         Returns:
             List of layer indices to reset
         """
-        reset_k = min(self.reset_k_layers, total_layers)  # Cap to total layers
-        
         if self.reset_strategy == 'ck_guided':
-            if not layer_ck_weights:
-                logger.warning("No C_K weights provided for ck_guided strategy, falling back to first_k")
-                selected_layers = list(range(reset_k))
-            else:
-                # Sort layers by weighted C_K (descending - highest C_K first)
+            if layer_ck_weights and not force_random_for_sync:
+                # Sort layers by C_K weights (descending - highest C_K first)
                 sorted_layers = sorted(layer_ck_weights.items(), key=lambda x: x[1], reverse=True)
-                selected_layers = [layer_idx for layer_idx, _ in sorted_layers[:reset_k]]
+                selected_layers = [layer_idx for layer_idx, _ in sorted_layers[:self.k_layers]]
                 
-                # Store ranking for analysis
-                self.ck_layer_rankings[global_step] = sorted_layers
-                
-                print(f"[CK_GUIDED_DEBUG] Step {global_step}: Top {reset_k} layers by C_K weight:")
-                for i, (layer_idx, weight) in enumerate(sorted_layers[:reset_k]):
-                    print(f"[CK_GUIDED_DEBUG]   #{i+1}: Layer {layer_idx} (C_K_weighted={weight:.4f})")
+                print(f"[CK_RESET_SELECTION] C_K guided selection:")
+                for i, (layer_idx, weight) in enumerate(sorted_layers[:self.k_layers]):
+                    print(f"[CK_RESET_SELECTION]   Layer {layer_idx}: C_K weight = {weight:.6f}")
+                    
+                return selected_layers
+            else:
+                if force_random_for_sync:
+                    print(f"[CK_RESET_SELECTION] Using synchronized random selection for actor-critic consistency")
+                else:
+                    print(f"[CK_RESET_SELECTION] No C_K weights available, falling back to random selection")
+                # Use synchronized random selection
+                return self._select_random_layers(total_layers, global_step)
         
         elif self.reset_strategy == 'random':
-            # Randomly select layers
-            all_layers = list(range(total_layers))
-            selected_layers = random.sample(all_layers, reset_k)
-            selected_layers.sort()  # Sort for consistent logging
-            
-            print(f"[RANDOM_RESET_DEBUG] Step {global_step}: Randomly selected {reset_k} layers: {selected_layers}")
-        
+            return self._select_random_layers(total_layers, global_step)
         elif self.reset_strategy == 'first_k':
-            # Reset first K layers (traditional approach)
-            selected_layers = list(range(reset_k))
-            print(f"[FIRST_K_DEBUG] Step {global_step}: Resetting first {reset_k} layers: {selected_layers}")
-        
+            return list(range(min(self.k_layers, total_layers)))
         elif self.reset_strategy == 'last_k':
-            # Reset last K layers (traditional approach)
-            selected_layers = list(range(total_layers - reset_k, total_layers))
-            print(f"[LAST_K_DEBUG] Step {global_step}: Resetting last {reset_k} layers: {selected_layers}")
+            start_idx = max(0, total_layers - self.k_layers)
+            return list(range(start_idx, total_layers))
         
         else:
-            logger.error(f"Unknown reset strategy: {self.reset_strategy}")
-            selected_layers = list(range(reset_k))  # Fallback to first_k
-        
-        # Record reset history for analysis
-        reset_record = {
-            'global_step': global_step,
-            'strategy': self.reset_strategy,
-            'reset_layers': selected_layers,
-            'total_layers': total_layers,
-            'layer_ck_weights': layer_ck_weights.copy() if layer_ck_weights else None
-        }
-        self.reset_history.append(reset_record)
-        
-        logger.info(f"Step {global_step}: Selected {len(selected_layers)} layers for reset using "
-                   f"'{self.reset_strategy}' strategy: {selected_layers}")
-        
-        return selected_layers
+            raise ValueError(f"Unknown reset strategy: {self.reset_strategy}")
     
     def get_layer_indices_to_reset(self, total_layers: int, 
                                   layer_ck_weights: Dict[int, float] = None,

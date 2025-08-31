@@ -50,44 +50,31 @@ export RAY_ANALYZER_GPU_START=${RAY_ANALYZER_GPU_START:-4}  # Start analyzer GPU
 export RAY_ANALYZER_GPU_COUNT=${RAY_ANALYZER_GPU_COUNT:-4}  # Use 4 GPUs for analyzers (4-7)
 echo "[GPU Config] Training will use GPUs 0-3, Analyzers will use GPUs 4-7"
 
-# Layer Reset Configuration (OPTIONAL - defaults to disabled)
-# Uncomment and modify the following lines to enable layer reset functionality:
-export LAYER_RESET_ENABLE=${LAYER_RESET_ENABLE:-false}
+# Legacy Layer Reset Configuration (DISABLED - using C_K reset instead)
+export LAYER_RESET_ENABLE=false
+export LAYER_RESET_K_FIRST=0
+export LAYER_RESET_K_LAST=0
+export LAYER_RESET_STEPS="[]"
+echo "[Layer Reset] Legacy layer reset disabled - using C_K-based reset instead"
 
-# If layer reset is disabled, force reset parameters to 0
-if [ "$LAYER_RESET_ENABLE" = "false" ]; then
-    export LAYER_RESET_K_FIRST=0
-    export LAYER_RESET_K_LAST=0
-    echo "[Layer Reset] Disabled - K_FIRST and K_LAST set to 0"
-else
-    export LAYER_RESET_K_FIRST=${LAYER_RESET_K_FIRST:-0}    # Reset first 4 transformer layers
-    export LAYER_RESET_K_LAST=${LAYER_RESET_K_LAST:-0}      # Reset last 2 transformer layers
-    echo "[Layer Reset] Enabled - K_FIRST=$LAYER_RESET_K_FIRST, K_LAST=$LAYER_RESET_K_LAST"
-fi
+# C_K-Based Reset Configuration - Actor and Critic Reset
+# Actor C_K Reset (Fisher Information guided)
+export CK_RESET_ENABLE=${CK_RESET_ENABLE:-true}              # Enable actor C_K reset
+export CK_RESET_STRATEGY=${CK_RESET_STRATEGY:-"ck_guided"}   # Actor strategy: ck_guided
+export CK_RESET_K_LAYERS=${CK_RESET_K_LAYERS:-15}            # Number of layers to reset
+export CK_RESET_STEPS=${CK_RESET_STEPS:-"[2,40,80,120]"}     # Reset at global steps
+export CK_RESET_RANDOM_SEED=${CK_RESET_RANDOM_SEED:-42}      # Random seed for reproducible reset
+export CK_RESET_HISTORY_WINDOW=${CK_RESET_HISTORY_WINDOW:-20}  # Sliding window for C_K averaging
 
-export LAYER_RESET_STEPS=${LAYER_RESET_STEPS:-"[40,80,120,200]"}  # Reset at global steps 120 and 200
+# Critic C_K Reset (synchronized with actor)
+export CK_RESET_CRITIC_ENABLE=${CK_RESET_CRITIC_ENABLE:-true}    # Enable critic reset
+export CK_RESET_CRITIC_STRATEGY=${CK_RESET_CRITIC_STRATEGY:-"random"}  # Critic strategy: random
 
-# C_K-Based Reset Configuration (OPTIONAL - defaults to disabled)
-# This enables intelligent layer reset based on Fisher Information C_K values
-export CK_RESET_ENABLE=${CK_RESET_ENABLE:-true}  # Enable C_K reset by default
-export CK_RESET_STRATEGY=${CK_RESET_STRATEGY:-"ck_guided"}  # ck_guided, random, first_k, last_k
-export CK_RESET_K_LAYERS=${CK_RESET_K_LAYERS:-15}           # Number of layers to reset
-export CK_RESET_STEPS=${CK_RESET_STEPS:-"[2,40,80,120,200]"}     # Reset at global steps
-export CK_RESET_RANDOM_SEED=${CK_RESET_RANDOM_SEED:-42}    # Random seed for reproducible random reset
-export CK_RESET_HISTORY_WINDOW=${CK_RESET_HISTORY_WINDOW:-20}  # Sliding window size for C_K averaging
-
-# For countdown task with different operation groups, reset critic is crucial
-# due to value function bias from previous group's operation patterns
-export CK_RESET_CRITIC_ENABLE=${CK_RESET_CRITIC_ENABLE:-true}  # Enable critic reset for group transitions
-export CK_RESET_CRITIC_STRATEGY=${CK_RESET_CRITIC_STRATEGY:-"random"}  # Critic-specific strategy: random, first_k, last_k
-
-echo "[C_K Reset Config] C_K-based reset enabled: $CK_RESET_ENABLE"
-echo "[C_K Reset Config] Actor strategy: $CK_RESET_STRATEGY"
-echo "[C_K Reset Config] Critic strategy: $CK_RESET_CRITIC_STRATEGY"
-echo "[C_K Reset Config] K layers: $CK_RESET_K_LAYERS"
-echo "[C_K Reset Config] Reset steps: $CK_RESET_STEPS"
-echo "[C_K Reset Config] History window: $CK_RESET_HISTORY_WINDOW steps"
-echo "[C_K Reset Config] Critic reset enabled: $CK_RESET_CRITIC_ENABLE"
+echo "[C_K Reset] Actor reset enabled: $CK_RESET_ENABLE (strategy: $CK_RESET_STRATEGY)"
+echo "[C_K Reset] Critic reset enabled: $CK_RESET_CRITIC_ENABLE (strategy: $CK_RESET_CRITIC_STRATEGY)"
+echo "[C_K Reset] Reset at steps: $CK_RESET_STEPS"
+echo "[C_K Reset] Layers per reset: $CK_RESET_K_LAYERS"
+echo "[C_K Reset] C_K history window: $CK_RESET_HISTORY_WINDOW steps"
 
 # Set up logging with backup - organized by script location
 LOG_BASE_DIR="./logs/base/llama/continual"

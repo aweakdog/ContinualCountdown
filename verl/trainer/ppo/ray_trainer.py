@@ -1209,7 +1209,6 @@ class RayPPOTrainer(object):
 
                             # Log all metrics
                             logger.log(data=metrics, step=self.global_steps)
-                            self.global_steps += 1
 
                             # Check for layer reset at specified global steps (curriculum learning path)
                             print(f"[LAYER_RESET_DEBUG] ===== STEP {self.global_steps}: CHECKING LAYER RESET (CURRICULUM) =====")
@@ -1224,6 +1223,7 @@ class RayPPOTrainer(object):
                             else:
                                 print(f"[LAYER_RESET_DEBUG] ERROR: LayerResetManager not found!")
                                 should_reset = False
+                            self.global_steps += 1
                             
                             if should_reset:
                                 with _timer('layer_reset', timing_raw):

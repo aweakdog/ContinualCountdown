@@ -313,6 +313,14 @@ python3 -m verl.trainer.main_ppo \
   ++reward_model.enable=False \
   ++reward_model.model.path=$BASE_MODEL \
   $LAYER_RESET_CONFIG \
+  ++actor_rollout_ref.actor.ck_reset.enable=$CK_RESET_ENABLE \
+  ++actor_rollout_ref.actor.ck_reset.reset_strategy=$CK_RESET_STRATEGY \
+  ++actor_rollout_ref.actor.ck_reset.reset_k_layers=$CK_RESET_K_LAYERS \
+  ++actor_rollout_ref.actor.ck_reset.reset_steps="$CK_RESET_STEPS" \
+  ++actor_rollout_ref.actor.ck_reset.random_seed=$CK_RESET_RANDOM_SEED \
+  ++actor_rollout_ref.actor.ck_reset.ck_history_window=$CK_RESET_HISTORY_WINDOW \
+  ++critic.ck_reset.enable=$CK_RESET_CRITIC_ENABLE \
+  ++critic.ck_reset.reset_strategy=$CK_RESET_CRITIC_STRATEGY \
   2>&1 | tee -a "$LOG_FILE" | tee -a "$MASTER_LOG_FILE"
   ray stop
   sleep 10

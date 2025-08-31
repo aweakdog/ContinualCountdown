@@ -65,14 +65,14 @@ else
     echo "[Layer Reset] Enabled - K_FIRST=$LAYER_RESET_K_FIRST, K_LAST=$LAYER_RESET_K_LAST"
 fi
 
-export LAYER_RESET_STEPS=${LAYER_RESET_STEPS:-"[40,80,120]"}  # Reset at global steps 120 and 200
+export LAYER_RESET_STEPS=${LAYER_RESET_STEPS:-"[40,80,120,200]"}  # Reset at global steps 120 and 200
 
 # C_K-Based Reset Configuration (OPTIONAL - defaults to disabled)
 # This enables intelligent layer reset based on Fisher Information C_K values
-export CK_RESET_ENABLE=${CK_RESET_ENABLE:-false}
+export CK_RESET_ENABLE=${CK_RESET_ENABLE:-true}  # Enable C_K reset by default
 export CK_RESET_STRATEGY=${CK_RESET_STRATEGY:-"ck_guided"}  # ck_guided, random, first_k, last_k
 export CK_RESET_K_LAYERS=${CK_RESET_K_LAYERS:-15}           # Number of layers to reset
-export CK_RESET_STEPS=${CK_RESET_STEPS:-"[2,40,80,120]"}     # Reset at global steps
+export CK_RESET_STEPS=${CK_RESET_STEPS:-"[2,40,80,120,200]"}     # Reset at global steps
 export CK_RESET_RANDOM_SEED=${CK_RESET_RANDOM_SEED:-42}    # Random seed for reproducible random reset
 export CK_RESET_HISTORY_WINDOW=${CK_RESET_HISTORY_WINDOW:-20}  # Sliding window size for C_K averaging
 

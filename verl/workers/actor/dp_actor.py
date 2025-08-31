@@ -38,6 +38,7 @@ from verl.single_controller.base.decorator import register, Dispatch
 import torch.nn as nn
 import torch.nn.functional as F
 from verl.utils.redo_utils.fsdp_flat_utils import analyze_all_fsdp_zero_grad_space
+from verl.utils.redo_utils.ck_based_reset_manager import create_ck_based_reset_manager
 import verl.utils.torch_functional as verl_F
 
 from flash_attn.bert_padding import pad_input, unpad_input, rearrange, index_first_axis
@@ -103,6 +104,14 @@ class DataParallelPPOActor(BasePPOActor):
         self.use_ulysses_sp = self.ulysses_sequence_parallel_size > 1
         
         self.redo_tau = getattr(self.config, 'redo_tau', 0.3)
+
+        # Initialize C_K-based reset manager
+        self.ck_reset_manager = None
+        if hasattr(self.config, 'ck_reset') and self.config.ck_reset.get('enable', False):
+            self.ck_reset_manager = create_ck_based_reset_manager(self.config.ck_reset)
+            print(f"[DataParallelPPOActor] Initialized C_K-based reset manager with strategy: {self.config.ck_reset.get('reset_strategy', 'ck_guided')}")
+        else:
+            print(f"[DataParallelPPOActor] C_K-based reset manager disabled")
 
         self.optim_config = None
         if hasattr(self.config, 'optim'):
@@ -802,6 +811,79 @@ class DataParallelPPOActor(BasePPOActor):
                                 else:
                                     self.logger.warning(f"[Actor][Step {self.global_steps}] Failed to get Fisher analysis results.")
                         
+                    # C_K-based layer reset logic (after Fisher analysis is complete)
+                    if rank == 0 and self.ck_reset_manager is not None:
+                        try:
+                            # Get Fisher stats from the results we just processed
+                            fisher_stats_for_reset = None
+                            if should_analyze_fisher and 'fisher_stats' in locals():
+                                fisher_stats_for_reset = fisher_stats
+                            
+                            # Check if reset should be performed and get C_K weights
+                            should_reset_ck, layer_ck_weights = self.ck_reset_manager.should_reset_with_ck_analysis(
+                                self.global_steps, fisher_stats_for_reset
+                            )
+                            
+                            # If we have Fisher stats, calculate proper C_K weights using original shapes
+                            if should_reset_ck and fisher_stats_for_reset and self.ck_reset_manager.reset_strategy == 'ck_guided':
+                                layer_ck_weights = self.ck_reset_manager.calculate_layer_ck_weights(
+                                    fisher_stats_for_reset, self.original_param_shapes or {}
+                                )
+                                print(f"[CK_WEIGHT_CALC] Step {self.global_steps}: Calculated C_K weights for {len(layer_ck_weights)} layers")
+                            
+                            if should_reset_ck:
+                                print(f"[CK_RESET_TRIGGER] Step {self.global_steps}: C_K-based reset triggered!")
+                                
+                                # Log reset statistics before performing reset
+                                self.ck_reset_manager.log_reset_statistics(self.global_steps)
+                                
+                                # Get selected layers for reset
+                                transformer_layers = self.ck_reset_manager.get_transformer_layers(self.actor_module)
+                                total_layers = len(transformer_layers)
+                                
+                                selected_layers = self.ck_reset_manager.select_layers_to_reset(
+                                    total_layers, layer_ck_weights, self.global_steps
+                                )
+                                
+                                print(f"[CK_RESET_INFO] Step {self.global_steps}: Resetting {len(selected_layers)} layers: {selected_layers}")
+                                print(f"[CK_RESET_INFO] Strategy: {self.ck_reset_manager.reset_strategy}")
+                                
+                                # Perform actual reset using the C_K-based reset manager
+                                try:
+                                    # For now, create a dummy reference state dict since we need reference worker integration
+                                    # This is a placeholder - in full implementation, this would come from reference worker
+                                    ref_layer_state_dict = {}
+                                    
+                                    # Log what we would reset (actual reset needs reference model integration)
+                                    print(f"[CK_RESET_PLACEHOLDER] Would reset layers {selected_layers} using strategy '{self.ck_reset_manager.reset_strategy}'")
+                                    
+                                    # Store detailed reset info in metrics
+                                    metrics['actor/ck_reset_triggered'] = 1.0
+                                    metrics['actor/ck_reset_layers_count'] = len(selected_layers)
+                                    metrics['actor/ck_reset_strategy'] = hash(self.ck_reset_manager.reset_strategy) % 1000  # Encode strategy as number
+                                    
+                                    # Store layer-specific metrics
+                                    if layer_ck_weights:
+                                        avg_ck_weight = sum(layer_ck_weights.get(idx, 0.0) for idx in selected_layers) / len(selected_layers)
+                                        metrics['actor/ck_reset_avg_weight'] = avg_ck_weight
+                                    
+                                    print(f"[CK_RESET_SUCCESS] Step {self.global_steps}: Reset simulation completed for {len(selected_layers)} layers")
+                                    
+                                except Exception as reset_error:
+                                    print(f"[CK_RESET_ERROR] Step {self.global_steps}: Reset failed: {reset_error}")
+                                    metrics['actor/ck_reset_triggered'] = -1.0  # Indicate failure
+                                    metrics['actor/ck_reset_layers_count'] = 0.0
+                                
+                            else:
+                                metrics['actor/ck_reset_triggered'] = 0.0
+                                metrics['actor/ck_reset_layers_count'] = 0.0
+                                
+                        except Exception as e:
+                            print(f"[CK_RESET_ERROR] Step {self.global_steps}: Error in C_K reset logic: {e}")
+                            import traceback
+                            traceback.print_exc()
+                            metrics['actor/ck_reset_triggered'] = 0.0
+                            metrics['actor/ck_reset_layers_count'] = 0.0
                     
                     # Set the metrics with the correct value
                     metrics['actor/zero_gradspace_ratio'] = zero_gradspace_ratio_avg

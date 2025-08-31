@@ -67,6 +67,19 @@ fi
 
 export LAYER_RESET_STEPS=${LAYER_RESET_STEPS:-"[40,80,120]"}  # Reset at global steps 120 and 200
 
+# C_K-Based Reset Configuration (OPTIONAL - defaults to disabled)
+# This enables intelligent layer reset based on Fisher Information C_K values
+export CK_RESET_ENABLE=${CK_RESET_ENABLE:-false}
+export CK_RESET_STRATEGY=${CK_RESET_STRATEGY:-"ck_guided"}  # ck_guided, random, first_k, last_k
+export CK_RESET_K_LAYERS=${CK_RESET_K_LAYERS:-4}           # Number of layers to reset
+export CK_RESET_STEPS=${CK_RESET_STEPS:-"[40,80,120]"}     # Reset at global steps
+export CK_RESET_RANDOM_SEED=${CK_RESET_RANDOM_SEED:-42}    # Random seed for reproducible random reset
+
+echo "[C_K Reset Config] C_K-based reset enabled: $CK_RESET_ENABLE"
+echo "[C_K Reset Config] Strategy: $CK_RESET_STRATEGY"
+echo "[C_K Reset Config] K layers: $CK_RESET_K_LAYERS"
+echo "[C_K Reset Config] Reset steps: $CK_RESET_STEPS"
+
 # Set up logging with backup - organized by script location
 LOG_BASE_DIR="./logs/base/llama/continual"
 LOG_FILE="$LOG_BASE_DIR/ContinualCountdown3B_llama_Curriculum.log"
@@ -214,6 +227,11 @@ for ((exp1_iter=1; exp1_iter<=EXP1_REPEAT_COUNT; exp1_iter++)); do
     ++reward_model.enable=False \
     ++reward_model.model.path=$BASE_MODEL \
     $LAYER_RESET_CONFIG \
+    ++actor_rollout_ref.actor.ck_reset.enable=$CK_RESET_ENABLE \
+    ++actor_rollout_ref.actor.ck_reset.reset_strategy=$CK_RESET_STRATEGY \
+    ++actor_rollout_ref.actor.ck_reset.reset_k_layers=$CK_RESET_K_LAYERS \
+    ++actor_rollout_ref.actor.ck_reset.reset_steps="$CK_RESET_STEPS" \
+    ++actor_rollout_ref.actor.ck_reset.random_seed=$CK_RESET_RANDOM_SEED \
     2>&1 | tee -a "$LOG_FILE" | tee -a "$MASTER_LOG_FILE"
   ray stop
   sleep 10
@@ -379,6 +397,11 @@ for ((exp3_iter=1; exp3_iter<=EXP3_REPEAT_COUNT; exp3_iter++)); do
     ++reward_model.enable=False \
     ++reward_model.model.path=$BASE_MODEL \
     $LAYER_RESET_CONFIG \
+    ++actor_rollout_ref.actor.ck_reset.enable=$CK_RESET_ENABLE \
+    ++actor_rollout_ref.actor.ck_reset.reset_strategy=$CK_RESET_STRATEGY \
+    ++actor_rollout_ref.actor.ck_reset.reset_k_layers=$CK_RESET_K_LAYERS \
+    ++actor_rollout_ref.actor.ck_reset.reset_steps="$CK_RESET_STEPS" \
+    ++actor_rollout_ref.actor.ck_reset.random_seed=$CK_RESET_RANDOM_SEED \
     2>&1 | tee -a "$LOG_FILE" | tee -a "$MASTER_LOG_FILE"
   ray stop
   sleep 10

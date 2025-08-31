@@ -121,6 +121,13 @@ class DataParallelPPOActor(BasePPOActor):
         except Exception as e:
             print(f"[DataParallelPPOActor] Failed to initialize Ray shared state: {e}")
             raise RuntimeError(f"Ray shared state synchronization is required but failed to initialize: {e}")
+        
+        # Initialize optimizer configuration
+        self._init_optimizer_config()
+        
+        # Initialize entropy computation function
+        self.compute_entropy_from_logits = torch.compile(verl_F.entropy_from_logits, dynamic=True)
+        self.debug_fqn_printed = False
     
     def _save_actor_reset_layers(self, selected_layers, global_step):
         """Save actor's selected reset layers for critic synchronization."""
@@ -151,9 +158,6 @@ class DataParallelPPOActor(BasePPOActor):
                 optimizer=self.actor_optimizer,
                 num_warmup_steps=num_warmup_steps
             )
-
-        self.compute_entropy_from_logits = torch.compile(verl_F.entropy_from_logits, dynamic=True)
-        self.debug_fqn_printed = False
 
     @register(dispatch_mode=Dispatch.ONE_TO_ALL)
     def reset_optimizer_learning_rate(self):

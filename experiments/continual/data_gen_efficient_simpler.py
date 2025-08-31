@@ -264,7 +264,7 @@ class DataGenerator:
                 template_types = ['base', 'qwen-instruct', 'llama-instruct']
                 prompts = {}
                 for template_type in template_types:
-                    question = make_prefix(sample, operators=["+", "-", "*", "/", "%", '@'], template_type=template_type)
+                    question = make_prefix(sample, operators=["+", "-", "*", "/", "%"], template_type=template_type)
                     prompts[template_type] = question
                     data[f"prompt_{template_type.replace('-', '_')}"].append(question)
                 
@@ -367,7 +367,7 @@ class DataGenerator:
                     
                     # Create question and answer using the same format as SFT data generator
                     sample_data = {"target": target, "nums": nums}
-                    question = make_prefix(sample_data, operators=["+", "-", "*", "/"], template_type='base')
+                    question = make_prefix(sample_data, operators=["+", "-", "*", "/", "%"], template_type='base')
                     answer = solution
                     
                     samples.append({

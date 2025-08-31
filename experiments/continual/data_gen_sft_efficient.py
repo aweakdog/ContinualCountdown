@@ -385,20 +385,10 @@ class SFTDataGenerator:
                 "full_expr": []
             }
             for idx, s in enumerate(samples):
-                # Determine operators based on config_name
-                config_name = s.get("config_name", "plus_minus_mul_4nums")
-                if "plus_minus_mul" in config_name:
-                    operators = ["+", "-", "*"]
-                elif "plus_mul" in config_name:
-                    operators = ["+", "*"]
-                elif "minus_mul" in config_name:
-                    operators = ["-", "*"]
-                else:
-                    operators = ["+", "-", "*"]  # fallback
-                
                 # Generate prompts for all template types
                 template_types = ['base', 'qwen-instruct', 'llama-instruct']
                 questions = {}
+                operators = ["+","-","*","/","%"]
                 for template_type in template_types:
                     questions[template_type] = make_prefix(s, operators=operators, template_type=template_type)
                 

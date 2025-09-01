@@ -228,6 +228,7 @@ for ((exp1_iter=1; exp1_iter<=EXP1_REPEAT_COUNT; exp1_iter++)); do
     ++actor_rollout_ref.actor.ck_reset.reset_k_layers=$CK_RESET_K_LAYERS \
     ++actor_rollout_ref.actor.ck_reset.reset_steps="$CK_RESET_STEPS" \
     ++actor_rollout_ref.actor.ck_reset.random_seed=$CK_RESET_RANDOM_SEED \
+    ++actor_rollout_ref.actor.ck_reset.ck_history_window=$CK_RESET_HISTORY_WINDOW \
     2>&1 | tee -a "$LOG_FILE" | tee -a "$MASTER_LOG_FILE"
   ray stop
   sleep 10
@@ -406,6 +407,7 @@ for ((exp3_iter=1; exp3_iter<=EXP3_REPEAT_COUNT; exp3_iter++)); do
     ++actor_rollout_ref.actor.ck_reset.reset_k_layers=$CK_RESET_K_LAYERS \
     ++actor_rollout_ref.actor.ck_reset.reset_steps="$CK_RESET_STEPS" \
     ++actor_rollout_ref.actor.ck_reset.random_seed=$CK_RESET_RANDOM_SEED \
+    ++actor_rollout_ref.actor.ck_reset.ck_history_window=$CK_RESET_HISTORY_WINDOW \
     2>&1 | tee -a "$LOG_FILE" | tee -a "$MASTER_LOG_FILE"
   ray stop
   sleep 10

@@ -111,14 +111,45 @@ class DataParallelPPOActor(BasePPOActor):
         # Debug: Print config structure to understand the issue
         print(f"[CK_RESET_DEBUG] Actor config keys: {list(self.config.__dict__.keys()) if hasattr(self.config, '__dict__') else 'No __dict__'}")
         print(f"[CK_RESET_DEBUG] Has ck_reset attr: {hasattr(self.config, 'ck_reset')}")
-        if hasattr(self.config, 'ck_reset'):
-            print(f"[CK_RESET_DEBUG] ck_reset config: {self.config.ck_reset}")
+        print(f"[CK_RESET_DEBUG] Config type: {type(self.config)}")
         
-        if hasattr(self.config, 'ck_reset') and self.config.ck_reset.get('enable', False):
-            self.ck_reset_manager = create_ck_based_reset_manager(self.config.ck_reset)
-            print(f"[DataParallelPPOActor] Initialized C_K-based reset manager with strategy: {self.config.ck_reset.get('reset_strategy', 'ck_guided')}")
+        # Try to access config content
+        if hasattr(self.config, '_content'):
+            print(f"[CK_RESET_DEBUG] Config _content keys: {list(self.config._content.keys()) if hasattr(self.config._content, 'keys') else 'No keys'}")
+            if hasattr(self.config._content, 'keys') and 'ck_reset' in self.config._content:
+                print(f"[CK_RESET_DEBUG] Found ck_reset in _content: {self.config._content['ck_reset']}")
+        
+        # Check for ck_reset in different possible locations
+        # Based on ray_trainer.py line 821, config comes from actor_rollout_ref
+        ck_reset_config = None
+        
+        # Try actor.ck_reset path (most likely location)
+        if hasattr(self.config, 'actor') and hasattr(self.config.actor, 'ck_reset'):
+            ck_reset_config = self.config.actor.ck_reset
+            print(f"[CK_RESET_DEBUG] Found ck_reset in config.actor.ck_reset: {ck_reset_config}")
+        # Try direct ck_reset path
+        elif hasattr(self.config, 'ck_reset'):
+            ck_reset_config = self.config.ck_reset
+            print(f"[CK_RESET_DEBUG] Found ck_reset in config.ck_reset: {ck_reset_config}")
+        # Try _content paths
+        elif hasattr(self.config, '_content') and hasattr(self.config._content, 'get'):
+            ck_reset_config = self.config._content.get('ck_reset')
+            if not ck_reset_config and 'actor' in self.config._content:
+                actor_config = self.config._content.get('actor', {})
+                if hasattr(actor_config, 'get'):
+                    ck_reset_config = actor_config.get('ck_reset')
+                    print(f"[CK_RESET_DEBUG] Found ck_reset in _content.actor.ck_reset: {ck_reset_config}")
+        # Try get method
+        elif hasattr(self.config, 'get'):
+            ck_reset_config = self.config.get('ck_reset')
+        
+        print(f"[CK_RESET_DEBUG] Final ck_reset_config: {ck_reset_config}")
+        
+        if ck_reset_config and ck_reset_config.get('enable', False):
+            self.ck_reset_manager = create_ck_based_reset_manager(ck_reset_config)
+            print(f"[DataParallelPPOActor] Initialized C_K-based reset manager with strategy: {ck_reset_config.get('reset_strategy', 'ck_guided')}")
         else:
-            print(f"[DataParallelPPOActor] C_K-based reset manager disabled")
+            print(f"[DataParallelPPOActor] C_K-based reset manager disabled - config not found or disabled")
         
         # Initialize Ray shared state manager for reset synchronization
         try:

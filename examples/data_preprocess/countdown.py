@@ -13,7 +13,7 @@ class CountDown(object):
         self.max_target = max_target
         self.min_target = min_target
         self.start_size = start_size
-        self.operators = operators if operators is not None else ["+", "-", "*", "/"]
+        self.operators = operators if operators is not None else ["+", "-", "*", "/", "%"]
         if len(self.operators) == 1 :
             self.max_cnt_limit = 10
         else:

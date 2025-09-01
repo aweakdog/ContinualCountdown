@@ -45,7 +45,7 @@ class CountDownReverse(object):
         self.min_target = min_target
         self.max_internal_value = max_internal_value
         self.start_size = start_size
-        self.candidate_operators = candidate_operators if candidate_operators is not None else ["+", "-", "*", "/", "%" ,'@']
+        self.candidate_operators = candidate_operators if candidate_operators is not None else ["+", "-", "*", "/", "%"]
         self.neccessary_operators = neccessary_operators if neccessary_operators is not None else []
         self.other_groups = other_groups if other_groups is not None else []
 

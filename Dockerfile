@@ -41,7 +41,7 @@ RUN conda create -n zero python=3.9 -y && \
     conda run -n zero pip install numpy && \
     #conda run -n zero pip install torch==2.4.0 --index-url https://download.pytorch.org/whl/cu121 && \
     conda run -n zero pip install vllm==0.5.4 && \
-    conda run -n zero pip install nvidia-cublas-cu12==12.4.5.8 && \
+    #conda run -n zero pip install nvidia-cublas-cu12==12.4.5.8 && \
     conda run -n zero pip install ray && \
     conda run -n zero pip install -e . && \
     conda run -n zero pip install flash-attn --no-build-isolation && \

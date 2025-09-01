@@ -499,7 +499,7 @@ if __name__ == "__main__":
                        help="Base directory for output data")
     parser.add_argument("--group", type=int, default=None,
                        help="Generate data for specific group only (0, 1, 2)")
-    parser.add_argument("--train_size", type=int, default=512000,
+    parser.add_argument("--train_size", type=int, default=38400,
                        help="Number of training samples")
     parser.add_argument("--test_size", type=int, default=512,
                        help="Number of test samples")

@@ -38,7 +38,7 @@ from rich import print as rprint
 def make_prefix(dp, operators, template_type='base'):
     target = dp['target']
     numbers = dp['nums']
-    user_message = f"Using the numbers {numbers}, create an equation that equals {target}. You can use basic arithmetic operations ({', '.join(operators)}) and each number should be used exactly once. Show your work in <think> </think> tags. And return the final answer in <answer> </answer> tags, for example <answer> (1 + 2) / 3 </answer>."
+    user_message = f"Using the numbers {numbers}, create an equation that equals {target}. Use the basic arithmetic operations ({', '.join(operators)}). These operators follow Python's rules of execution (e.g., / performs precise division, % performs a modulo operation). Each number must be used exactly once. Show your work in <think> </think> tags. And return the final answer in <answer> </answer> tags, for example <answer> (1 + 2) / 3 </answer>."
     
     if template_type == 'base':
         """This works for any base model"""

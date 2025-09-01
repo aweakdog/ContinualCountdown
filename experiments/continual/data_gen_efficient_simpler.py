@@ -38,7 +38,7 @@ from rich import print as rprint
 def make_prefix(dp, operators, template_type='base'):
     target = dp['target']
     numbers = dp['nums']
-    user_message = f"Using the numbers {numbers}, create an equation that equals {target}. Use the basic arithmetic operations ({', '.join(operators)}). These operators follow Python's rules of execution (e.g., / performs precise division, % performs a modulo operation). Each number must be used exactly once. Show your work in <think> </think> tags. And return the final answer in <answer> </answer> tags, for example <answer> (1 + 2) / 3 </answer>."
+    user_message = f"Using the numbers {numbers}, create an equation that equals {target}. Use the basic arithmetic operations ({', '.join(operators)}). Each number must be used exactly once. Show your work in <think> </think> tags. And return the final answer in <answer> </answer> tags, for example <answer> (1 + 2) / 3 </answer>."
     
     if template_type == 'base':
         """This works for any base model"""
@@ -106,25 +106,25 @@ class DataGenerator:
                     {'weight': 0.25, 'candidate': ['-', '/'], 'necessary': ['-', '/'], 'start_size': 3}
                 ]
             },
-            # Group 2: division-based operations  
-            {
-                'name': '2',
-                'distributions': [
-                    {'weight': 0.5, 'candidate': ['+', '-', '%'], 'necessary': ['+', '-', '%'], 'start_size': 4},
-                    {'weight': 0.25, 'candidate': ['+', '%'], 'necessary': ['+', '%'], 'start_size': 3},
-                    {'weight': 0.25, 'candidate': ['-', '%'], 'necessary': ['-', '%'], 'start_size': 3}
-                ]
-            }
- 
             ## Group 2: division-based operations  
             #{
             #    'name': '2',
             #    'distributions': [
-            #        {'weight': 0.25, 'candidate': ['+', '*', '/'], 'necessary': ['+', '*', '/'], 'start_size': 4},
-            #        {'weight': 0.25, 'candidate': ['-', '*', '/'], 'necessary': ['-', '*', '/'], 'start_size': 4},
-            #        {'weight': 0.5, 'candidate': ['*', '/'], 'necessary': ['*', '/'], 'start_size': 3},
+            #        {'weight': 0.5, 'candidate': ['+', '-', '%'], 'necessary': ['+', '-', '%'], 'start_size': 4},
+            #        {'weight': 0.25, 'candidate': ['+', '%'], 'necessary': ['+', '%'], 'start_size': 3},
+            #        {'weight': 0.25, 'candidate': ['-', '%'], 'necessary': ['-', '%'], 'start_size': 3}
             #    ]
             #}
+ 
+            # Group 2: division-based operations  
+            {
+                'name': '2',
+                'distributions': [
+                    {'weight': 0.25, 'candidate': ['+', '*', '/'], 'necessary': ['+', '*', '/'], 'start_size': 4},
+                    {'weight': 0.25, 'candidate': ['-', '*', '/'], 'necessary': ['-', '*', '/'], 'start_size': 4},
+                    {'weight': 0.5, 'candidate': ['*', '/'], 'necessary': ['*', '/'], 'start_size': 3},
+                ]
+            }
             
             #{
             #    'name': '3',
@@ -264,7 +264,7 @@ class DataGenerator:
                 template_types = ['base', 'qwen-instruct', 'llama-instruct']
                 prompts = {}
                 for template_type in template_types:
-                    question = make_prefix(sample, operators=["+", "-", "*", "/", "%"], template_type=template_type)
+                    question = make_prefix(sample, operators=["+", "-", "*", "/"], template_type=template_type)
                     prompts[template_type] = question
                     data[f"prompt_{template_type.replace('-', '_')}"].append(question)
                 
@@ -367,7 +367,7 @@ class DataGenerator:
                     
                     # Create question and answer using the same format as SFT data generator
                     sample_data = {"target": target, "nums": nums}
-                    question = make_prefix(sample_data, operators=["+", "-", "*", "/", "%"], template_type='base')
+                    question = make_prefix(sample_data, operators=["+", "-", "*", "/"], template_type='base')
                     answer = solution
                     
                     samples.append({

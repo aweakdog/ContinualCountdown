@@ -88,19 +88,19 @@ class CountDownReverse(object):
                             # Generate the full parenthesized expression
                             #full_expr = self.reconstruct_expression(nums, solution, target)
                             #print(full_expr, target)
-                            if not self.overlop(nums, target):
-                                #print("ok")
-                                full_expr = self.reconstruct_expression(nums, solution, target)
-                                full_expr = full_expr.replace('@', "//")
-                                for i in range(len(solution)):
-                                    solution[i] = solution[i].replace('@', "//")
-                                #print(full_expr, target)
-                                if full_expr is None:
-                                    full_expr = ''
-                                print(target, nums, solution, full_expr)
-                                return target, nums, solution, full_expr
-                            else:
-                                continue
+                            #if not self.overlop(nums, target):
+                            #    #print("ok")
+                            #    full_expr = self.reconstruct_expression(nums, solution, target)
+                            #    full_expr = full_expr.replace('@', "//")
+                            #    for i in range(len(solution)):
+                            #        solution[i] = solution[i].replace('@', "//")
+                            #    #print(full_expr, target)
+                            #    if full_expr is None:
+                            #        full_expr = ''
+                            #    print(target, nums, solution, full_expr)
+                            #    return target, nums, solution, full_expr
+                            #else:
+                            #    continue
                             full_expr = self.reconstruct_expression(nums, solution, target)
                             full_expr = full_expr.replace('@', "//")
                             for i in range(len(solution)):

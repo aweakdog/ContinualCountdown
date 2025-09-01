@@ -444,35 +444,46 @@ class RayPPOTrainer(object):
         from torch.utils.data import DataLoader, Subset
         from verl.utils.dataset.rl_dataset import collate_fn
         import random
-        import numpy as np
         
         # Get the original dataset for this group
         dataset = self.train_datasets[group]
-        
-        # Determine the number of samples to use
         total_samples = len(dataset)
+        
+        # Determine how many samples to actually use
         samples_to_use = min(sample_size, total_samples)
         
-        # If epoch and/or round_num are provided, use a deterministic seed based on the group, epoch, and round_num
-        #if epoch is not None and round_num is not None:
-        #    seed = hash(f"{group}_{epoch}_{round_num}") % 10000
-        #    rng = random.Random(seed)
-        #    indices = rng.sample(range(total_samples), samples_to_use)
-        #    print(f"Using deterministic sampling for group {group}, epoch {epoch}, round {round_num} with seed {seed}")
-        #elif epoch is not None:
-        #    seed = hash(f"{group}_{epoch}") % 10000
-        #    rng = random.Random(seed)
-        #    indices = rng.sample(range(total_samples), samples_to_use)
-        #    print(f"Using deterministic sampling for group {group}, epoch {epoch} with seed {seed}")
-        #elif round_num is not None:
-        #    seed = hash(f"{group}_{round_num}") % 10000
-        #    rng = random.Random(seed)
-        #    indices = rng.sample(range(total_samples), samples_to_use)
-        #    print(f"Using deterministic sampling for group {group}, round {round_num} with seed {seed}")
-        #else:
-        #    # Use standard random sampling
-        #    indices = random.sample(range(total_samples), samples_to_use)
-        indices = random.sample(range(total_samples), samples_to_use)
+        print(f'Creating limited dataloader for group {group}: using {samples_to_use} out of {total_samples} samples')
+        
+        # Initialize used_indices tracker for this group if not exists
+        if not hasattr(self, '_used_indices'):
+            self._used_indices = {}
+        if group not in self._used_indices:
+            self._used_indices[group] = set()
+        
+        # Get available indices (not yet used)
+        all_indices = set(range(total_samples))
+        available_indices = all_indices - self._used_indices[group]
+        
+        # If we don't have enough available indices, reset and start over
+        if len(available_indices) < samples_to_use:
+            print(f'Not enough unused samples for group {group} (need {samples_to_use}, have {len(available_indices)}). Resetting used indices.')
+            self._used_indices[group] = set()
+            available_indices = all_indices
+        
+        # Sample from available indices to ensure no repetition
+        if epoch is not None:
+            # Use deterministic seed for reproducibility
+            seed = hash((str(group), epoch, round_num if round_num is not None else 0)) % (2**32)
+            random.seed(seed)
+            print(f'Using deterministic seed {seed} for group {group}, epoch {epoch}, round {round_num}')
+        
+        # Sample indices without replacement from available indices
+        indices = random.sample(list(available_indices), samples_to_use)
+        
+        # Mark these indices as used
+        self._used_indices[group].update(indices)
+        
+        print(f'Sampled {len(indices)} new indices for group {group}. Total used: {len(self._used_indices[group])}/{total_samples}')
         
         # Create a subset dataset with the sampled indices
         subset_dataset = Subset(dataset, indices)

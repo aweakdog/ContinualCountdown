@@ -239,8 +239,8 @@ echo "Experiment 1 completed after $EXP1_REPEAT_COUNT iteration(s)"
 echo "=== EXPERIMENT 2: Training Group 1 + Group 2 (${EXP2_REPEAT_COUNT} repetition(s)) ==="
 for ((exp2_iter=1; exp2_iter<=EXP2_REPEAT_COUNT; exp2_iter++)); do
   echo "--- Experiment 2 Iteration $exp2_iter/$EXP2_REPEAT_COUNT ---"
-  TRAIN_FILES_STR="[\"./data/base/group_1/train.parquet\", \"./data/base/group_2/train.parquet\"]"
-  VAL_FILES_STR="[\"./data/base/group_1/test.parquet\", \"./data/base/group_2/test.parquet\"]"
+  TRAIN_FILES_STR="[\"./data/base/group_2/train.parquet\", \"./data/base/group_2/train.parquet\"]"
+  VAL_FILES_STR="[\"./data/base/group_2/test.parquet\", \"./data/base/group_2/test.parquet\"]"
   TRAIN_SAMPLE_SIZE="[2560, 2560]"
   #TRAIN_SAMPLE_SIZE="[512, 512]"
   RUN_NAME="Exp2_Group1and2_Iter${exp2_iter}_SFT_${SFT_CHECKPOINT}_$(date +%Y%m%d_%H%M%S)"
@@ -293,9 +293,9 @@ python3 -m verl.trainer.main_ppo \
   critic.ppo_mini_batch_size=32 \
   critic.ppo_micro_batch_size=8 \
   ++actor_rollout_ref.actor.redo_tau=0.1 \
-  ++actor_rollout_ref.actor.enable_gradient_analysis=true \
+  ++actor_rollout_ref.actor.enable_gradient_analysis=false \
   ++actor_rollout_ref.actor.gradient_analysis_freq=1 \
-  ++actor_rollout_ref.actor.enable_fisher_analysis=true \
+  ++actor_rollout_ref.actor.enable_fisher_analysis=false \
   ++actor_rollout_ref.actor.fisher_analysis_freq=1 \
   algorithm.kl_ctrl.kl_coef=0.001 \
   trainer.logger=['wandb','console'] \

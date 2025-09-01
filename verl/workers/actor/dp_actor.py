@@ -107,6 +107,13 @@ class DataParallelPPOActor(BasePPOActor):
 
         # Initialize C_K-based reset manager
         self.ck_reset_manager = None
+        
+        # Debug: Print config structure to understand the issue
+        print(f"[CK_RESET_DEBUG] Actor config keys: {list(self.config.__dict__.keys()) if hasattr(self.config, '__dict__') else 'No __dict__'}")
+        print(f"[CK_RESET_DEBUG] Has ck_reset attr: {hasattr(self.config, 'ck_reset')}")
+        if hasattr(self.config, 'ck_reset'):
+            print(f"[CK_RESET_DEBUG] ck_reset config: {self.config.ck_reset}")
+        
         if hasattr(self.config, 'ck_reset') and self.config.ck_reset.get('enable', False):
             self.ck_reset_manager = create_ck_based_reset_manager(self.config.ck_reset)
             print(f"[DataParallelPPOActor] Initialized C_K-based reset manager with strategy: {self.config.ck_reset.get('reset_strategy', 'ck_guided')}")

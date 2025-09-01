@@ -203,25 +203,23 @@ def generate_incorrect_solutions(source_numbers, target_num, num_incorrect=3):
         
         # Only add if evaluation was successful and result is different from target
         if steps is not None and result is not None and result != target_num:
-            # Create step-by-step solution string
+            # Always create consistent step-by-step format for incorrect solutions
             if len(steps) > 1:
-                # Extract intermediate steps, avoiding trivial final steps
-                intermediate_steps = []
+                # Extract all intermediate steps for consistency
+                step_parts = []
                 for step in steps:
                     parts = step.split(' = ')
                     if len(parts) >= 2:
-                        intermediate_steps.append(parts[1])
+                        step_parts.append(parts[1])
                 
-                # Remove the last step if it's trivial (same as result)
-                if intermediate_steps and intermediate_steps[-1] == str(result):
-                    intermediate_steps = intermediate_steps[:-1]
-                
-                if intermediate_steps:
-                    step_by_step = ' = '.join(intermediate_steps)
-                    bad_solution = f"{expr_str} = {step_by_step} = {result}"
+                # Create full step-by-step solution showing all calculations
+                if len(step_parts) > 1:
+                    step_by_step = ' = '.join(step_parts)
+                    bad_solution = f"{expr_str} = {step_by_step}"
                 else:
                     bad_solution = f"{expr_str} = {result}"
             else:
+                # For simple expressions, still show the calculation
                 bad_solution = f"{expr_str} = {result}"
             
             if bad_solution not in incorrect_solutions:

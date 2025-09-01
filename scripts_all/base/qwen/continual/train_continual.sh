@@ -6,7 +6,7 @@ EXPERIMENT_TYPE=${1:-train}  # Default to 'train' if no argument provided
 # Model configuration parameters
 SFT_MODEL_BASE_DIR=${SFT_MODEL_BASE_DIR:-"./models"}
 SFT_MODEL_NAME=${SFT_MODEL_NAME:-"qwen_base_sft_models"}
-SFT_CHECKPOINT=${SFT_CHECKPOINT:-"global_step_15"}
+SFT_CHECKPOINT=${SFT_CHECKPOINT:-"global_step_20"}
 
 echo "[Experiment Type] Using type: $EXPERIMENT_TYPE"
 echo "[Model Config] SFT model base directory: $SFT_MODEL_BASE_DIR"
@@ -240,8 +240,8 @@ echo "Experiment 1 completed after $EXP1_REPEAT_COUNT iteration(s)"
 echo "=== EXPERIMENT 2: Training Group 1 + Group 2 (${EXP2_REPEAT_COUNT} repetition(s)) ==="
 for ((exp2_iter=1; exp2_iter<=EXP2_REPEAT_COUNT; exp2_iter++)); do
   echo "--- Experiment 2 Iteration $exp2_iter/$EXP2_REPEAT_COUNT ---"
-  TRAIN_FILES_STR="[\"./data/base/group_1/train.parquet\", \"./data/base/group_2/train.parquet\"]"
-  VAL_FILES_STR="[\"./data/base/group_1/test.parquet\", \"./data/base/group_2/test.parquet\"]"
+  TRAIN_FILES_STR="[\"./data/base/group_2/train.parquet\", \"./data/base/group_1/train.parquet\"]"
+  VAL_FILES_STR="[\"./data/base/group_2/test.parquet\", \"./data/base/group_1/test.parquet\"]"
   TRAIN_SAMPLE_SIZE="[2560, 2560]"
   #TRAIN_SAMPLE_SIZE="[512, 512]"
   RUN_NAME="Exp2_Group1and2_Iter${exp2_iter}_SFT_${SFT_CHECKPOINT}_$(date +%Y%m%d_%H%M%S)"

@@ -5,8 +5,8 @@ EXPERIMENT_TYPE=${1:-train}  # Default to 'train' if no argument provided
 
 # Model configuration parameters
 SFT_MODEL_BASE_DIR=${SFT_MODEL_BASE_DIR:-"./models"}
-SFT_MODEL_NAME=${SFT_MODEL_NAME:-"llama_base_sft_models"}
-SFT_CHECKPOINT=${SFT_CHECKPOINT:-"global_step_20"}
+SFT_MODEL_NAME=${SFT_MODEL_NAME:-"qwen_base_sft_models"}
+SFT_CHECKPOINT=${SFT_CHECKPOINT:-"global_step_15"}
 
 echo "[Experiment Type] Using type: $EXPERIMENT_TYPE"
 echo "[Model Config] SFT model base directory: $SFT_MODEL_BASE_DIR"
@@ -30,7 +30,7 @@ fi
 
 # Configuration - Set environment variables
 export NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-all}
-export CHECKPOINT_BASE_DIR=${CHECKPOINT_BASE_DIR:-./checkpoints/llama_base/continual_countdown3b_llama_curriculum}
+export CHECKPOINT_BASE_DIR=${CHECKPOINT_BASE_DIR:-./checkpoints/qwen_base/continual_countdown3b_qwen_curriculum}
 # Construct BASE_MODEL path - handle empty SFT_MODEL_NAME
 if [ -z "$SFT_MODEL_NAME" ]; then
     export BASE_MODEL=${BASE_MODEL:-"${SFT_MODEL_BASE_DIR}/${SFT_CHECKPOINT}"}
@@ -77,8 +77,8 @@ echo "[C_K Reset] Layers per reset: $CK_RESET_K_LAYERS"
 echo "[C_K Reset] C_K history window: $CK_RESET_HISTORY_WINDOW steps"
 
 # Set up logging with backup - organized by script location
-LOG_BASE_DIR="./logs/base/llama/continual"
-LOG_FILE="$LOG_BASE_DIR/ContinualCountdown3B_llama_Curriculum.log"
+LOG_BASE_DIR="./logs/base/qwen/continual"
+LOG_FILE="$LOG_BASE_DIR/ContinualCountdown3B_qwen_Curriculum.log"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 BACKUP_DIR="$LOG_BASE_DIR/run"
 
@@ -89,7 +89,7 @@ mkdir -p "$BACKUP_DIR"
 # Create backup of existing log if it exists
 if [ -f "$LOG_FILE" ]; then
     mkdir -p "$BACKUP_DIR"
-    cp "$LOG_FILE" "$BACKUP_DIR/ContinualCountdown3B_llama_Curriculum_${TIMESTAMP}.log"
+    cp "$LOG_FILE" "$BACKUP_DIR/ContinualCountdown3B_qwen_Curriculum_${TIMESTAMP}.log"
 fi
 
 # Clean up previous checkpoints
@@ -122,7 +122,7 @@ fi
 
 # Create a unique subdirectory for this experiment's logs with timestamp
 EXPERIMENT_TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-EXP_LOG_DIR=$LOG_BASE_DIR/${EXPERIMENT_TYPE}_continual_llama_sft_${SFT_CHECKPOINT}_reset_k${LAYER_RESET_K_FIRST}f_k${LAYER_RESET_K_LAST}l_${EXPERIMENT_TIMESTAMP}
+EXP_LOG_DIR=$LOG_BASE_DIR/${EXPERIMENT_TYPE}_continual_qwen_sft_${SFT_CHECKPOINT}_reset_k${LAYER_RESET_K_FIRST}f_k${LAYER_RESET_K_LAST}l_${EXPERIMENT_TIMESTAMP}
 mkdir -p "$EXP_LOG_DIR"
 cp tmp/monitor_master.sh "$EXP_LOG_DIR/"
 MASTER_LOG_FILE="$EXP_LOG_DIR/experiment_master.log"
@@ -154,8 +154,8 @@ fi
 echo "=== EXPERIMENT 1: Training Group 0 (${EXP1_REPEAT_COUNT} repetition(s)) ==="
 for ((exp1_iter=1; exp1_iter<=EXP1_REPEAT_COUNT; exp1_iter++)); do
   echo "--- Experiment 1 Iteration $exp1_iter/$EXP1_REPEAT_COUNT ---"
-  TRAIN_FILES_STR="[\"./data/llama_base/group_0/train.parquet\"]"
-  VAL_FILES_STR="[\"./data/llama_base/group_0/test.parquet\"]"
+  TRAIN_FILES_STR="[\"./data/qwen_base/group_0/train.parquet\"]"
+  VAL_FILES_STR="[\"./data/qwen_base/group_0/test.parquet\"]"
   TRAIN_SAMPLE_SIZE="[2560]"
   RUN_NAME="Exp1_Group0_Iter${exp1_iter}_SFT_${SFT_CHECKPOINT}_$(date +%Y%m%d_%H%M%S)"
   export RUN_NAME
@@ -216,7 +216,7 @@ for ((exp1_iter=1; exp1_iter<=EXP1_REPEAT_COUNT; exp1_iter++)); do
     trainer.nnodes=1 \
     trainer.save_freq=1200 \
     trainer.test_freq=30 \
-    trainer.project_name=ContinualCountdown3B_llama \
+    trainer.project_name=ContinualCountdown3B_qwen \
     trainer.experiment_name=$RUN_NAME \
     trainer.total_epochs=1 \
     +trainer.val_before_train=true \
@@ -240,8 +240,8 @@ echo "Experiment 1 completed after $EXP1_REPEAT_COUNT iteration(s)"
 echo "=== EXPERIMENT 2: Training Group 1 + Group 2 (${EXP2_REPEAT_COUNT} repetition(s)) ==="
 for ((exp2_iter=1; exp2_iter<=EXP2_REPEAT_COUNT; exp2_iter++)); do
   echo "--- Experiment 2 Iteration $exp2_iter/$EXP2_REPEAT_COUNT ---"
-  TRAIN_FILES_STR="[\"./data/base/group_1/train.parquet\", \"./data/base/group_2/train.parquet\"]"
-  VAL_FILES_STR="[\"./data/base/group_1/test.parquet\", \"./data/base/group_2/test.parquet\"]"
+  TRAIN_FILES_STR="[\"./data/base/group_2/train.parquet\", \"./data/base/group_1/train.parquet\"]"
+  VAL_FILES_STR="[\"./data/base/group_2/test.parquet\", \"./data/base/group_1/test.parquet\"]"
   TRAIN_SAMPLE_SIZE="[2560, 2560]"
   #TRAIN_SAMPLE_SIZE="[512, 512]"
   RUN_NAME="Exp2_Group1and2_Iter${exp2_iter}_SFT_${SFT_CHECKPOINT}_$(date +%Y%m%d_%H%M%S)"
@@ -307,7 +307,7 @@ python3 -m verl.trainer.main_ppo \
   trainer.nnodes=1 \
   trainer.save_freq=1200 \
   trainer.test_freq=30 \
-  trainer.project_name=ContinualCountdown3B_llama \
+  trainer.project_name=ContinualCountdown3B_qwen \
   trainer.experiment_name=$RUN_NAME \
   trainer.total_epochs=1 \
   +trainer.val_before_train=true \
@@ -333,8 +333,8 @@ echo "Experiment 2 completed after $EXP2_REPEAT_COUNT iteration(s)"
 echo "=== EXPERIMENT 3: Training Group 2 (${EXP3_REPEAT_COUNT} repetition(s)) ==="
 for ((exp3_iter=1; exp3_iter<=EXP3_REPEAT_COUNT; exp3_iter++)); do
   echo "--- Experiment 3 Iteration $exp3_iter/$EXP3_REPEAT_COUNT ---"
-  TRAIN_FILES_STR="[\"./data/llama_base/deepmath/train.parquet\"]"
-  VAL_FILES_STR="[\"./data/llama_base/deepmath/test.parquet\"]"
+  TRAIN_FILES_STR="[\"./data/qwen_base/deepmath/train.parquet\"]"
+  VAL_FILES_STR="[\"./data/qwen_base/deepmath/test.parquet\"]"
   TRAIN_SAMPLE_SIZE="[2560]"
   RUN_NAME="Exp3_deepmath_Iter${exp3_iter}_SFT_${SFT_CHECKPOINT}_$(date +%Y%m%d_%H%M%S)"
   export RUN_NAME
@@ -395,7 +395,7 @@ for ((exp3_iter=1; exp3_iter<=EXP3_REPEAT_COUNT; exp3_iter++)); do
     trainer.nnodes=1 \
     trainer.save_freq=1200 \
     trainer.test_freq=30 \
-    trainer.project_name=ContinualCountdown3B_llama \
+    trainer.project_name=ContinualCountdown3B_qwen \
     trainer.experiment_name=$RUN_NAME \
     trainer.total_epochs=1 \
     +trainer.val_before_train=true \

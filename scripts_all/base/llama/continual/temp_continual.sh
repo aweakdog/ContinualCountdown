@@ -6,7 +6,7 @@ EXPERIMENT_TYPE=${1:-train}  # Default to 'train' if no argument provided
 # Model configuration parameters
 SFT_MODEL_BASE_DIR=${SFT_MODEL_BASE_DIR:-"./models"}
 SFT_MODEL_NAME=${SFT_MODEL_NAME:-"llama_base_sft_models"}
-SFT_CHECKPOINT=${SFT_CHECKPOINT:-"global_step_15"}
+SFT_CHECKPOINT=${SFT_CHECKPOINT:-"global_step_10"}
 
 echo "[Experiment Type] Using type: $EXPERIMENT_TYPE"
 echo "[Model Config] SFT model base directory: $SFT_MODEL_BASE_DIR"

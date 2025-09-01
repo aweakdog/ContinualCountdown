@@ -1210,19 +1210,14 @@ class RayPPOTrainer(object):
                             # Log all metrics
                             logger.log(data=metrics, step=self.global_steps)
 
-                            # Check for layer reset at specified global steps (curriculum learning path)
-                            print(f"[LAYER_RESET_DEBUG] ===== STEP {self.global_steps}: CHECKING LAYER RESET (CURRICULUM) =====")
-                            print(f"[LAYER_RESET_DEBUG] LayerResetManager exists: {hasattr(self, 'layer_reset_manager')}")
-                            if hasattr(self, 'layer_reset_manager'):
-                                print(f"[LAYER_RESET_DEBUG] LayerResetManager.enable_reset: {self.layer_reset_manager.enable_reset}")
-                                print(f"[LAYER_RESET_DEBUG] LayerResetManager.reset_steps: {self.layer_reset_manager.reset_steps}")
-                                print(f"[LAYER_RESET_DEBUG] Current global_step: {self.global_steps}")
-                                print(f"[LAYER_RESET_DEBUG] Is global_step in reset_steps: {self.global_steps in self.layer_reset_manager.reset_steps}")
-                                should_reset = self.layer_reset_manager.should_reset(self.global_steps)
-                                print(f"[LAYER_RESET_DEBUG] should_reset() returned: {should_reset}")
-                            else:
-                                print(f"[LAYER_RESET_DEBUG] ERROR: LayerResetManager not found!")
-                                should_reset = False
+                            # C_K reset is handled automatically in actor and critic workers
+                            print(f"[CK_RESET_DEBUG] ===== STEP {self.global_steps}: C_K RESET STATUS =====")
+                            print(f"[CK_RESET_DEBUG] C_K reset is handled automatically in actor/critic workers")
+                            print(f"[CK_RESET_DEBUG] Actor workers check reset at steps: [1, 40, 80, 120]")
+                            print(f"[CK_RESET_DEBUG] Training loop does not interfere with C_K reset process")
+                            
+                            # Disable legacy layer reset completely
+                            should_reset = False
                             self.global_steps += 1
                             
                             if should_reset:

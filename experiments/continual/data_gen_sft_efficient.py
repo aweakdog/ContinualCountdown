@@ -424,7 +424,7 @@ class SFTDataGenerator:
                 # Add incorrect attempts
                 if incorrect_solutions:
                     for i, incorrect in enumerate(incorrect_solutions):
-                        response += f"{i+1}, {incorrect}, Not correct, Let's try another one.\n\n"
+                        response += f"{incorrect}, Not correct, Let's try another one.\n\n"
                 
                 # Add correct solution as the final attempt
                 try:
@@ -433,12 +433,12 @@ class SFTDataGenerator:
                     thinking_process = " = ".join([step.split(" = ")[1] for step in steps_result if " = " in step])
                     attempt_num = len(incorrect_solutions) + 1
                     if thinking_process:
-                        response += f"{attempt_num}, {full_expr} = {thinking_process} Correct!\n"
+                        response += f"{full_expr} = {thinking_process} Correct!\n"
                     else:
-                        response += f"{attempt_num}, {full_expr} = {final_result} Correct!\n"
+                        response += f"{full_expr} = {final_result} Correct!\n"
                 except:
                     attempt_num = len(incorrect_solutions) + 1
-                    response += f"{attempt_num}, {full_expr} Correct!\n"
+                    response += f"{full_expr} Correct!\n"
                 
                 response += f"</think>\n\n<answer>{full_expr}</answer>"
                 

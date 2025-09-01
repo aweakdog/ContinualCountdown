@@ -139,7 +139,19 @@ class DataParallelPPOCritic(BasePPOCritic):
             grad_norm = self.critic_module.clip_grad_norm_(self.config.grad_clip)
         else:
             grad_norm = torch.nn.utils.clip_grad_norm_(self.critic_module.parameters(), max_norm=self.config.grad_clip)
-        self.critic_optimizer.step()
+        
+        # Output learning rate before and after optimizer step
+        if self.lr_scheduler is not None:
+            old_lr = self.critic_optimizer.param_groups[0]['lr']
+            self.critic_optimizer.step()
+            self.lr_scheduler.step()
+            new_lr = self.critic_optimizer.param_groups[0]['lr']
+            print(f"[LEARNING_RATE][Critic] LR before scheduler: {old_lr:.8f}, LR after scheduler: {new_lr:.8f}")
+        else:
+            current_lr = self.critic_optimizer.param_groups[0]['lr']
+            self.critic_optimizer.step()
+            print(f"[LEARNING_RATE][Critic] No scheduler - Current LR: {current_lr:.8f}")
+        
         return grad_norm
 
     def compute_values(self, data: DataProto) -> torch.Tensor:

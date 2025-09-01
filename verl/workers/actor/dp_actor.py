@@ -597,8 +597,13 @@ class DataParallelPPOActor(BasePPOActor):
 
             self.actor_optimizer.step()
             if self.lr_scheduler is not None:
+                old_lr = self.actor_optimizer.param_groups[0]['lr']
                 self.lr_scheduler.step()
                 new_lr = self.actor_optimizer.param_groups[0]['lr']
+                print(f"[LEARNING_RATE][Actor][Step {self.global_steps}] LR before scheduler: {old_lr:.8f}, LR after scheduler: {new_lr:.8f}")
+            else:
+                current_lr = self.actor_optimizer.param_groups[0]['lr']
+                print(f"[LEARNING_RATE][Actor][Step {self.global_steps}] No scheduler - Current LR: {current_lr:.8f}")
 
             with torch.no_grad():
                 metrics['actor/pg_loss'] = pg_loss.item()

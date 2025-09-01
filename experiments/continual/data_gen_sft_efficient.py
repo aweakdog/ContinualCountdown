@@ -398,7 +398,7 @@ class SFTDataGenerator:
                 source_number = s.get("nums", None)
                 
                 # Generate response (same for all templates)
-                response = f"Looking at this problem, I need to use the numbers {source_number} exactly once each to create an equation that equals {target_num}.\n\n"
+                response = f"Looking at this problem, I need to use the numbers {source_number} each exactly once to create an equation that equals {target_num}.\n\n"
                 
                 # Randomly decide number of incorrect attempts (0-2)
                 import random

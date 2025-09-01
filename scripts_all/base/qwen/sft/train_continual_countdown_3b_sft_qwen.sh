@@ -120,7 +120,7 @@ from experiments.continual.data_gen_sft_efficient import SFTDataGenerator
 test_size = max(128, int($SFT_SIZE * 0.25))
 
 print(f'Generating SFT data for Qwen: train_size={$SFT_SIZE}, test_size={test_size}')
-generator = SFTDataGenerator(model_type='qwen')  # Use qwen template
+generator = SFTDataGenerator(model_type='base')  # Use qwen template
 generator.generate_group_data(train_size=$SFT_SIZE, test_size=test_size)
 print('SFT data generation completed!')
 " 2>&1 | tee -a "$LOG_FILE"

@@ -429,16 +429,15 @@ class SFTDataGenerator:
                 response += f"</think>\n\n<answer>{full_expr}</answer>"
                 
                 # Debug: print response for verification
-                if idx < 10:  # Only print first 2 samples to avoid spam
-                    print(f"\n[DEBUG] Sample {idx} Response:")
-                    print(f"Target: {target_num}, Numbers: {source_number}")
-                    print(f"Full Expression: {full_expr}")
-                    print(f"Response:\n{response}")
-                    print("=" * 60)
+                
                 
                 # Set unified fields based on model_type
                 data["prompt"].append(str(questions[self.template_type]))
                 data["response"].append(str(response))
+                if idx < 10:  # Only print first 2 samples to avoid spam
+                    print(str(questions[self.template_type]))
+                    print(str(response))
+                    print("=" * 60)
                 
                 # Store all template versions for compatibility
                 data["prompt_base"].append(str(questions['base']))

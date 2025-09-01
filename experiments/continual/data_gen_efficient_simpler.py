@@ -400,7 +400,7 @@ class DataGenerator:
             return f"<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\nYou are a helpful assistant.<|eot_id|><|start_header_id|>user<|end_header_id|>\n\n{user_message}<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n"
         else:
             # Base format
-            return f"{question}\n\n{instruction_following}\n\nAnswer:"
+            return f"{question}"
 
     def save_samples_with_template(self, group_idx, train_samples, test_samples):
         """Save pre-generated samples with the current template"""

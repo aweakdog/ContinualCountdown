@@ -878,17 +878,21 @@ class DataParallelPPOActor(BasePPOActor):
                                     self.logger.warning(f"[Actor][Step {self.global_steps}] Failed to get Fisher analysis results.")
                         
                     # C_K-based layer reset logic (after Fisher analysis is complete)
+                    print(f"[CK_RESET_DEBUG] Step {self.global_steps}: Checking C_K reset conditions - rank={rank}, ck_reset_manager={self.ck_reset_manager is not None}")
                     if rank == 0 and self.ck_reset_manager is not None:
                         try:
+                            print(f"[CK_RESET_DEBUG] Step {self.global_steps}: Entering C_K reset check logic")
                             # Get Fisher stats from the results we just processed
                             fisher_stats_for_reset = None
                             if should_analyze_fisher and 'fisher_stats' in locals():
                                 fisher_stats_for_reset = fisher_stats
                             
+                            print(f"[CK_RESET_DEBUG] Step {self.global_steps}: Calling should_reset_with_ck_analysis")
                             # Check if reset should be performed and get C_K weights
                             should_reset_ck, layer_ck_weights = self.ck_reset_manager.should_reset_with_ck_analysis(
                                 self.global_steps, fisher_stats_for_reset
                             )
+                            print(f"[CK_RESET_DEBUG] Step {self.global_steps}: should_reset_ck={should_reset_ck}")
                             
                             # If we have Fisher stats, calculate proper C_K weights using original shapes
                             if should_reset_ck and fisher_stats_for_reset and self.ck_reset_manager.reset_strategy == 'ck_guided':

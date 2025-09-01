@@ -140,3 +140,4 @@ qwen_logs/
 qwen_plots/
 llama_plots/
 analyzer_metrics/
+data_no_inter/

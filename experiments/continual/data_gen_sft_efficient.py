@@ -130,10 +130,30 @@ def evaluate_step_by_step(expression_str):
             return [f"{expression_str} = Error"], 0
 
 
+def safe_evaluate_expression(expr_str):
+    """Safely evaluate expression, handling division by zero and other errors."""
+    try:
+        # Replace division by zero with a safe alternative
+        import re
+        # Check for potential division by zero patterns
+        if '/ 0' in expr_str or '% 0' in expr_str:
+            return None, None
+        
+        result = eval(expr_str)
+        # Check for invalid results
+        if not isinstance(result, (int, float)) or not (-1000 < result < 1000):
+            return None, None
+        if isinstance(result, float) and (result != result or abs(result) == float('inf')):  # NaN or inf
+            return None, None
+        
+        return evaluate_step_by_step(expr_str)
+    except (ZeroDivisionError, ValueError, OverflowError, TypeError):
+        return None, None
+
 def generate_incorrect_solutions(source_numbers, target_num, num_incorrect=3):
     """Generate incorrect solutions with complex expressions similar to correct solutions."""
     incorrect_solutions = []
-    operators = ['+', '-', '*']
+    operators = ['+', '-', '*', '/', '%']
     
     # Try to generate different incorrect solutions with complex expressions
     attempts = 0
@@ -178,38 +198,34 @@ def generate_incorrect_solutions(source_numbers, target_num, num_incorrect=3):
             op = random.choice(operators)
             expr_str = f"{nums[0]} {op} {nums[1]}"
         
-        try:
-            # Get step-by-step evaluation
-            steps, result = evaluate_step_by_step(expr_str)
-            
-            # Only add if result is different from target and is a reasonable number
-            if result != target_num and isinstance(result, (int, float)) and -1000 < result < 1000:
-                # Create step-by-step solution string
-                if len(steps) > 1:
-                    # Extract intermediate steps, avoiding trivial final steps
-                    intermediate_steps = []
-                    for step in steps:
-                        parts = step.split(' = ')
-                        if len(parts) >= 2:
-                            intermediate_steps.append(parts[1])
-                    
-                    # Remove the last step if it's trivial (same as result)
-                    if intermediate_steps and intermediate_steps[-1] == str(result):
-                        intermediate_steps = intermediate_steps[:-1]
-                    
-                    if intermediate_steps:
-                        step_by_step = ' = '.join(intermediate_steps)
-                        bad_solution = f"{expr_str} = {step_by_step} = {result}"
-                    else:
-                        bad_solution = f"{expr_str} = {result}"
+        # Use safe evaluation
+        steps, result = safe_evaluate_expression(expr_str)
+        
+        # Only add if evaluation was successful and result is different from target
+        if steps is not None and result is not None and result != target_num:
+            # Create step-by-step solution string
+            if len(steps) > 1:
+                # Extract intermediate steps, avoiding trivial final steps
+                intermediate_steps = []
+                for step in steps:
+                    parts = step.split(' = ')
+                    if len(parts) >= 2:
+                        intermediate_steps.append(parts[1])
+                
+                # Remove the last step if it's trivial (same as result)
+                if intermediate_steps and intermediate_steps[-1] == str(result):
+                    intermediate_steps = intermediate_steps[:-1]
+                
+                if intermediate_steps:
+                    step_by_step = ' = '.join(intermediate_steps)
+                    bad_solution = f"{expr_str} = {step_by_step} = {result}"
                 else:
                     bad_solution = f"{expr_str} = {result}"
-                
-                if bad_solution not in incorrect_solutions:
-                    incorrect_solutions.append(bad_solution)
-        except:
-            # Skip invalid expressions
-            continue
+            else:
+                bad_solution = f"{expr_str} = {result}"
+            
+            if bad_solution not in incorrect_solutions:
+                incorrect_solutions.append(bad_solution)
     
     # If we couldn't generate enough, pad with simple incorrect ones
     while len(incorrect_solutions) < num_incorrect:
@@ -402,7 +418,7 @@ class SFTDataGenerator:
                 
                 # Randomly decide number of incorrect attempts (0-2)
                 import random
-                num_incorrect = random.randint(0, 3)
+                num_incorrect = random.randint(0, 1)
                 incorrect_solutions = generate_incorrect_solutions(source_number, target_num, num_incorrect=num_incorrect) if num_incorrect > 0 else []
                 
                 #response += "Let me try some approaches:\n\n"

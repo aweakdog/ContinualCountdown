@@ -219,7 +219,7 @@ class CKBasedResetManager(LayerResetManager):
                 selected_layers = [layer_idx for layer_idx, _ in sorted_layers[:self.reset_k_layers]]
                 
                 print(f"[CK_RESET_SELECTION] C_K guided selection:")
-                for i, (layer_idx, weight) in enumerate(sorted_layers[:self.k_layers]):
+                for i, (layer_idx, weight) in enumerate(sorted_layers[:self.reset_k_layers]):
                     print(f"[CK_RESET_SELECTION]   Layer {layer_idx}: C_K weight = {weight:.6f}")
                     
                 return selected_layers
@@ -234,9 +234,9 @@ class CKBasedResetManager(LayerResetManager):
         elif self.reset_strategy == 'random':
             return self._select_random_layers(total_layers, global_step)
         elif self.reset_strategy == 'first_k':
-            return list(range(min(self.k_layers, total_layers)))
+            return list(range(min(self.reset_k_layers, total_layers)))
         elif self.reset_strategy == 'last_k':
-            start_idx = max(0, total_layers - self.k_layers)
+            start_idx = max(0, total_layers - self.reset_k_layers)
             return list(range(start_idx, total_layers))
         
         else:

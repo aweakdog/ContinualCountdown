@@ -950,7 +950,6 @@ class DataParallelPPOActor(BasePPOActor):
                                     
                                     # Debug: List all available Ray actors
                                     try:
-                                        import ray
                                         all_actors = ray.util.list_named_actors()
                                         print(f"[CK_RESET_DEBUG] Actor: Available Ray actors: {[actor['name'] for actor in all_actors]}")
                                     except Exception as e:

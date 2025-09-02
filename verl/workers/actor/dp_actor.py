@@ -945,24 +945,35 @@ class DataParallelPPOActor(BasePPOActor):
                                     # We need to find a way to access the reference model for reset
                                     print(f"[CK_RESET_DEBUG] Attempting to find reference model for reset")
                                     
-                                    # Try to get reference worker from Ray actor registry
+                                    # Try to get reference worker - unified approach with Critic
                                     ref_worker = None
                                     try:
-                                        # Try to find a reference worker in the same worker group
-                                        import ray
-                                        # Look for named reference actors
+                                        # Method 1: Try Ray actor registry (current Actor approach)
                                         try:
                                             ref_worker = ray.get_actor("ref_policy_worker")
-                                            print(f"[CK_RESET_DEBUG] Found ref_policy_worker Ray actor")
+                                            print(f"[CK_RESET_DEBUG] Actor: Found ref_policy_worker Ray actor")
                                         except ValueError:
                                             try:
                                                 ref_worker = ray.get_actor("actor_rollout_ref_worker")
-                                                print(f"[CK_RESET_DEBUG] Found actor_rollout_ref_worker Ray actor")
+                                                print(f"[CK_RESET_DEBUG] Actor: Found actor_rollout_ref_worker Ray actor")
                                             except ValueError:
-                                                print(f"[CK_RESET_DEBUG] No dedicated reference worker found")
-                                                ref_worker = None
+                                                # Method 2: Try to find reference worker groups (Critic approach)
+                                                try:
+                                                    # Look for reference policy worker group
+                                                    ref_policy_wg = ray.get_actor("ref_policy_wg")
+                                                    ref_worker = ref_policy_wg
+                                                    print(f"[CK_RESET_DEBUG] Actor: Found ref_policy_wg Ray actor")
+                                                except ValueError:
+                                                    try:
+                                                        # Look for actor rollout worker group
+                                                        actor_rollout_wg = ray.get_actor("actor_rollout_wg")
+                                                        ref_worker = actor_rollout_wg
+                                                        print(f"[CK_RESET_DEBUG] Actor: Found actor_rollout_wg Ray actor (fallback)")
+                                                    except ValueError:
+                                                        print(f"[CK_RESET_DEBUG] Actor: No reference worker found via Ray registry")
+                                                        ref_worker = None
                                     except Exception as e:
-                                        print(f"[CK_RESET_DEBUG] Error finding reference worker: {e}")
+                                        print(f"[CK_RESET_DEBUG] Actor: Error finding reference worker: {e}")
                                         ref_worker = None
                                     
                                     # Perform actual layer reset

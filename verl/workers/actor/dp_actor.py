@@ -170,10 +170,11 @@ class DataParallelPPOActor(BasePPOActor):
     def _save_actor_reset_layers(self, selected_layers, global_step):
         """Save actor's selected reset layers for critic synchronization."""
         try:
+            rank = dist.get_rank() if dist.is_available() and dist.is_initialized() else 0
             self._shared_reset_manager.save_actor_reset_layers(
                 global_step, selected_layers, 
                 strategy=self.ck_reset_manager.reset_strategy,
-                metadata={'actor_rank': self.rank}
+                metadata={'actor_rank': rank}
             )
             print(f"[ACTOR_RESET_SYNC] Saved reset layers {selected_layers} for step {global_step} via Ray")
         except Exception as e:

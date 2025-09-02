@@ -775,25 +775,30 @@ class ActorRolloutRefWorker(Worker):
                 # Extract parameters for this layer and immediately transfer to CPU
                 layer_prefix = f"{layer_container_path}.{layer_idx}."
                 
-                # Use FSDP state dict for this specific layer
-                with FSDP.state_dict_type(self.ref_module_fsdp, StateDictType.FULL_STATE_DICT,
-                                         FullStateDictConfig(offload_to_cpu=False, rank0_only=False)):
-                    # Get full state dict but only extract what we need
-                    full_state_dict = self.ref_module_fsdp.state_dict()
+                # Use direct parameter access instead of state_dict to avoid FSDP collective ops
+                layer_params_found = 0
+                
+                # Directly access parameters from the target layer
+                for param_name, param in target_layer.named_parameters():
+                    full_param_name = f"{layer_prefix}{param_name}"
                     
-                    # Extract only this layer's parameters and transfer to CPU immediately
-                    layer_params_found = 0
-                    for param_name, param_tensor in full_state_dict.items():
-                        if param_name.startswith(layer_prefix):
-                            # Transfer to CPU to save GPU memory
-                            layer_state_dict[param_name] = param_tensor.detach().cpu().clone()
-                            layer_params_found += 1
-                            print(f"[LAYER_RESET_DEBUG] Extracted parameter: {param_name} (shape: {param_tensor.shape})")
-                    
-                    print(f"[LAYER_RESET_DEBUG] Layer {layer_idx}: found {layer_params_found} parameters with prefix '{layer_prefix}'")
-                    
-                    # Clear the full state dict to free GPU memory
-                    del full_state_dict
+                    # For FSDP, we need to gather the full parameter
+                    if hasattr(param, '_fsdp_flattened'):
+                        # This is an FSDP parameter, need to gather it
+                        with torch.no_grad():
+                            # Use summon_full_params context to gather distributed parameters
+                            with FSDP.summon_full_params(target_layer, writeback=False, offload_to_cpu=True):
+                                # Now param should contain the full parameter
+                                layer_state_dict[full_param_name] = param.detach().cpu().clone()
+                                layer_params_found += 1
+                                print(f"[LAYER_RESET_DEBUG] Extracted FSDP parameter: {full_param_name} (shape: {param.shape})")
+                    else:
+                        # Regular parameter, just copy
+                        layer_state_dict[full_param_name] = param.detach().cpu().clone()
+                        layer_params_found += 1
+                        print(f"[LAYER_RESET_DEBUG] Extracted regular parameter: {full_param_name} (shape: {param.shape})")
+                
+                print(f"[LAYER_RESET_DEBUG] Layer {layer_idx}: found {layer_params_found} parameters with prefix '{layer_prefix}'")
                 
                 # Force garbage collection to free GPU memory
                 torch.cuda.empty_cache()

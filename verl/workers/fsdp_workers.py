@@ -805,13 +805,23 @@ class ActorRolloutRefWorker(Worker):
                         
                         print(f"[LAYER_RESET_DEBUG] Rank {current_rank}: Accessing layer {layer_idx} parameters directly")
                         
-                        # Extract parameters directly from the layer
-                        for param_name, param in target_ref_layer.named_parameters():
+                        # Extract parameters - they may be sharded or full depending on FSDP state
+                        # When accessing _fsdp_wrapped_module, parameters might be in their original form
+                        for param_name, ref_param in target_ref_layer.named_parameters():
                             full_param_name = f"{layer_prefix}{param_name}"
-                            # Clone parameter to CPU
-                            layer_state_dict[full_param_name] = param.detach().cpu().clone()
+                            
+                            # Extract the parameter as-is - let the target model handle sharding during reset
+                            # The parameter might be sharded or full depending on FSDP's current state
+                            layer_state_dict[full_param_name] = ref_param.data.detach().cpu().clone()
                             layer_params_found += 1
-                            print(f"[LAYER_RESET_DEBUG] Extracted reference parameter: {full_param_name} (shape: {param.shape})")
+                            print(f"[LAYER_RESET_DEBUG] Rank {current_rank}: Extracted parameter {full_param_name}")
+                            print(f"[LAYER_RESET_DEBUG] Rank {current_rank}: Shape: {ref_param.data.shape}, Elements: {ref_param.data.numel()}")
+                            
+                            # Debug: Check if this looks like a shard or full parameter
+                            if ref_param.data.numel() > 1000000:  # Large parameter, likely full
+                                print(f"[LAYER_RESET_DEBUG] Rank {current_rank}: Parameter {full_param_name} appears to be FULL (large size)")
+                            else:
+                                print(f"[LAYER_RESET_DEBUG] Rank {current_rank}: Parameter {full_param_name} appears to be SHARDED (small size)")
                     else:
                         print(f"[LAYER_RESET_DEBUG] No _fsdp_wrapped_module found, cannot extract parameters")
                     

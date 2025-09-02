@@ -89,23 +89,53 @@ class CKBasedResetManager(LayerResetManager):
         """
         layer_weights = {}
         
-        # Get component stats from Fisher analysis
+        # Get Fisher stats - handle both old and new formats
+        print(f"[CK_WEIGHT_DEBUG] Fisher stats keys: {list(fisher_stats.keys())}")
+        print(f"[CK_WEIGHT_DEBUG] Fisher stats structure:")
+        for key, value in fisher_stats.items():
+            if isinstance(value, dict):
+                print(f"[CK_WEIGHT_DEBUG]   {key}: dict with {len(value)} keys - {list(value.keys())[:3]}...")
+                # Show first level structure
+                for subkey, subvalue in list(value.items())[:2]:
+                    if isinstance(subvalue, dict):
+                        print(f"[CK_WEIGHT_DEBUG]     {subkey}: dict with {len(subvalue)} keys - {list(subvalue.keys())[:3]}...")
+                    else:
+                        print(f"[CK_WEIGHT_DEBUG]     {subkey}: {type(subvalue).__name__}")
+            else:
+                print(f"[CK_WEIGHT_DEBUG]   {key}: {type(value).__name__} = {value}")
+        
+        # Try new format first: fisher_stats['components']['layer_X']['params']
         components_fisher = fisher_stats.get('components', {})
-        if not components_fisher:
-            logger.warning("No component Fisher stats found")
-            return layer_weights
+        if components_fisher:
+            print(f"[CK_WEIGHT_DEBUG] Using new format - Components found: {len(components_fisher)} - {list(components_fisher.keys())[:5]}...")
+        else:
+            # Try old format: fisher_stats['params']['component_name']
+            params_data = fisher_stats.get('params', {})
+            if params_data:
+                print(f"[CK_WEIGHT_DEBUG] Using old format - Params found: {len(params_data)} - {list(params_data.keys())[:5]}...")
+                # Convert old format to new format
+                components_fisher = {}
+                for component_name, param_dict in params_data.items():
+                    if component_name.startswith('layer_'):
+                        components_fisher[component_name] = {'params': param_dict}
+            else:
+                print(f"[CK_WEIGHT_DEBUG] No Fisher stats found in either format")
+                return layer_weights
         
         # Group parameters by transformer layer
         layer_param_groups = {}  # layer_idx -> [(param_name, c_k, param_count), ...]
         
         for component_name, comp_stats in components_fisher.items():
+            print(f"[CK_WEIGHT_DEBUG] Processing component: {component_name}")
             # Extract layer index from component name (e.g., "layer_0" -> 0)
             if component_name.startswith('layer_'):
                 try:
                     layer_idx = int(component_name.split('_')[1])
                     layer_param_groups.setdefault(layer_idx, [])
                     
-                    params_stats = comp_stats.get('params', {})
+                    params_stats = comp_stats.get('params', comp_stats)  # Handle both formats
+                    print(f"[CK_WEIGHT_DEBUG] Layer {layer_idx}: found {len(params_stats)} params")
+                    
                     for param_name, param_metrics in params_stats.items():
                         c_k = param_metrics.get('c_k', 0.0)
                         
@@ -114,13 +144,16 @@ class CKBasedResetManager(LayerResetManager):
                         if param_shape:
                             param_count = param_shape.numel()
                             layer_param_groups[layer_idx].append((param_name, c_k, param_count))
+                            print(f"[CK_WEIGHT_DEBUG] Layer {layer_idx}: {param_name} c_k={c_k:.6f} count={param_count}")
                         else:
                             # Fallback: estimate from parameter name patterns
                             print(f"[CK_WEIGHT_DEBUG] No original shape found for {param_name}, using fallback estimation")
                         
                 except (ValueError, IndexError):
-                    logger.warning(f"Could not parse layer index from component: {component_name}")
+                    print(f"[CK_WEIGHT_DEBUG] Could not parse layer index from component: {component_name}")
                     continue
+            else:
+                print(f"[CK_WEIGHT_DEBUG] Skipping non-layer component: {component_name}")
         
         # Calculate weighted C_K for each layer
         for layer_idx, param_list in layer_param_groups.items():

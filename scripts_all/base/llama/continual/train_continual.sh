@@ -6,7 +6,7 @@ EXPERIMENT_TYPE=${1:-train}  # Default to 'train' if no argument provided
 # Model configuration parameters
 SFT_MODEL_BASE_DIR=${SFT_MODEL_BASE_DIR:-"./models"}
 SFT_MODEL_NAME=${SFT_MODEL_NAME:-"llama_base_sft_models"}
-SFT_CHECKPOINT=${SFT_CHECKPOINT:-"global_step_20"}
+SFT_CHECKPOINT=${SFT_CHECKPOINT:-"global_step_10"}
 
 echo "[Experiment Type] Using type: $EXPERIMENT_TYPE"
 echo "[Model Config] SFT model base directory: $SFT_MODEL_BASE_DIR"
@@ -62,7 +62,7 @@ echo "[Layer Reset] Legacy layer reset disabled - using C_K-based reset instead"
 export CK_RESET_ENABLE=${CK_RESET_ENABLE:-true}              # Enable actor C_K reset
 export CK_RESET_STRATEGY=${CK_RESET_STRATEGY:-"ck_guided"}   # Actor strategy: ck_guided
 export CK_RESET_K_LAYERS=${CK_RESET_K_LAYERS:-15}            # Number of layers to reset
-export CK_RESET_STEPS=${CK_RESET_STEPS:-"[1,40,80,120]"}     # Reset at global steps
+export CK_RESET_STEPS=${CK_RESET_STEPS:-"[1,2,40,80,120]"}     # Reset at global steps
 export CK_RESET_RANDOM_SEED=${CK_RESET_RANDOM_SEED:-42}      # Random seed for reproducible reset
 export CK_RESET_HISTORY_WINDOW=${CK_RESET_HISTORY_WINDOW:-20}  # Sliding window for C_K averaging
 
@@ -294,9 +294,9 @@ python3 -m verl.trainer.main_ppo \
   critic.ppo_mini_batch_size=32 \
   critic.ppo_micro_batch_size=8 \
   ++actor_rollout_ref.actor.redo_tau=0.1 \
-  ++actor_rollout_ref.actor.enable_gradient_analysis=false \
+  ++actor_rollout_ref.actor.enable_gradient_analysis=true \
   ++actor_rollout_ref.actor.gradient_analysis_freq=1 \
-  ++actor_rollout_ref.actor.enable_fisher_analysis=false \
+  ++actor_rollout_ref.actor.enable_fisher_analysis=true \
   ++actor_rollout_ref.actor.fisher_analysis_freq=1 \
   algorithm.kl_ctrl.kl_coef=0.001 \
   trainer.logger=['wandb','console'] \

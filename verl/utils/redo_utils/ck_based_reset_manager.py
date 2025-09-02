@@ -340,7 +340,7 @@ class CKBasedResetManager(LayerResetManager):
     def reset_model_with_ck_analysis(self, current_model: torch.nn.Module, 
                                      ref_worker, layer_ck_weights: Dict[int, float], 
                                      global_step: int, optimizer: Optional[torch.optim.Optimizer] = None,
-                                     model_name: str = "model") -> Set[str]:
+                                     model_name: str = "model", current_worker=None) -> Set[str]:
         """
         Reset model layers using C_K-guided selection with reference worker integration.
         
@@ -371,12 +371,22 @@ class CKBasedResetManager(LayerResetManager):
             logger.info(f"No layers selected for reset in {model_name}")
             return set()
         
-        print(f"[CK_RESET_REAL] Step {global_step}: Getting reference layers {layer_indices} from ref_worker")
+        print(f"[CK_RESET_REAL] Step {global_step}: Getting reference layers {layer_indices}")
         
-        # Get reference layer state dict from ref worker
+        # Get reference layer state dict - handle different worker types
+        ref_layer_state_dict = {}
         try:
-            ref_layer_state_dict = self.get_reference_layer_state_dict(ref_worker, layer_indices)
-            print(f"[CK_RESET_REAL] Retrieved {len(ref_layer_state_dict)} reference parameters")
+            if ref_worker is not None:
+                # Use dedicated reference worker
+                ref_layer_state_dict = self.get_reference_layer_state_dict(ref_worker, layer_indices)
+                print(f"[CK_RESET_REAL] Retrieved {len(ref_layer_state_dict)} reference parameters from ref_worker")
+            elif current_worker is not None and hasattr(current_worker, '_is_ref') and current_worker._is_ref:
+                # Use current worker if it has reference model
+                ref_layer_state_dict = current_worker.extract_layers_for_reset(layer_indices)
+                print(f"[CK_RESET_REAL] Retrieved {len(ref_layer_state_dict)} reference parameters from current worker")
+            else:
+                print(f"[CK_RESET_ERROR] No reference worker or reference model available")
+                return set()
         except Exception as e:
             print(f"[CK_RESET_ERROR] Failed to get reference layers: {e}")
             return set()

@@ -941,33 +941,45 @@ class DataParallelPPOActor(BasePPOActor):
                                 
                                 # Perform actual reset using the C_K-based reset manager
                                 try:
-                                    # Get reference worker from trainer
-                                    ref_worker = None
-                                    if hasattr(self.trainer, 'ref_policy_wg') and self.trainer.use_reference_policy:
-                                        ref_worker = self.trainer.ref_policy_wg
-                                        print(f"[CK_RESET_DEBUG] Using ref_policy_wg as reference worker")
-                                    elif hasattr(self.trainer, 'actor_rollout_wg'):
-                                        ref_worker = self.trainer.actor_rollout_wg
-                                        print(f"[CK_RESET_DEBUG] Using actor_rollout_wg as reference worker (fallback)")
+                                    # The actor is running in a worker that may or may not have reference model
+                                    # We need to find a way to access the reference model for reset
+                                    print(f"[CK_RESET_DEBUG] Attempting to find reference model for reset")
                                     
-                                    if ref_worker is None:
-                                        print(f"[CK_RESET_ERROR] No reference worker available for reset")
-                                        metrics['actor/ck_reset_triggered'] = -1.0
-                                        metrics['actor/ck_reset_layers_count'] = 0.0
-                                    else:
-                                        # Perform actual layer reset with reference worker
-                                        reset_param_names = self.ck_reset_manager.reset_model_with_ck_analysis(
-                                            current_model=self.actor_module,
-                                            ref_worker=ref_worker,
-                                            layer_ck_weights=layer_ck_weights,
-                                            global_step=self.global_steps,
-                                            model_name="actor"
-                                        )
-                                        
+                                    # Try to get reference worker from Ray actor registry
+                                    ref_worker = None
+                                    try:
+                                        # Try to find a reference worker in the same worker group
+                                        import ray
+                                        # Look for named reference actors
+                                        try:
+                                            ref_worker = ray.get_actor("ref_policy_worker")
+                                            print(f"[CK_RESET_DEBUG] Found ref_policy_worker Ray actor")
+                                        except ValueError:
+                                            try:
+                                                ref_worker = ray.get_actor("actor_rollout_ref_worker")
+                                                print(f"[CK_RESET_DEBUG] Found actor_rollout_ref_worker Ray actor")
+                                            except ValueError:
+                                                print(f"[CK_RESET_DEBUG] No dedicated reference worker found")
+                                                ref_worker = None
+                                    except Exception as e:
+                                        print(f"[CK_RESET_DEBUG] Error finding reference worker: {e}")
+                                        ref_worker = None
+                                    
+                                    # Perform actual layer reset
+                                    reset_param_names = self.ck_reset_manager.reset_model_with_ck_analysis(
+                                        current_model=self.actor_module,
+                                        ref_worker=ref_worker,
+                                        layer_ck_weights=layer_ck_weights,
+                                        global_step=self.global_steps,
+                                        model_name="actor",
+                                        current_worker=None  # DataParallelPPOActor doesn't have _is_ref
+                                    )
+                                    
+                                    if len(reset_param_names) > 0:
                                         # Store detailed reset info in metrics
                                         metrics['actor/ck_reset_triggered'] = 1.0
                                         metrics['actor/ck_reset_layers_count'] = len(selected_layers)
-                                        metrics['actor/ck_reset_strategy'] = hash(self.ck_reset_manager.reset_strategy) % 1000  # Encode strategy as number
+                                        metrics['actor/ck_reset_strategy'] = hash(self.ck_reset_manager.reset_strategy) % 1000
                                         metrics['actor/ck_reset_params_count'] = len(reset_param_names)
                                         
                                         # Store layer-specific metrics
@@ -976,6 +988,12 @@ class DataParallelPPOActor(BasePPOActor):
                                             metrics['actor/ck_reset_avg_weight'] = avg_ck_weight
                                         
                                         print(f"[CK_RESET_SUCCESS] Step {self.global_steps}: Reset {len(reset_param_names)} parameters in {len(selected_layers)} layers")
+                                    else:
+                                        # Reset was attempted but no parameters were reset (likely no ref worker)
+                                        metrics['actor/ck_reset_triggered'] = 0.5  # Partial/skipped
+                                        metrics['actor/ck_reset_layers_count'] = len(selected_layers)
+                                        metrics['actor/ck_reset_strategy'] = hash(self.ck_reset_manager.reset_strategy) % 1000
+                                        print(f"[CK_RESET_SKIP] Step {self.global_steps}: Reset skipped - no reference worker available")
                                     
                                 except Exception as reset_error:
                                     print(f"[CK_RESET_ERROR] Step {self.global_steps}: Reset failed: {reset_error}")

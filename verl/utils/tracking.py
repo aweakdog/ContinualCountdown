@@ -42,8 +42,21 @@ class Tracking(object):
             WANDB_API_KEY = os.environ.get("WANDB_API_KEY", None)
             if WANDB_API_KEY:
                 wandb.login(key=WANDB_API_KEY)
-            wandb.init(project=project_name, name=experiment_name, config=config)
-            self.logger['wandb'] = wandb
+            
+            # Initialize wandb with proper error handling to avoid warnings
+            try:
+                wandb.init(
+                    project=project_name, 
+                    name=experiment_name, 
+                    config=config,
+                    reinit=True,  # Allow reinitializing if already initialized
+                    settings=wandb.Settings(start_method="fork")  # Avoid multiprocessing warnings
+                )
+                self.logger['wandb'] = wandb
+            except Exception as e:
+                print(f"[WANDB_WARNING] Failed to initialize WandB: {e}")
+                # Continue without WandB logging
+                pass
 
         if 'mlflow' in default_backend:
             import mlflow

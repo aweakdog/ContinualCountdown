@@ -1274,6 +1274,52 @@ class CriticWorker(Worker):
         return output
 
     @register(dispatch_mode=Dispatch.ONE_TO_ALL)
+    def reset_model_with_ck_analysis(self, layer_ck_weights: Dict[int, float], 
+                                   global_step: int, ref_worker) -> Dict[str, Any]:
+        """
+        Perform CK-based layer reset with reference worker passed from trainer.
+        This method provides a consistent interface with actor worker.
+        
+        Args:
+            layer_ck_weights: C_K weighted values for each layer
+            global_step: Current global step
+            ref_worker: Reference worker to get layer weights from
+            
+        Returns:
+            Dictionary with reset results and metrics
+        """
+        print(f"[CK_RESET_DEBUG] Critic: reset_model_with_ck_analysis called with ref_worker type: {type(ref_worker).__name__ if ref_worker else 'None'}")
+        
+        if not hasattr(self, 'ck_reset_manager') or self.ck_reset_manager is None:
+            print(f"[CK_RESET_ERROR] Critic: No CK reset manager available")
+            return {'reset_params_count': 0, 'reset_layers': []}
+        
+        try:
+            # Perform actual layer reset using the provided reference worker
+            reset_param_names = self.ck_reset_manager.reset_model_with_ck_analysis(
+                current_model=self.critic_module,
+                ref_worker=ref_worker,
+                layer_ck_weights=layer_ck_weights,
+                global_step=global_step,
+                model_name="critic",
+                current_worker=None
+            )
+            
+            reset_count = len(reset_param_names)
+            print(f"[CK_RESET_REAL] Critic: Reset {reset_count} parameters at step {global_step}")
+            
+            return {
+                'reset_params_count': reset_count,
+                'reset_layers': list(layer_ck_weights.keys()) if layer_ck_weights else []
+            }
+            
+        except Exception as e:
+            import traceback
+            print(f"[CK_RESET_ERROR] Critic: Failed to perform CK reset: {e}")
+            print(f"[CK_RESET_ERROR] Critic: Traceback: {traceback.format_exc()}")
+            return {'reset_params_count': 0, 'reset_layers': []}
+
+    @register(dispatch_mode=Dispatch.ONE_TO_ALL)
     def reset_optimizer_learning_rate(self):
         """Reset learning rates to initial values while keeping optimizer state"""
         if self.critic_optimizer is not None and self.critic_lr_scheduler is not None:

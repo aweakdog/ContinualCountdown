@@ -16,7 +16,7 @@ Single Process Actor
 """
 
 import itertools
-from typing import Iterable, Tuple
+from typing import Iterable, Tuple, List, Dict, Any
 import torch
 from torch import nn
 import torch.distributed as dist

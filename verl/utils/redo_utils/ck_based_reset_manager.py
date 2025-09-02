@@ -216,7 +216,7 @@ class CKBasedResetManager(LayerResetManager):
             if layer_ck_weights and not force_random_for_sync:
                 # Sort layers by C_K weights (descending - highest C_K first)
                 sorted_layers = sorted(layer_ck_weights.items(), key=lambda x: x[1], reverse=True)
-                selected_layers = [layer_idx for layer_idx, _ in sorted_layers[:self.k_layers]]
+                selected_layers = [layer_idx for layer_idx, _ in sorted_layers[:self.reset_k_layers]]
                 
                 print(f"[CK_RESET_SELECTION] C_K guided selection:")
                 for i, (layer_idx, weight) in enumerate(sorted_layers[:self.k_layers]):

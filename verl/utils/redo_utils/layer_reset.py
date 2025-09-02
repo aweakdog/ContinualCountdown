@@ -306,6 +306,14 @@ class LayerResetManager:
                 # Get the full state dict with unflattened parameters
                 target_state_dict = model.state_dict()
                 
+                # All ranks should now have the same full reference parameters
+                import torch.distributed as dist
+                if dist.is_initialized():
+                    current_rank = dist.get_rank()
+                    print(f"[LAYER_RESET_DEBUG] Rank {current_rank}: Processing {len(ref_layer_state_dict)} reference parameters")
+                else:
+                    print(f"[LAYER_RESET_DEBUG] Processing {len(ref_layer_state_dict)} reference parameters (non-distributed)")
+                
                 # Copy parameters from reference to target state dict
                 for ref_param_name, ref_param in ref_layer_state_dict.items():
                     if ref_param_name in target_state_dict:
@@ -331,6 +339,9 @@ class LayerResetManager:
                             
                             reset_param_names.add(ref_param_name)
                             print(f"[LAYER_RESET_DEBUG] Successfully reinitialized {ref_param_name}")
+                        elif ref_param == "BROADCAST_FROM_RANK0":
+                            # Skip broadcast markers - they were already handled above
+                            continue
                         else:
                             # Normal parameter copy
                             print(f"[LAYER_RESET_DEBUG] Copying {ref_param_name} (ref: {ref_param.shape} -> target: {target_state_dict[ref_param_name].shape})")

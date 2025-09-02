@@ -791,35 +791,27 @@ class ActorRolloutRefWorker(Worker):
                         current_rank = 0
                         print(f"[LAYER_RESET_DEBUG] Not in distributed mode, using rank 0")
                     
-                    # CRITICAL: Don't use FSDP state_dict here as it requires collective ops
-                    # Instead, directly access the underlying parameters without FSDP context
-                    print(f"[LAYER_RESET_DEBUG] Accessing reference parameters directly without FSDP collective ops")
+                    # Use rank0_only=False to ensure all ranks participate in collective operation
+                    # This avoids deadlock by having all ranks in the reference worker participate
+                    print(f"[LAYER_RESET_DEBUG] Using rank0_only=False FSDP extraction with all ranks participating")
                     
-                    # Get the underlying model without FSDP wrapper
-                    if hasattr(self.ref_module_fsdp, '_fsdp_wrapped_module'):
-                        base_ref_model = self.ref_module_fsdp._fsdp_wrapped_module
-                    else:
-                        base_ref_model = self.ref_module_fsdp
-                    
-                    # Navigate to the specific layer in the base model
-                    ref_layer = base_ref_model
-                    for attr in layer_container_path.split('.'):
-                        ref_layer = getattr(ref_layer, attr)
-                    ref_layer = ref_layer[layer_idx]
-                    
-                    # Extract parameters directly from the reference layer
-                    for param_name, param in ref_layer.named_parameters():
-                        full_param_name = f"{layer_prefix}{param_name}"
+                    with FSDP.state_dict_type(self.ref_module_fsdp, StateDictType.FULL_STATE_DICT,
+                                             FullStateDictConfig(offload_to_cpu=True, rank0_only=False)):
+                        ref_state_dict = self.ref_module_fsdp.state_dict()
                         
-                        # Direct parameter access - no FSDP collective ops needed
-                        if param.numel() > 0:
-                            layer_state_dict[full_param_name] = param.detach().cpu().clone()
-                            layer_params_found += 1
-                            print(f"[LAYER_RESET_DEBUG] Extracted reference parameter: {full_param_name} (shape: {param.shape})")
-                        else:
-                            print(f"[LAYER_RESET_DEBUG] Skipping empty parameter: {full_param_name}")
+                        # All ranks should get the same full state dict
+                        print(f"[LAYER_RESET_DEBUG] Rank {current_rank}: Successfully extracted {len(ref_state_dict)} reference parameters")
+                        
+                        for param_name in ref_state_dict.keys():
+                            if param_name.startswith(layer_prefix):
+                                layer_state_dict[param_name] = ref_state_dict[param_name].detach().cpu().clone()
+                                layer_params_found += 1
+                                print(f"[LAYER_RESET_DEBUG] Extracted reference parameter: {param_name} (shape: {ref_state_dict[param_name].shape})")
                     
-                    print(f"[LAYER_RESET_DEBUG] Direct extraction completed for layer {layer_idx}")
+                    # Clear reference state dict to free memory
+                    if 'ref_state_dict' in locals():
+                        del ref_state_dict
+                    print(f"[LAYER_RESET_DEBUG] FSDP extraction completed for layer {layer_idx}")
                 
                 except Exception as e:
                     print(f"[LAYER_RESET_DEBUG] Error extracting layer {layer_idx} parameters: {e}")

@@ -145,7 +145,7 @@ class DataParallelPPOActor(BasePPOActor):
         
         print(f"[CK_RESET_DEBUG] Final ck_reset_config: {ck_reset_config}")
         
-        if ck_reset_config and ck_reset_config.get('enable', False):
+        if ck_reset_config and ck_reset_config.get('enable_reset', False):
             self.ck_reset_manager = create_ck_based_reset_manager(ck_reset_config)
             print(f"[DataParallelPPOActor] Initialized C_K-based reset manager with strategy: {ck_reset_config.get('reset_strategy', 'ck_guided')}")
         else:

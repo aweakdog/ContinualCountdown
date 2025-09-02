@@ -203,6 +203,27 @@ class DataParallelPPOActor(BasePPOActor):
             return {'reset_params_count': 0, 'reset_layers': []}
         
         try:
+            # Show which layers will be reset
+            if layer_ck_weights:
+                sorted_layers = sorted(layer_ck_weights.items(), key=lambda x: x[1], reverse=True)
+                reset_count = min(self.ck_reset_manager.reset_k_layers, len(sorted_layers))
+                layers_to_reset = [layer_idx for layer_idx, _ in sorted_layers[:reset_count]]
+                print(f"[CK_RESET_EXECUTE] Actor Step {global_step}: Resetting top {reset_count} layers: {layers_to_reset}")
+                
+                # Sample a few parameters to show before/after values
+                sample_params = {}
+                for layer_idx in layers_to_reset[:2]:  # Show first 2 layers
+                    layer_name = f"model.layers.{layer_idx}"
+                    for name, param in self.actor_module.named_parameters():
+                        if layer_name in name and "weight" in name:
+                            # Store sample values before reset
+                            sample_params[name] = param.data.flatten()[:5].clone().cpu().tolist()
+                            break
+                
+                print(f"[CK_RESET_BEFORE] Sample parameter values before reset:")
+                for name, values in sample_params.items():
+                    print(f"[CK_RESET_BEFORE]   {name}: {values}")
+            
             # Perform actual layer reset using the provided reference worker
             reset_param_names = self.ck_reset_manager.reset_model_with_ck_analysis(
                 current_model=self.actor_module,
@@ -212,6 +233,16 @@ class DataParallelPPOActor(BasePPOActor):
                 model_name="actor",
                 current_worker=None
             )
+            
+            # Show parameter values after reset
+            if layer_ck_weights and sample_params:
+                print(f"[CK_RESET_AFTER] Sample parameter values after reset:")
+                for name in sample_params.keys():
+                    for param_name, param in self.actor_module.named_parameters():
+                        if param_name == name:
+                            after_values = param.data.flatten()[:5].clone().cpu().tolist()
+                            print(f"[CK_RESET_AFTER]   {name}: {after_values}")
+                            break
             
             reset_count = len(reset_param_names)
             print(f"[CK_RESET_REAL] Actor: Reset {reset_count} parameters at step {global_step}")
@@ -967,6 +998,19 @@ class DataParallelPPOActor(BasePPOActor):
                             
                             if should_reset_ck:
                                 print(f"[CK_RESET_TRIGGER] Step {self.global_steps}: C_K-based reset triggered!")
+                                
+                                # Show which layers will be reset based on C_K weights
+                                if layer_ck_weights:
+                                    # Sort layers by C_K weight (descending) and show top layers to be reset
+                                    sorted_layers = sorted(layer_ck_weights.items(), key=lambda x: x[1], reverse=True)
+                                    reset_count = min(self.ck_reset_manager.reset_k_layers, len(sorted_layers))
+                                    layers_to_reset = [layer_idx for layer_idx, _ in sorted_layers[:reset_count]]
+                                    
+                                    print(f"[CK_RESET_LAYERS] Step {self.global_steps}: Will reset top {reset_count} layers: {layers_to_reset}")
+                                    print(f"[CK_RESET_WEIGHTS] Top layer C_K weights:")
+                                    for i, (layer_idx, weight) in enumerate(sorted_layers[:reset_count]):
+                                        print(f"[CK_RESET_WEIGHTS]   Layer {layer_idx}: C_K={weight:.4f}")
+                                
                                 print(f"[CK_RESET_INFO] Actor CK reset will be handled by trainer via reset_model_with_ck_analysis method")
                                 
                                 # Note: The actual CK reset is now handled by trainer calling reset_model_with_ck_analysis

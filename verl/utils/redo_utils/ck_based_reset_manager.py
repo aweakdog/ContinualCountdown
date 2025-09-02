@@ -337,19 +337,16 @@ class CKBasedResetManager(LayerResetManager):
         
         return should_reset, layer_ck_weights
     
-    def reset_model_layers_with_ck_guidance(self,
-                                           current_model: torch.nn.Module,
-                                           ref_layer_state_dict: Dict[str, torch.Tensor],
-                                           layer_ck_weights: Dict[int, float],
-                                           global_step: int,
-                                           optimizer: Optional[torch.optim.Optimizer] = None,
-                                           model_name: str = "model") -> Set[str]:
+    def reset_model_with_ck_analysis(self, current_model: torch.nn.Module, 
+                                     ref_worker, layer_ck_weights: Dict[int, float], 
+                                     global_step: int, optimizer: Optional[torch.optim.Optimizer] = None,
+                                     model_name: str = "model") -> Set[str]:
         """
-        Reset model layers using C_K guidance or other strategies.
+        Reset model layers using C_K-guided selection with reference worker integration.
         
         Args:
             current_model: The model to reset layers in
-            ref_layer_state_dict: Pre-extracted reference layer state dict
+            ref_worker: Reference worker to get layer weights from
             layer_ck_weights: C_K weighted values for each layer
             global_step: Current global step
             optimizer: Optional optimizer to reset states for
@@ -374,6 +371,16 @@ class CKBasedResetManager(LayerResetManager):
             logger.info(f"No layers selected for reset in {model_name}")
             return set()
         
+        print(f"[CK_RESET_REAL] Step {global_step}: Getting reference layers {layer_indices} from ref_worker")
+        
+        # Get reference layer state dict from ref worker
+        try:
+            ref_layer_state_dict = self.get_reference_layer_state_dict(ref_worker, layer_indices)
+            print(f"[CK_RESET_REAL] Retrieved {len(ref_layer_state_dict)} reference parameters")
+        except Exception as e:
+            print(f"[CK_RESET_ERROR] Failed to get reference layers: {e}")
+            return set()
+        
         # Override the get_layer_indices_to_reset method temporarily for dynamic selection
         original_method = self.get_layer_indices_to_reset
         self.selected_layer_indices = layer_indices
@@ -385,10 +392,12 @@ class CKBasedResetManager(LayerResetManager):
         
         try:
             # Perform the actual reset using parent class method
+            print(f"[CK_RESET_REAL] Performing actual layer reset for layers {layer_indices}")
             reset_param_names = self.reset_model_layers_from_ref(
                 current_model, ref_layer_state_dict, 
                 reset_k_first=0, reset_k_last=0  # Not used in dynamic selection
             )
+            print(f"[CK_RESET_REAL] Successfully reset {len(reset_param_names)} parameters")
         finally:
             # Restore original method
             self.get_layer_indices_to_reset = original_method

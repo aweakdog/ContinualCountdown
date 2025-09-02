@@ -1403,22 +1403,41 @@ class CriticWorker(Worker):
                         
                         # Perform actual reset using the C_K-based reset manager
                         try:
-                            # For now, create a dummy reference state dict since we need reference worker integration
-                            # This is a placeholder - in full implementation, this would come from reference worker
-                            ref_layer_state_dict = {}
+                            # Get reference worker from trainer
+                            ref_worker = None
+                            if hasattr(self.trainer, 'ref_policy_wg') and self.trainer.use_reference_policy:
+                                ref_worker = self.trainer.ref_policy_wg
+                                print(f"[CK_RESET_DEBUG] Critic: Using ref_policy_wg as reference worker")
+                            elif hasattr(self.trainer, 'actor_rollout_wg'):
+                                ref_worker = self.trainer.actor_rollout_wg
+                                print(f"[CK_RESET_DEBUG] Critic: Using actor_rollout_wg as reference worker (fallback)")
                             
-                            # Log what we would reset (actual reset needs reference model integration)
-                            print(f"[CK_RESET_PLACEHOLDER] Critic would reset layers {selected_layers} using strategy '{self.ck_reset_manager.reset_strategy}'")
-                            
-                            # Store detailed reset info in metrics
-                            metrics['critic/ck_reset_triggered'] = 1.0
-                            metrics['critic/ck_reset_layers_count'] = len(selected_layers)
-                            metrics['critic/ck_reset_strategy'] = hash(self.ck_reset_manager.reset_strategy) % 1000  # Encode strategy as number
-                            
-                            print(f"[CK_RESET_SUCCESS] Critic Step {self.critic_update_step}: Reset simulation completed for {len(selected_layers)} layers")
+                            if ref_worker is None:
+                                print(f"[CK_RESET_ERROR] Critic: No reference worker available for reset")
+                                metrics['critic/ck_reset_triggered'] = -1.0
+                                metrics['critic/ck_reset_layers_count'] = 0.0
+                            else:
+                                # Perform actual layer reset with reference worker
+                                reset_param_names = self.ck_reset_manager.reset_model_with_ck_analysis(
+                                    current_model=self.critic_module,
+                                    ref_worker=ref_worker,
+                                    layer_ck_weights=layer_ck_weights,
+                                    global_step=self.critic_update_step,
+                                    model_name="critic"
+                                )
+                                
+                                # Store detailed reset info in metrics
+                                metrics['critic/ck_reset_triggered'] = 1.0
+                                metrics['critic/ck_reset_layers_count'] = len(selected_layers)
+                                metrics['critic/ck_reset_strategy'] = hash(self.ck_reset_manager.reset_strategy) % 1000  # Encode strategy as number
+                                metrics['critic/ck_reset_params_count'] = len(reset_param_names)
+                                
+                                print(f"[CK_RESET_SUCCESS] Critic Step {self.critic_update_step}: Reset {len(reset_param_names)} parameters in {len(selected_layers)} layers")
                             
                         except Exception as reset_error:
                             print(f"[CK_RESET_ERROR] Critic Step {self.critic_update_step}: Reset failed: {reset_error}")
+                            import traceback
+                            traceback.print_exc()
                             metrics['critic/ck_reset_triggered'] = -1.0  # Indicate failure
                             metrics['critic/ck_reset_layers_count'] = 0.0
                             

@@ -1245,9 +1245,7 @@ class RayPPOTrainer(object):
                             
                             try:
                                 # Get CK reset status from actor worker (using current step)
-                                # Use apply_async for custom methods on RayWorkerGroup
-                                actor_ck_futures = self.actor_rollout_wg.apply_async('get_ck_reset_status', self.global_steps)
-                                actor_status_list = ray.get(actor_ck_futures)
+                                actor_status_list = self.actor_rollout_wg.get_ck_reset_status(self.global_steps)
                                 
                                 # Use the first worker's status (all should be the same)
                                 if actor_status_list and actor_status_list[0]:
@@ -1272,23 +1270,21 @@ class RayPPOTrainer(object):
                                     
                                     # Reset actor layers with reference worker
                                     print(f"[CK_RESET_EXECUTE] Resetting actor layers...")
-                                    actor_reset_futures = self.actor_rollout_wg.apply_async('reset_model_with_ck_analysis',
+                                    actor_reset_results = self.actor_rollout_wg.reset_model_with_ck_analysis(
                                         layer_ck_weights=layer_ck_weights,
                                         global_step=self.global_steps,
                                         ref_worker=ref_worker
                                     )
-                                    actor_reset_results = ray.get(actor_reset_futures)
                                     print(f"[CK_RESET_EXECUTE] Actor layers reset completed at step {self.global_steps}")
                                     
                                     # Reset critic layers with same reference worker
                                     if self.use_critic:
                                         print(f"[CK_RESET_EXECUTE] Resetting critic layers...")
-                                        critic_reset_futures = self.critic_wg.apply_async('reset_model_with_ck_analysis',
+                                        critic_reset_results = self.critic_wg.reset_model_with_ck_analysis(
                                             layer_ck_weights=layer_ck_weights,
                                             global_step=self.global_steps,
                                             ref_worker=ref_worker
                                         )
-                                        critic_reset_results = ray.get(critic_reset_futures)
                                         print(f"[CK_RESET_EXECUTE] Critic layers reset completed at step {self.global_steps}")
                                     
                                     print(f"[CK_RESET_EXECUTE] *** CK RESET COMPLETED at global step {self.global_steps} (CURRICULUM) ***")

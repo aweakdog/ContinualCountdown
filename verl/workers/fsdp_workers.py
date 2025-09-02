@@ -669,6 +669,22 @@ class ActorRolloutRefWorker(Worker):
         return output
     
     @register(dispatch_mode=Dispatch.ONE_TO_ALL)
+    def get_ck_reset_status(self, global_step: int):
+        """Forward CK reset status call to the actor instance."""
+        if hasattr(self, 'actor') and self.actor is not None:
+            return self.actor.get_ck_reset_status(global_step)
+        else:
+            return {'should_reset': False, 'layer_ck_weights': {}}
+    
+    @register(dispatch_mode=Dispatch.ONE_TO_ALL)
+    def reset_model_with_ck_analysis(self, layer_ck_weights, global_step: int, ref_worker):
+        """Forward CK reset call to the actor instance."""
+        if hasattr(self, 'actor') and self.actor is not None:
+            return self.actor.reset_model_with_ck_analysis(layer_ck_weights, global_step, ref_worker)
+        else:
+            return {'reset_params_count': 0, 'reset_layers': []}
+    
+    @register(dispatch_mode=Dispatch.ONE_TO_ALL)
     def extract_layers_for_reset(self, layer_indices: List[int]) -> Dict[str, torch.Tensor]:
         """
         Extract specific transformer layers from reference model for layer reset.

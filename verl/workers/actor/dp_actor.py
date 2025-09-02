@@ -202,12 +202,13 @@ class DataParallelPPOActor(BasePPOActor):
             if hasattr(self, 'fisher_detailed_stats'):
                 fisher_stats_for_reset = self.fisher_detailed_stats
             
-            # Check if reset should be performed and get C_K weights
-            should_reset_ck, layer_ck_weights = self.ck_reset_manager.should_reset_with_ck_analysis(
+            # Check if reset should be performed and calculate C_K weights if needed
+            should_reset_ck, _ = self.ck_reset_manager.should_reset_with_ck_analysis(
                 global_step, fisher_stats_for_reset
             )
             
-            # If we have Fisher stats, calculate proper C_K weights using original shapes
+            # Calculate C_K weights if reset is needed and we have Fisher stats
+            layer_ck_weights = {}
             if should_reset_ck and fisher_stats_for_reset and self.ck_reset_manager.reset_strategy == 'ck_guided':
                 layer_ck_weights = self.ck_reset_manager.calculate_layer_ck_weights(
                     fisher_stats_for_reset, self.original_param_shapes or {}
@@ -256,8 +257,19 @@ class DataParallelPPOActor(BasePPOActor):
                     layer_name = f"model.layers.{layer_idx}"
                     for name, param in self.actor_module.named_parameters():
                         if layer_name in name and "weight" in name:
-                            # Store sample values before reset
-                            sample_params[name] = param.data.flatten()[:5].clone().cpu().tolist()
+                            # Store sample values before reset with FSDP safety check
+                            try:
+                                # Check FSDP state and parameter availability
+                                if hasattr(param, '_fsdp_flattened') and param._fsdp_flattened:
+                                    sample_params[name] = f"[FSDP_FLATTENED] Parameter is flattened by FSDP"
+                                elif param.data.numel() > 0:  # Check if parameter has data on this rank
+                                    sample_values = param.data.flatten()[:5].clone().cpu().tolist()
+                                    sample_params[name] = sample_values
+                                else:
+                                    rank = torch.distributed.get_rank() if torch.distributed.is_initialized() else 0
+                                    sample_params[name] = f"[FSDP_SHARD] No data on rank {rank}, numel={param.data.numel()}"
+                            except Exception as e:
+                                sample_params[name] = f"[ERROR] {str(e)}"
                             break
                 
                 print(f"[CK_RESET_BEFORE] Sample parameter values before reset:")
@@ -918,13 +930,35 @@ class DataParallelPPOActor(BasePPOActor):
                                     # Store detailed metrics to unified storage
                                     if self.analyzer_storage:
                                         try:
+                                            layer_name = "layer1"
+                                            sample_params = {}
+                                            for name, param in self.actor_module.named_parameters():
+                                                try:
+                                                    if layer_name in name and "weight" in name:
+                                                        # Store sample values before reset with FSDP safety check
+                                                        try:
+                                                            # Check FSDP state and parameter availability
+                                                            if hasattr(param, '_fsdp_flattened') and param._fsdp_flattened:
+                                                                sample_params[name] = f"[FSDP_FLATTENED] Parameter is flattened by FSDP"
+                                                            elif param.data.numel() > 0:  # Check if parameter has data on this rank
+                                                                sample_values = param.data.flatten()[:5].clone().cpu().tolist()
+                                                                sample_params[name] = sample_values
+                                                            else:
+                                                                rank = torch.distributed.get_rank() if torch.distributed.is_initialized() else 0
+                                                                sample_params[name] = f"[FSDP_SHARD] No data on rank {rank}, numel={param.data.numel()}"
+                                                        except Exception as e:
+                                                            sample_params[name] = f"[ERROR] {str(e)}"
+                                                        break
+                                                except Exception as e:
+                                                    sample_params[name] = f"[ERROR] {str(e)}"
                                             self.analyzer_storage.store_gradient_metrics(
                                                 step=self.global_steps,
                                                 gradient_stats=final_stats,
                                                 tau=self.redo_tau,
                                                 additional_info={
                                                     "rank": rank,
-                                                    "device": str(self.device) if hasattr(self, 'device') else "unknown"
+                                                    "device": str(self.device) if hasattr(self, 'device') else "unknown",
+                                                    "sample_params": sample_params
                                                 }
                                             )
                                             print(f"[INFO][Storage] Gradient metrics saved to JSON for step {self.global_steps}")
@@ -1023,13 +1057,14 @@ class DataParallelPPOActor(BasePPOActor):
                                 fisher_stats_for_reset = self.fisher_detailed_stats
                             
                             print(f"[CK_RESET_DEBUG] Step {self.global_steps}: Calling should_reset_with_ck_analysis")
-                            # Check if reset should be performed and get C_K weights
-                            should_reset_ck, layer_ck_weights = self.ck_reset_manager.should_reset_with_ck_analysis(
+                            # Check if reset should be performed
+                            should_reset_ck, _ = self.ck_reset_manager.should_reset_with_ck_analysis(
                                 self.global_steps, fisher_stats_for_reset
                             )
                             print(f"[CK_RESET_DEBUG] Step {self.global_steps}: should_reset_ck={should_reset_ck}")
                             
-                            # If we have Fisher stats, calculate proper C_K weights using original shapes
+                            # Calculate C_K weights if reset is needed and we have Fisher stats
+                            layer_ck_weights = {}
                             if should_reset_ck and fisher_stats_for_reset and self.ck_reset_manager.reset_strategy == 'ck_guided':
                                 layer_ck_weights = self.ck_reset_manager.calculate_layer_ck_weights(
                                     fisher_stats_for_reset, self.original_param_shapes or {}

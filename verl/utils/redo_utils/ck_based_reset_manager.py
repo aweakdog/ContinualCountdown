@@ -218,6 +218,15 @@ class CKBasedResetManager(LayerResetManager):
         should_reset = self.should_reset(global_step)
         layer_ck_weights = {}
         
+        # Debug: Print detailed reset decision info
+        print(f"[CK_RESET_DEBUG] Step {global_step}: Reset decision details:")
+        print(f"[CK_RESET_DEBUG]   enable_reset={self.enable_reset}")
+        print(f"[CK_RESET_DEBUG]   reset_steps={self.reset_steps}")
+        print(f"[CK_RESET_DEBUG]   step_in_reset_steps={global_step in self.reset_steps}")
+        print(f"[CK_RESET_DEBUG]   should_reset={should_reset}")
+        print(f"[CK_RESET_DEBUG]   reset_strategy={self.reset_strategy}")
+        print(f"[CK_RESET_DEBUG]   has_fisher_stats={fisher_stats is not None}")
+        
         if should_reset and fisher_stats and self.reset_strategy == 'ck_guided':
             # Only calculate C_K weights if we're using ck_guided strategy
             layer_ck_weights = self.calculate_layer_ck_weights(fisher_stats, {})

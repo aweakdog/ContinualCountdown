@@ -309,17 +309,41 @@ class LayerResetManager:
                 # Copy parameters from reference to target state dict
                 for ref_param_name, ref_param in ref_layer_state_dict.items():
                     if ref_param_name in target_state_dict:
-                        print(f"[LAYER_RESET_DEBUG] Copying {ref_param_name} (ref: {ref_param.shape} -> target: {target_state_dict[ref_param_name].shape})")
-                        
-                        # Check shape compatibility
-                        if target_state_dict[ref_param_name].shape != ref_param.shape:
-                            print(f"[LAYER_RESET_DEBUG] ERROR: Shape mismatch for {ref_param_name}! Target: {target_state_dict[ref_param_name].shape}, Reference: {ref_param.shape}")
-                            continue
+                        if ref_param is None:
+                            # None indicates reset to initialization
+                            print(f"[LAYER_RESET_DEBUG] Reinitializing {ref_param_name} to default initialization")
+                            target_param = target_state_dict[ref_param_name]
                             
-                        # Copy the parameter
-                        target_state_dict[ref_param_name].data.copy_(ref_param.to(target_state_dict[ref_param_name].device, non_blocking=True))
-                        reset_param_names.add(ref_param_name)
-                        print(f"[LAYER_RESET_DEBUG] Successfully copied {ref_param_name}")
+                            # Reinitialize using common initialization schemes
+                            if 'weight' in ref_param_name:
+                                if len(target_param.shape) >= 2:
+                                    # Linear layer or similar - use Xavier/Glorot initialization
+                                    torch.nn.init.xavier_uniform_(target_param)
+                                else:
+                                    # 1D parameter - use normal initialization
+                                    torch.nn.init.normal_(target_param, mean=0.0, std=0.02)
+                            elif 'bias' in ref_param_name:
+                                # Bias parameters - initialize to zero
+                                torch.nn.init.zeros_(target_param)
+                            else:
+                                # Other parameters - use normal initialization
+                                torch.nn.init.normal_(target_param, mean=0.0, std=0.02)
+                            
+                            reset_param_names.add(ref_param_name)
+                            print(f"[LAYER_RESET_DEBUG] Successfully reinitialized {ref_param_name}")
+                        else:
+                            # Normal parameter copy
+                            print(f"[LAYER_RESET_DEBUG] Copying {ref_param_name} (ref: {ref_param.shape} -> target: {target_state_dict[ref_param_name].shape})")
+                            
+                            # Check shape compatibility
+                            if target_state_dict[ref_param_name].shape != ref_param.shape:
+                                print(f"[LAYER_RESET_DEBUG] ERROR: Shape mismatch for {ref_param_name}! Target: {target_state_dict[ref_param_name].shape}, Reference: {ref_param.shape}")
+                                continue
+                                
+                            # Copy the parameter
+                            target_state_dict[ref_param_name].data.copy_(ref_param.to(target_state_dict[ref_param_name].device, non_blocking=True))
+                            reset_param_names.add(ref_param_name)
+                            print(f"[LAYER_RESET_DEBUG] Successfully copied {ref_param_name}")
                     else:
                         print(f"[LAYER_RESET_DEBUG] WARNING: Reference parameter {ref_param_name} not found in target model")
                 

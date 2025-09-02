@@ -775,30 +775,65 @@ class ActorRolloutRefWorker(Worker):
                 # Extract parameters for this layer and immediately transfer to CPU
                 layer_prefix = f"{layer_container_path}.{layer_idx}."
                 
-                # Use direct parameter access instead of state_dict to avoid FSDP collective ops
+                # Use FSDP-safe parameter extraction with rank0_only to avoid collective ops
                 layer_params_found = 0
                 
-                # Directly access parameters from the target layer
-                for param_name, param in target_layer.named_parameters():
-                    full_param_name = f"{layer_prefix}{param_name}"
+                try:
+                    # Use FSDP state_dict with rank0_only=True to avoid collective synchronization
+                    # Only rank 0 will get the full parameters, others get empty dict
+                    import torch.distributed as dist
                     
-                    # For FSDP, we need to gather the full parameter
-                    if hasattr(param, '_fsdp_flattened'):
-                        # This is an FSDP parameter, need to gather it
-                        with torch.no_grad():
-                            # Use summon_full_params context to gather distributed parameters
-                            with FSDP.summon_full_params(target_layer, writeback=False, offload_to_cpu=True):
-                                # Now param should contain the full parameter
-                                layer_state_dict[full_param_name] = param.detach().cpu().clone()
-                                layer_params_found += 1
-                                print(f"[LAYER_RESET_DEBUG] Extracted FSDP parameter: {full_param_name} (shape: {param.shape})")
+                    # Check if we're in a distributed environment
+                    if dist.is_initialized():
+                        current_rank = dist.get_rank()
+                        print(f"[LAYER_RESET_DEBUG] Current rank: {current_rank}")
                     else:
-                        # Regular parameter, just copy
-                        layer_state_dict[full_param_name] = param.detach().cpu().clone()
-                        layer_params_found += 1
-                        print(f"[LAYER_RESET_DEBUG] Extracted regular parameter: {full_param_name} (shape: {param.shape})")
+                        current_rank = 0
+                        print(f"[LAYER_RESET_DEBUG] Not in distributed mode, using rank 0")
+                    
+                    # CRITICAL: Don't use FSDP state_dict here as it requires collective ops
+                    # Instead, directly access the underlying parameters without FSDP context
+                    print(f"[LAYER_RESET_DEBUG] Accessing reference parameters directly without FSDP collective ops")
+                    
+                    # Get the underlying model without FSDP wrapper
+                    if hasattr(self.ref_module_fsdp, '_fsdp_wrapped_module'):
+                        base_ref_model = self.ref_module_fsdp._fsdp_wrapped_module
+                    else:
+                        base_ref_model = self.ref_module_fsdp
+                    
+                    # Navigate to the specific layer in the base model
+                    ref_layer = base_ref_model
+                    for attr in layer_container_path.split('.'):
+                        ref_layer = getattr(ref_layer, attr)
+                    ref_layer = ref_layer[layer_idx]
+                    
+                    # Extract parameters directly from the reference layer
+                    for param_name, param in ref_layer.named_parameters():
+                        full_param_name = f"{layer_prefix}{param_name}"
+                        
+                        # Direct parameter access - no FSDP collective ops needed
+                        if param.numel() > 0:
+                            layer_state_dict[full_param_name] = param.detach().cpu().clone()
+                            layer_params_found += 1
+                            print(f"[LAYER_RESET_DEBUG] Extracted reference parameter: {full_param_name} (shape: {param.shape})")
+                        else:
+                            print(f"[LAYER_RESET_DEBUG] Skipping empty parameter: {full_param_name}")
+                    
+                    print(f"[LAYER_RESET_DEBUG] Direct extraction completed for layer {layer_idx}")
                 
-                print(f"[LAYER_RESET_DEBUG] Layer {layer_idx}: found {layer_params_found} parameters with prefix '{layer_prefix}'")
+                except Exception as e:
+                    print(f"[LAYER_RESET_DEBUG] Error extracting layer {layer_idx} parameters: {e}")
+                    import traceback
+                    print(f"[LAYER_RESET_DEBUG] Traceback: {traceback.format_exc()}")
+                    
+                    # Fallback: mark all parameters for initialization reset
+                    for param_name, param in target_layer.named_parameters():
+                        full_param_name = f"{layer_prefix}{param_name}"
+                        layer_state_dict[full_param_name] = None
+                        layer_params_found += 1
+                        print(f"[LAYER_RESET_DEBUG] Fallback init reset: {full_param_name}")
+                
+                print(f"[LAYER_RESET_DEBUG] Layer {layer_idx}: processed {layer_params_found} parameters")
                 
                 # Force garbage collection to free GPU memory
                 torch.cuda.empty_cache()

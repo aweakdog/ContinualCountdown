@@ -948,52 +948,65 @@ class DataParallelPPOActor(BasePPOActor):
                                     # Try to get reference worker - unified approach with Critic
                                     ref_worker = None
                                     
-                                    # Debug: List all available Ray actors
-                                    try:
-                                        all_actors = ray.util.list_named_actors()
-                                        print(f"[CK_RESET_DEBUG] Actor: Available Ray actors: {[actor['name'] for actor in all_actors]}")
-                                    except Exception as e:
-                                        print(f"[CK_RESET_DEBUG] Actor: Could not list Ray actors: {e}")
+                                    # Enhanced reference worker access - use shared state from trainer
+                                    ref_worker = None
                                     
+                                    # Method 1: Check if we have access to reference worker via Ray object store
                                     try:
-                                        # Method 1: Try Ray actor registry (current Actor approach)
-                                        try:
-                                            ref_worker = ray.get_actor("ref_policy_worker")
-                                            print(f"[CK_RESET_DEBUG] Actor: Found ref_policy_worker Ray actor")
-                                        except ValueError as e:
-                                            print(f"[CK_RESET_DEBUG] Actor: ref_policy_worker not found: {e}")
+                                        # Try to get reference worker from Ray object store (set by trainer)
+                                        ref_worker_info = ray.get("ck_reset_ref_worker_info")
+                                        if ref_worker_info:
+                                            ref_worker_ref = ref_worker_info.get('ref_worker_ref')
+                                            ref_worker_type = ref_worker_info.get('type')
+                                            print(f"[CK_RESET_DEBUG] Actor: Found ref_worker info in object store ({ref_worker_type})")
+                                            
                                             try:
-                                                ref_worker = ray.get_actor("actor_rollout_ref_worker")
-                                                print(f"[CK_RESET_DEBUG] Actor: Found actor_rollout_ref_worker Ray actor")
-                                            except ValueError as e:
-                                                print(f"[CK_RESET_DEBUG] Actor: actor_rollout_ref_worker not found: {e}")
-                                                # Method 2: Try to find reference worker groups (Critic approach)
-                                                try:
-                                                    # Look for reference policy worker group
-                                                    ref_policy_wg = ray.get_actor("ref_policy_wg")
-                                                    ref_worker = ref_policy_wg
-                                                    print(f"[CK_RESET_DEBUG] Actor: Found ref_policy_wg Ray actor")
-                                                except ValueError as e:
-                                                    print(f"[CK_RESET_DEBUG] Actor: ref_policy_wg not found: {e}")
-                                                    try:
-                                                        # Look for actor rollout worker group
-                                                        actor_rollout_wg = ray.get_actor("actor_rollout_wg")
-                                                        ref_worker = actor_rollout_wg
-                                                        print(f"[CK_RESET_DEBUG] Actor: Found actor_rollout_wg Ray actor (fallback)")
-                                                    except ValueError as e:
-                                                        print(f"[CK_RESET_DEBUG] Actor: actor_rollout_wg not found: {e}")
-                                                        
-                                                        # Method 3: Try alternative naming patterns
-                                                        try:
-                                                            ref_worker = ray.get_actor("ActorRolloutRefWorker")
-                                                            print(f"[CK_RESET_DEBUG] Actor: Found ActorRolloutRefWorker Ray actor")
-                                                        except ValueError as e:
-                                                            print(f"[CK_RESET_DEBUG] Actor: ActorRolloutRefWorker not found: {e}")
-                                                            print(f"[CK_RESET_DEBUG] Actor: No reference worker found via Ray registry")
-                                                            ref_worker = None
+                                                ref_worker = ray.get(ref_worker_ref)
+                                                print(f"[CK_RESET_DEBUG] Actor: Successfully retrieved ref_worker from object store")
+                                            except Exception as e:
+                                                print(f"[CK_RESET_DEBUG] Actor: Failed to get ref_worker from object store: {e}")
+                                                ref_worker = None
+                                        else:
+                                            print(f"[CK_RESET_DEBUG] Actor: No ref_worker info found in object store")
                                     except Exception as e:
-                                        print(f"[CK_RESET_DEBUG] Actor: Error finding reference worker: {e}")
-                                        ref_worker = None
+                                        print(f"[CK_RESET_DEBUG] Actor: Failed to access object store for ref_worker: {e}")
+                                    
+                                    # Method 2: Fallback to Ray actor registry search (original logic)
+                                    if ref_worker is None:
+                                        print(f"[CK_RESET_DEBUG] Actor: Falling back to Ray actor registry search")
+                                        try:
+                                            all_actors = ray.util.list_named_actors()
+                                            actor_names = [actor['name'] for actor in all_actors]
+                                            print(f"[CK_RESET_DEBUG] Actor: Available Ray actors: {actor_names}")
+                                            
+                                            # Try common reference worker names
+                                            ref_worker_candidates = [
+                                                "ref_policy_wg",
+                                                "actor_rollout_ref_wg", 
+                                                "ref_policy_worker",
+                                                "actor_rollout_ref_worker",
+                                                "ActorRolloutRefWorker"
+                                            ]
+                                            
+                                            for candidate in ref_worker_candidates:
+                                                if candidate in actor_names:
+                                                    try:
+                                                        ref_worker = ray.get_actor(candidate)
+                                                        print(f"[CK_RESET_DEBUG] Actor: Found ref_worker via registry: {candidate}")
+                                                        break
+                                                    except Exception as e:
+                                                        print(f"[CK_RESET_DEBUG] Actor: Failed to get {candidate}: {e}")
+                                                        continue
+                                            
+                                            if ref_worker is None:
+                                                print(f"[CK_RESET_DEBUG] Actor: No reference worker found in registry")
+                                        except Exception as e:
+                                            print(f"[CK_RESET_DEBUG] Actor: Error during registry search: {e}")
+                                    
+                                    # Method 3: Check if current worker has reference model
+                                    if ref_worker is None and hasattr(self, '_is_ref') and self._is_ref:
+                                        print(f"[CK_RESET_DEBUG] Actor: Using self as reference worker (_is_ref=True)")
+                                        ref_worker = self
                                     
                                     # Perform actual layer reset
                                     reset_param_names = self.ck_reset_manager.reset_model_with_ck_analysis(

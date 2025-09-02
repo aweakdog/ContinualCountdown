@@ -883,6 +883,21 @@ class RayPPOTrainer(object):
         if self.use_reference_policy:
             self.ref_policy_wg = all_wg['ref']
             self.ref_policy_wg.init_model()
+            
+            # Store reference worker info in Ray shared state for CK reset access
+            try:
+                # Store the actual worker group object in Ray object store
+                ref_worker_ref = ray.put(self.ref_policy_wg)
+                
+                # Store reference info that workers can access
+                ref_worker_info = {
+                    'ref_worker_ref': ref_worker_ref,
+                    'type': 'RayWorkerGroup'
+                }
+                ray.put(ref_worker_info, name="ck_reset_ref_worker_info")
+                print(f"[TRAINER_DEBUG] Stored ref_policy_wg in Ray object store for CK reset")
+            except Exception as e:
+                print(f"[TRAINER_DEBUG] Failed to store ref_worker in object store: {e}")
 
         if self.use_rm:
             self.rm_wg = all_wg['rm']

@@ -373,22 +373,65 @@ class CKBasedResetManager(LayerResetManager):
         
         print(f"[CK_RESET_REAL] Step {global_step}: Getting reference layers {layer_indices}")
         
+        # Enhanced debugging for reference worker access
+        print(f"[CK_RESET_DEBUG] Attempting to find reference model for reset")
+        print(f"[CK_RESET_DEBUG] ref_worker type: {type(ref_worker).__name__ if ref_worker else 'None'}")
+        print(f"[CK_RESET_DEBUG] current_worker type: {type(current_worker).__name__ if current_worker else 'None'}")
+        
         # Get reference layer state dict - handle different worker types
         ref_layer_state_dict = {}
         try:
             if ref_worker is not None:
-                # Use dedicated reference worker
-                ref_layer_state_dict = self.get_reference_layer_state_dict(ref_worker, layer_indices)
-                print(f"[CK_RESET_REAL] Retrieved {len(ref_layer_state_dict)} reference parameters from ref_worker")
+                print(f"[CK_RESET_DEBUG] Using provided ref_worker: {type(ref_worker).__name__}")
+                
+                # Check if ref_worker is a RayWorkerGroup or individual worker
+                if hasattr(ref_worker, 'extract_layers_for_reset'):
+                    # Direct worker with extract method
+                    ref_layer_state_dict = ref_worker.extract_layers_for_reset(layer_indices)
+                    print(f"[CK_RESET_REAL] Retrieved {len(ref_layer_state_dict)} reference parameters from direct ref_worker")
+                elif hasattr(ref_worker, 'apply_async'):
+                    # RayWorkerGroup - call method on all workers and get first result
+                    print(f"[CK_RESET_DEBUG] ref_worker is RayWorkerGroup, calling extract_layers_for_reset via apply_async")
+                    futures = ref_worker.apply_async('extract_layers_for_reset', layer_indices)
+                    results = ray.get(futures)
+                    # Use the first non-empty result
+                    for result in results:
+                        if result:
+                            ref_layer_state_dict = result
+                            break
+                    print(f"[CK_RESET_REAL] Retrieved {len(ref_layer_state_dict)} reference parameters from RayWorkerGroup")
+                elif hasattr(ref_worker, 'execute_all_async'):
+                    # Alternative RayWorkerGroup method
+                    print(f"[CK_RESET_DEBUG] ref_worker is RayWorkerGroup, calling extract_layers_for_reset via execute_all_async")
+                    futures = ref_worker.execute_all_async('extract_layers_for_reset', layer_indices)
+                    results = ray.get(futures)
+                    # Use the first non-empty result
+                    for result in results:
+                        if result:
+                            ref_layer_state_dict = result
+                            break
+                    print(f"[CK_RESET_REAL] Retrieved {len(ref_layer_state_dict)} reference parameters from RayWorkerGroup (execute_all_async)")
+                else:
+                    print(f"[CK_RESET_DEBUG] ref_worker does not have expected methods. Available methods: {[m for m in dir(ref_worker) if not m.startswith('_')]}")
+                    # Try to use get_reference_layer_state_dict method
+                    ref_layer_state_dict = self.get_reference_layer_state_dict(ref_worker, layer_indices)
+                    print(f"[CK_RESET_REAL] Retrieved {len(ref_layer_state_dict)} reference parameters from ref_worker via get_reference_layer_state_dict")
+                    
             elif current_worker is not None and hasattr(current_worker, '_is_ref') and current_worker._is_ref:
                 # Use current worker if it has reference model
+                print(f"[CK_RESET_DEBUG] Using current_worker as reference (has _is_ref=True)")
                 ref_layer_state_dict = current_worker.extract_layers_for_reset(layer_indices)
                 print(f"[CK_RESET_REAL] Retrieved {len(ref_layer_state_dict)} reference parameters from current worker")
             else:
                 print(f"[CK_RESET_ERROR] No reference worker or reference model available")
+                print(f"[CK_RESET_ERROR] ref_worker is None: {ref_worker is None}")
+                if current_worker:
+                    print(f"[CK_RESET_ERROR] current_worker._is_ref: {getattr(current_worker, '_is_ref', 'not found')}")
                 return set()
         except Exception as e:
+            import traceback
             print(f"[CK_RESET_ERROR] Failed to get reference layers: {e}")
+            print(f"[CK_RESET_ERROR] Traceback: {traceback.format_exc()}")
             return set()
         
         # Override the get_layer_indices_to_reset method temporarily for dynamic selection

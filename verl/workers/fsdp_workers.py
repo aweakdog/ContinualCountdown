@@ -1184,14 +1184,43 @@ class CriticWorker(Worker):
                         
                         # Perform actual reset using the C_K-based reset manager
                         try:
-                            # Get reference worker from trainer
+                            # Enhanced reference worker access - use Ray object store (same as actor)
                             ref_worker = None
-                            if hasattr(self.trainer, 'ref_policy_wg') and self.trainer.use_reference_policy:
-                                ref_worker = self.trainer.ref_policy_wg
-                                print(f"[CK_RESET_DEBUG] Critic: Using ref_policy_wg as reference worker")
-                            elif hasattr(self.trainer, 'actor_rollout_wg'):
-                                ref_worker = self.trainer.actor_rollout_wg
-                                print(f"[CK_RESET_DEBUG] Critic: Using actor_rollout_wg as reference worker (fallback)")
+                            
+                            # Method 1: Check if we have access to reference worker via Ray object store
+                            try:
+                                # Try to get reference worker from Ray object store (set by trainer)
+                                ref_worker_info = ray.get("ck_reset_ref_worker_info")
+                                if ref_worker_info:
+                                    ref_worker_ref = ref_worker_info.get('ref_worker_ref')
+                                    ref_worker_type = ref_worker_info.get('type')
+                                    print(f"[CK_RESET_DEBUG] Critic: Found ref_worker info in object store ({ref_worker_type})")
+                                    
+                                    try:
+                                        ref_worker = ray.get(ref_worker_ref)
+                                        print(f"[CK_RESET_DEBUG] Critic: Successfully retrieved ref_worker from object store")
+                                    except Exception as e:
+                                        print(f"[CK_RESET_DEBUG] Critic: Failed to get ref_worker from object store: {e}")
+                                        ref_worker = None
+                                else:
+                                    print(f"[CK_RESET_DEBUG] Critic: No ref_worker info found in object store")
+                            except Exception as e:
+                                print(f"[CK_RESET_DEBUG] Critic: Failed to access object store for ref_worker: {e}")
+                            
+                            # Method 2: Fallback to trainer access (original logic)
+                            if ref_worker is None:
+                                print(f"[CK_RESET_DEBUG] Critic: Falling back to trainer access")
+                                if hasattr(self.trainer, 'ref_policy_wg') and self.trainer.use_reference_policy:
+                                    ref_worker = self.trainer.ref_policy_wg
+                                    print(f"[CK_RESET_DEBUG] Critic: Using ref_policy_wg from trainer")
+                                elif hasattr(self.trainer, 'actor_rollout_wg'):
+                                    ref_worker = self.trainer.actor_rollout_wg
+                                    print(f"[CK_RESET_DEBUG] Critic: Using actor_rollout_wg from trainer (fallback)")
+                            
+                            # Method 3: Check if current worker has reference model
+                            if ref_worker is None and hasattr(self, '_is_ref') and self._is_ref:
+                                print(f"[CK_RESET_DEBUG] Critic: Using self as reference worker (_is_ref=True)")
+                                ref_worker = self
                             
                             if ref_worker is None:
                                 print(f"[CK_RESET_ERROR] Critic: No reference worker available for reset")

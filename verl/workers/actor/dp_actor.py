@@ -177,7 +177,7 @@ class DataParallelPPOActor(BasePPOActor):
                 'step': global_step,
                 'timestamp': time.time()
             }
-            ray.put(reset_info, name=f"actor_reset_layers_step_{global_step}")
+            ray.put(reset_info)
             print(f"[ACTOR_RESET_SYNC] Saved reset layers {selected_layers} for step {global_step} via Ray")
         except Exception as e:
             print(f"[ACTOR_RESET_SYNC] Failed to save reset layers: {e}")
@@ -967,146 +967,22 @@ class DataParallelPPOActor(BasePPOActor):
                             
                             if should_reset_ck:
                                 print(f"[CK_RESET_TRIGGER] Step {self.global_steps}: C_K-based reset triggered!")
+                                print(f"[CK_RESET_INFO] Actor CK reset will be handled by trainer via reset_model_with_ck_analysis method")
                                 
-                                # Log reset statistics before performing reset
-                                self.ck_reset_manager.log_reset_statistics(self.global_steps)
+                                # Note: The actual CK reset is now handled by trainer calling reset_model_with_ck_analysis
+                                # This ensures consistent reference worker access across actor and critic
                                 
-                                # Get selected layers for reset
-                                transformer_layers = self.ck_reset_manager.get_transformer_layers(self.actor_module)
-                                total_layers = len(transformer_layers)
-                                
-                                selected_layers = self.ck_reset_manager.select_layers_to_reset(
-                                    total_layers, layer_ck_weights, self.global_steps
-                                )
-                                
-                                # Save selected layers for critic synchronization
-                                self._save_actor_reset_layers(selected_layers, self.global_steps)
-                                
-                                print(f"[CK_RESET_INFO] Step {self.global_steps}: Resetting {len(selected_layers)} layers: {selected_layers}")
-                                print(f"[CK_RESET_INFO] Strategy: {self.ck_reset_manager.reset_strategy}")
-                                
-                                # Perform actual reset using the C_K-based reset manager
-                                try:
-                                    # The actor is running in a worker that may or may not have reference model
-                                    # We need to find a way to access the reference model for reset
-                                    print(f"[CK_RESET_DEBUG] Attempting to find reference model for reset")
-                                    
-                                    # Try to get reference worker - unified approach with Critic
-                                    ref_worker = None
-                                    
-                                    # Enhanced reference worker access - use shared state from trainer
-                                    ref_worker = None
-                                    
-                                    # Method 1: Check if we have access to reference worker via Ray object store
-                                    try:
-                                        # Try to get reference worker from Ray object store (set by trainer)
-                                        try:
-                                            ref_worker_info_ref = ray.get_actor("ck_reset_ref_worker_info")
-                                            ref_worker_info = ray.get(ref_worker_info_ref)
-                                        except:
-                                            # Fallback: try direct named object access
-                                            ref_worker_info = None
-                                            
-                                        if ref_worker_info:
-                                            ref_worker_ref = ref_worker_info.get('ref_worker_ref')
-                                            ref_worker_type = ref_worker_info.get('type')
-                                            print(f"[CK_RESET_DEBUG] Actor: Found ref_worker info in object store ({ref_worker_type})")
-                                            
-                                            try:
-                                                ref_worker = ray.get(ref_worker_ref)
-                                                print(f"[CK_RESET_DEBUG] Actor: Successfully retrieved ref_worker from object store")
-                                            except Exception as e:
-                                                print(f"[CK_RESET_DEBUG] Actor: Failed to get ref_worker from object store: {e}")
-                                                ref_worker = None
-                                        else:
-                                            print(f"[CK_RESET_DEBUG] Actor: No ref_worker info found in object store")
-                                    except Exception as e:
-                                        print(f"[CK_RESET_DEBUG] Actor: Failed to access object store for ref_worker: {e}")
-                                    
-                                    # Method 2: Fallback to Ray actor registry search (original logic)
-                                    if ref_worker is None:
-                                        print(f"[CK_RESET_DEBUG] Actor: Falling back to Ray actor registry search")
-                                        try:
-                                            all_actors = ray.util.list_named_actors()
-                                            actor_names = [actor['name'] for actor in all_actors]
-                                            print(f"[CK_RESET_DEBUG] Actor: Available Ray actors: {actor_names}")
-                                            
-                                            # Try common reference worker names
-                                            ref_worker_candidates = [
-                                                "ref_policy_wg",
-                                                "actor_rollout_ref_wg", 
-                                                "ref_policy_worker",
-                                                "actor_rollout_ref_worker",
-                                                "ActorRolloutRefWorker"
-                                            ]
-                                            
-                                            for candidate in ref_worker_candidates:
-                                                if candidate in actor_names:
-                                                    try:
-                                                        ref_worker = ray.get_actor(candidate)
-                                                        print(f"[CK_RESET_DEBUG] Actor: Found ref_worker via registry: {candidate}")
-                                                        break
-                                                    except Exception as e:
-                                                        print(f"[CK_RESET_DEBUG] Actor: Failed to get {candidate}: {e}")
-                                                        continue
-                                            
-                                            if ref_worker is None:
-                                                print(f"[CK_RESET_DEBUG] Actor: No reference worker found in registry")
-                                        except Exception as e:
-                                            print(f"[CK_RESET_DEBUG] Actor: Error during registry search: {e}")
-                                    
-                                    # Method 3: Check if current worker has reference model
-                                    if ref_worker is None and hasattr(self, '_is_ref') and self._is_ref:
-                                        print(f"[CK_RESET_DEBUG] Actor: Using self as reference worker (_is_ref=True)")
-                                        ref_worker = self
-                                    
-                                    # Perform actual layer reset
-                                    reset_param_names = self.ck_reset_manager.reset_model_with_ck_analysis(
-                                        current_model=self.actor_module,
-                                        ref_worker=ref_worker,
-                                        layer_ck_weights=layer_ck_weights,
-                                        global_step=self.global_steps,
-                                        model_name="actor",
-                                        current_worker=None  # DataParallelPPOActor doesn't have _is_ref
-                                    )
-                                    
-                                    if len(reset_param_names) > 0:
-                                        # Store detailed reset info in metrics
-                                        metrics['actor/ck_reset_triggered'] = 1.0
-                                        metrics['actor/ck_reset_layers_count'] = len(selected_layers)
-                                        metrics['actor/ck_reset_strategy'] = hash(self.ck_reset_manager.reset_strategy) % 1000
-                                        metrics['actor/ck_reset_params_count'] = len(reset_param_names)
-                                        
-                                        # Store layer-specific metrics
-                                        if layer_ck_weights:
-                                            avg_ck_weight = sum(layer_ck_weights.get(idx, 0.0) for idx in selected_layers) / len(selected_layers)
-                                            metrics['actor/ck_reset_avg_weight'] = avg_ck_weight
-                                        
-                                        print(f"[CK_RESET_SUCCESS] Step {self.global_steps}: Reset {len(reset_param_names)} parameters in {len(selected_layers)} layers")
-                                    else:
-                                        # Reset was attempted but no parameters were reset (likely no ref worker)
-                                        metrics['actor/ck_reset_triggered'] = 0.5  # Partial/skipped
-                                        metrics['actor/ck_reset_layers_count'] = len(selected_layers)
-                                        metrics['actor/ck_reset_strategy'] = hash(self.ck_reset_manager.reset_strategy) % 1000
-                                        print(f"[CK_RESET_SKIP] Step {self.global_steps}: Reset skipped - no reference worker available")
-                                    
-                                except Exception as reset_error:
-                                    print(f"[CK_RESET_ERROR] Step {self.global_steps}: Reset failed: {reset_error}")
-                                    import traceback
-                                    traceback.print_exc()
-                                    metrics['actor/ck_reset_triggered'] = -1.0  # Indicate failure
-                                    metrics['actor/ck_reset_layers_count'] = 0.0
-                                
+                                # Store basic metrics to indicate CK reset was triggered
+                                metrics['actor/ck_reset_triggered'] = 1.0
+                                metrics['actor/ck_reset_strategy'] = hash(self.ck_reset_manager.reset_strategy) % 1000
                             else:
                                 metrics['actor/ck_reset_triggered'] = 0.0
-                                metrics['actor/ck_reset_layers_count'] = 0.0
                                 
                         except Exception as e:
                             print(f"[CK_RESET_ERROR] Step {self.global_steps}: Error in C_K reset logic: {e}")
                             import traceback
                             traceback.print_exc()
-                            metrics['actor/ck_reset_triggered'] = 0.0
-                            metrics['actor/ck_reset_layers_count'] = 0.0
+                            metrics['actor/ck_reset_triggered'] = -1.0
                     
                     # Set the metrics with the correct value
                     metrics['actor/zero_gradspace_ratio'] = zero_gradspace_ratio_avg

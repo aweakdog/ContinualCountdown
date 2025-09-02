@@ -143,6 +143,28 @@ class CKBasedResetManager(LayerResetManager):
         
         return layer_weights
     
+    def _select_random_layers(self, total_layers: int, global_step: int) -> List[int]:
+        """
+        Select random layers to reset with deterministic seed for reproducibility.
+        
+        Args:
+            total_layers: Total number of transformer layers
+            global_step: Current global training step (used for seed)
+            
+        Returns:
+            List of layer indices to reset
+        """
+        # Use deterministic seed based on global step and random seed
+        seed = (self.random_seed + global_step) % (2**32)
+        rng = random.Random(seed)
+        
+        # Select k random layers
+        k_layers = min(self.reset_k_layers, total_layers)
+        selected_layers = rng.sample(range(total_layers), k_layers)
+        
+        print(f"[CK_RESET_SELECTION] Random selection (seed={seed}): layers {selected_layers}")
+        return selected_layers
+    
     def select_layers_to_reset(self, total_layers: int, layer_ck_weights: Dict[int, float], global_step: int, 
                               force_random_for_sync: bool = False) -> List[int]:
         """

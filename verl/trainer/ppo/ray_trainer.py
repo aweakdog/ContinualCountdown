@@ -1236,52 +1236,62 @@ class RayPPOTrainer(object):
                             # Log all metrics
                             logger.log(data=metrics, step=self.global_steps)
 
-                            # C_K reset is handled automatically in actor and critic workers
-                            print(f"[CK_RESET_DEBUG] ===== STEP {self.global_steps}: C_K RESET STATUS =====")
-                            print(f"[CK_RESET_DEBUG] C_K reset is handled automatically in actor/critic workers")
-                            print(f"[CK_RESET_DEBUG] Actor workers check reset at steps: [1, 40, 80, 120]")
-                            print(f"[CK_RESET_DEBUG] Training loop does not interfere with C_K reset process")
+                            # Check for CK-based layer reset at specified global steps (before incrementing)
+                            print(f"[CK_RESET_DEBUG] ===== CURRICULUM STEP {self.global_steps}: CHECKING CK RESET =====")
                             
-                            # Disable legacy layer reset completely
+                            # Get CK reset manager from actor worker to check reset conditions
                             should_reset = False
-                            self.global_steps += 1
+                            layer_ck_weights = {}
+                            
+                            try:
+                                # Get CK reset status from actor worker (using current step)
+                                actor_ck_status = self.actor_rollout_wg.get_ck_reset_status(self.global_steps)
+                                actor_status_list = actor_ck_status if isinstance(actor_ck_status, list) else [actor_ck_status]
+                                
+                                # Use the first worker's status (all should be the same)
+                                if actor_status_list and actor_status_list[0]:
+                                    should_reset = actor_status_list[0].get('should_reset', False)
+                                    layer_ck_weights = actor_status_list[0].get('layer_ck_weights', {})
+                                    print(f"[CK_RESET_DEBUG] Curriculum: Actor reports should_reset={should_reset}, layers={len(layer_ck_weights)}")
+                                else:
+                                    print(f"[CK_RESET_DEBUG] Curriculum: No CK reset status from actor")
+                                    
+                            except Exception as e:
+                                print(f"[CK_RESET_DEBUG] Curriculum: Error getting CK reset status: {e}")
+                                should_reset = False
                             
                             if should_reset:
                                 with _timer('layer_reset', timing_raw):
-                                    print(f"[LAYER_RESET_DEBUG] *** PERFORMING LAYER RESET at global step {self.global_steps} (CURRICULUM) ***")
+                                    print(f"[CK_RESET_EXECUTE] *** PERFORMING CK RESET at global step {self.global_steps} (CURRICULUM) ***")
                                     
                                     # Get reference worker for memory-efficient layer extraction
-                                    ref_worker = None
-                                    if hasattr(self, 'ref_policy_wg') and self.use_reference_policy:
-                                        # Use the dedicated reference policy worker
-                                        ref_worker = self.ref_policy_wg
-                                        print(f"[LAYER_RESET_DEBUG] Using ref_policy_wg as reference worker")
-                                    elif hasattr(self, 'actor_rollout_wg'):
-                                        # Fallback to actor_rollout_wg (contains reference model)
-                                        ref_worker = self.actor_rollout_wg
-                                        print(f"[LAYER_RESET_DEBUG] Using actor_rollout_wg as reference worker (fallback)")
+                                    # Based on configuration, ref_policy_wg is always available when use_reference_policy=True
+                                    ref_worker = self.ref_policy_wg
+                                    print(f"[CK_RESET_EXECUTE] Using ref_policy_wg as reference worker")
                                     
                                     # Reset actor layers with reference worker
-                                    if self.layer_reset_manager.reset_actor:
-                                        print(f"[LAYER_RESET_DEBUG] Resetting actor layers...")
-                                        actor_reset_results = self.actor_rollout_wg.reset_model_with_ck_analysis(
-                                            layer_ck_weights=layer_ck_weights,
-                                            global_step=global_step,
-                                            ref_worker=ref_worker
-                                        )
-                                        print(f"[LAYER_RESET_DEBUG] Actor layers reset completed at step {self.global_steps}")
+                                    print(f"[CK_RESET_EXECUTE] Resetting actor layers...")
+                                    actor_reset_results = self.actor_rollout_wg.reset_model_with_ck_analysis(
+                                        layer_ck_weights=layer_ck_weights,
+                                        global_step=self.global_steps,
+                                        ref_worker=ref_worker
+                                    )
+                                    print(f"[CK_RESET_EXECUTE] Actor layers reset completed at step {self.global_steps}")
                                     
                                     # Reset critic layers with same reference worker
-                                    if self.layer_reset_manager.reset_critic and self.use_critic:
-                                        print(f"[LAYER_RESET_DEBUG] Resetting critic layers...")
+                                    if self.use_critic:
+                                        print(f"[CK_RESET_EXECUTE] Resetting critic layers...")
                                         critic_reset_results = self.critic_wg.reset_model_with_ck_analysis(
                                             layer_ck_weights=layer_ck_weights,
-                                            global_step=global_step,
+                                            global_step=self.global_steps,
                                             ref_worker=ref_worker
                                         )
-                                        print(f"[LAYER_RESET_DEBUG] Critic layers reset completed at step {self.global_steps}")
+                                        print(f"[CK_RESET_EXECUTE] Critic layers reset completed at step {self.global_steps}")
                                     
-                                    print(f"[LAYER_RESET_DEBUG] *** LAYER RESET COMPLETED at global step {self.global_steps} (CURRICULUM) ***")
+                                    print(f"[CK_RESET_EXECUTE] *** CK RESET COMPLETED at global step {self.global_steps} (CURRICULUM) ***")
+
+                            # Increment global_steps after training and reset are complete
+                            self.global_steps += 1
 
                             # update kl control
                             if self.use_reference_policy and 'kl_mean' in metrics:
@@ -1395,49 +1405,7 @@ class RayPPOTrainer(object):
 
                 self.global_steps += 1
 
-                # Check for CK-based layer reset at specified global steps
-                print(f"[CK_RESET_DEBUG] ===== TRAINER STEP {self.global_steps}: CHECKING CK RESET =====")
-                
-                # Get CK reset manager from actor worker to check reset conditions
-                should_reset = False
-                layer_ck_weights = {}
-                
-                try:
-                    # Get CK reset status from actor worker
-                    actor_ck_status = self.actor_rollout_wg.get_ck_reset_status(self.global_steps)
-                    actor_status_list = actor_ck_status if isinstance(actor_ck_status, list) else [actor_ck_status]
-                    
-                    # Use the first worker's status (all should be the same)
-                    if actor_status_list and actor_status_list[0]:
-                        should_reset = actor_status_list[0].get('should_reset', False)
-                        layer_ck_weights = actor_status_list[0].get('layer_ck_weights', {})
-                        print(f"[CK_RESET_DEBUG] Trainer: Actor reports should_reset={should_reset}, layers={len(layer_ck_weights)}")
-                    else:
-                        print(f"[CK_RESET_DEBUG] Trainer: No CK reset status from actor")
-                        
-                except Exception as e:
-                    print(f"[CK_RESET_DEBUG] Trainer: Error getting CK reset status: {e}")
-                    should_reset = False
-                
-                if should_reset:
-                    with _timer('layer_reset', timing_raw):
-                        print(f"[LAYER_RESET_DEBUG] *** PERFORMING LAYER RESET at global step {self.global_steps} ***")
-                        
-                        # Get reference worker for memory-efficient layer extraction
-                        ref_worker = None
-                        if hasattr(self, 'ref_policy_wg') and self.use_reference_policy:
-                            # Use the dedicated reference policy worker
-                            ref_worker = self.ref_policy_wg
-                            print(f"[LAYER_RESET_DEBUG] Using ref_policy_wg as reference worker")
-                        elif hasattr(self, 'actor_rollout_wg'):
-                            # Fallback to actor_rollout_wg (contains reference model)
-                            ref_worker = self.actor_rollout_wg
-                            print(f"[LAYER_RESET_DEBUG] Using actor_rollout_wg as reference worker (fallback)")
-                        
-                        # Extract reference layers first to avoid Ray deadlock
-                        print(f"[LAYER_RESET_DEBUG] Pre-extracting reference layers to avoid Ray deadlock...")
-                        
-                        # Legacy reset code removed - now using unified CK reset via reset_model_with_ck_analysis
+                # CK reset is handled in curriculum_learning branch above
 
                 if self.global_steps >= self.total_training_steps:
 

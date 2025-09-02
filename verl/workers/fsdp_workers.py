@@ -197,17 +197,12 @@ class ActorRolloutRefWorker(Worker):
             actor_module.to(torch_dtype)
 
             # <<< Cascade: Collect original parameter shapes before FSDP wrapping >>>
+            # Only rank 0 needs parameter shapes for C_K reset analysis
             self.original_param_shapes = {}
-            if self.rank == 0: # Collect only on rank 0 to avoid redundancy, will be broadcast or passed if needed by all ranks
+            if self.rank == 0:
                 print("[INFO] Collecting original parameter shapes before FSDP wrapping...")
-            for fqn, param in actor_module.named_parameters():
-                self.original_param_shapes[fqn] = param.shape
-            # Broadcast the shapes map to all ranks if necessary, or ensure it's accessible
-            # For now, assuming it might be used by rank 0 primarily or passed down correctly.
-            # If all ranks need it for local computation in compute_fsdp_zero_grad_space_ratio, broadcasting is better.
-            # Let's refine this if all ranks need the full map for the analysis function.
-            # For now, let's assume the analysis function will handle getting this map appropriately.
-            if self.rank == 0 and len(self.original_param_shapes) > 0:
+                for fqn, param in actor_module.named_parameters():
+                    self.original_param_shapes[fqn] = param.shape
                 print(f"[INFO] Collected {len(self.original_param_shapes)} original parameter shapes. Example: {list(self.original_param_shapes.items())[0] if self.original_param_shapes else 'N/A'}")
             # <<< End Cascade modification >>>
 

@@ -89,6 +89,16 @@ class CKBasedResetManager(LayerResetManager):
         """
         layer_weights = {}
         
+        # Debug: Check if original_param_shapes is provided and populated
+        print(f"[CK_WEIGHT_DEBUG] original_param_shapes provided: {original_param_shapes is not None}")
+        if original_param_shapes:
+            print(f"[CK_WEIGHT_DEBUG] original_param_shapes contains {len(original_param_shapes)} parameters")
+            # Show first few parameter names as examples
+            example_params = list(original_param_shapes.keys())[:3]
+            print(f"[CK_WEIGHT_DEBUG] Example parameter names: {example_params}")
+        else:
+            print(f"[CK_WEIGHT_DEBUG] original_param_shapes is empty or None!")
+        
         # Get Fisher stats - handle both old and new formats
         print(f"[CK_WEIGHT_DEBUG] Fisher stats keys: {list(fisher_stats.keys())}")
         print(f"[CK_WEIGHT_DEBUG] Fisher stats structure:")
@@ -148,6 +158,12 @@ class CKBasedResetManager(LayerResetManager):
                         else:
                             # Fallback: estimate from parameter name patterns
                             print(f"[CK_WEIGHT_DEBUG] No original shape found for {param_name}, using fallback estimation")
+                            param_count = self._estimate_param_count_from_name(param_name)
+                            if param_count > 0:
+                                layer_param_groups[layer_idx].append((param_name, c_k, param_count))
+                                print(f"[CK_WEIGHT_DEBUG] Layer {layer_idx}: {param_name} c_k={c_k:.6f} count={param_count} (estimated)")
+                            else:
+                                print(f"[CK_WEIGHT_DEBUG] Could not estimate parameter count for {param_name}, skipping")
                         
                 except (ValueError, IndexError):
                     print(f"[CK_WEIGHT_DEBUG] Could not parse layer index from component: {component_name}")
@@ -176,21 +192,53 @@ class CKBasedResetManager(LayerResetManager):
         
         return layer_weights
     
+    def _estimate_param_count_from_name(self, param_name: str) -> int:
+        """
+        Estimate parameter count from parameter name patterns.
+        This is a fallback when original shapes are not available.
+        """
+        # Common parameter size patterns for transformer models
+        # These are rough estimates based on typical model architectures
+        
+        if 'embed_tokens.weight' in param_name:
+            # Embedding: vocab_size * hidden_size (e.g., 32000 * 3072 for Qwen2.5-0.5B)
+            return 32000 * 3072
+        elif 'lm_head' in param_name:
+            # Language model head: hidden_size * vocab_size
+            return 3072 * 32000
+        elif 'q_proj.weight' in param_name or 'k_proj.weight' in param_name or 'v_proj.weight' in param_name:
+            # Attention projections: hidden_size * (hidden_size or head_dim * num_heads)
+            if 'k_proj' in param_name or 'v_proj' in param_name:
+                return 3072 * 1024  # For key/value projections (often smaller)
+            else:
+                return 3072 * 3072  # For query projections
+        elif 'o_proj.weight' in param_name:
+            # Output projection: hidden_size * hidden_size
+            return 3072 * 3072
+        elif 'gate_proj.weight' in param_name or 'up_proj.weight' in param_name:
+            # MLP gate/up projections: hidden_size * intermediate_size
+            return 3072 * 8192  # 8192 is typical intermediate size
+        elif 'down_proj.weight' in param_name:
+            # MLP down projection: intermediate_size * hidden_size
+            return 8192 * 3072
+        elif 'layernorm.weight' in param_name or 'input_layernorm.weight' in param_name or 'post_attention_layernorm.weight' in param_name:
+            # Layer norm weights: hidden_size
+            return 3072
+        else:
+            # Unknown parameter type, return 0 to skip
+            print(f"[CK_WEIGHT_DEBUG] Unknown parameter type for estimation: {param_name}")
+            return 0
+
     def _select_random_layers(self, total_layers: int, global_step: int) -> List[int]:
         """
-        Select random layers to reset with deterministic seed for reproducibility.
-        
-        Args:
-            total_layers: Total number of transformer layers
-            global_step: Current global training step (used for seed)
-            
-        Returns:
-            List of layer indices to reset
+        Select random layers for reset using deterministic random selection.
+        Uses global_step as seed for reproducibility across actor/critic.
         """
-        # Use deterministic seed based on global step and random seed
-        seed = (self.random_seed + global_step) % (2**32)
-        rng = random.Random(seed)
-        
+        import random
+        random.seed(global_step)  # Use global step as seed for reproducibility
+        available_layers = list(range(total_layers))
+        selected_layers = random.sample(available_layers, min(self.reset_k_layers, total_layers))
+        return sorted(selected_layers)
         # Select k random layers
         k_layers = min(self.reset_k_layers, total_layers)
         selected_layers = rng.sample(range(total_layers), k_layers)

@@ -301,18 +301,29 @@ class LayerResetManager:
             print(f"[LAYER_RESET_DEBUG] Model is FSDP wrapped, using FSDP state dict context")
             
             # Use FSDP context to get unflattened parameters that match reference shapes
-            with FSDP.state_dict_type(model, StateDictType.FULL_STATE_DICT,
-                                     FullStateDictConfig(offload_to_cpu=False, rank0_only=False)):
-                # Get the full state dict with unflattened parameters
-                target_state_dict = model.state_dict()
-                
-                # All ranks should now have the same full reference parameters
-                import torch.distributed as dist
-                if dist.is_initialized():
-                    current_rank = dist.get_rank()
-                    print(f"[LAYER_RESET_DEBUG] Rank {current_rank}: Processing {len(ref_layer_state_dict)} reference parameters")
-                else:
-                    print(f"[LAYER_RESET_DEBUG] Processing {len(ref_layer_state_dict)} reference parameters (non-distributed)")
+            # Add timeout and better error handling for collective operations
+            print(f"[LAYER_RESET_DEBUG] Starting FSDP state_dict collective operation...")
+            
+            try:
+                with FSDP.state_dict_type(model, StateDictType.FULL_STATE_DICT,
+                                         FullStateDictConfig(offload_to_cpu=False, rank0_only=False)):
+                    # Get the full state dict with unflattened parameters
+                    print(f"[LAYER_RESET_DEBUG] Calling model.state_dict()...")
+                    target_state_dict = model.state_dict()
+                    print(f"[LAYER_RESET_DEBUG] Successfully got target_state_dict with {len(target_state_dict)} parameters")
+            except Exception as e:
+                print(f"[LAYER_RESET_ERROR] FSDP state_dict failed: {e}")
+                import traceback
+                print(f"[LAYER_RESET_ERROR] Traceback: {traceback.format_exc()}")
+                raise
+            
+            # All ranks should now have the same full reference parameters
+            import torch.distributed as dist
+            if dist.is_initialized():
+                current_rank = dist.get_rank()
+                print(f"[LAYER_RESET_DEBUG] Rank {current_rank}: Processing {len(ref_layer_state_dict)} reference parameters")
+            else:
+                print(f"[LAYER_RESET_DEBUG] Processing {len(ref_layer_state_dict)} reference parameters (non-distributed)")
                 
                 # Copy parameters from reference to target state dict
                 for ref_param_name, ref_param in ref_layer_state_dict.items():

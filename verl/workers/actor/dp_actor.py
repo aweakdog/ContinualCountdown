@@ -746,7 +746,9 @@ class DataParallelPPOActor(BasePPOActor):
                         ray.get(task_refs)  # Ensure all component analyses are done
                         print(f"[INFO][Actor][Step {self.global_steps}] All Fisher analysis tasks completed!")
                         
-                        fisher_analysis_future = self.fisher_info_analyzer.get_aggregated_stats.remote(identifier='actor')
+                        # Get both detailed component stats (for C_K reset) and aggregated stats (for logging)
+                        fisher_detailed_future = self.fisher_info_analyzer.get_detailed_component_stats.remote(identifier='actor')
+                        fisher_aggregated_future = self.fisher_info_analyzer.get_aggregated_stats.remote(identifier='actor')
                     
                 # Step 5: Process results from both analyzers in parallel
                 zero_gradspace_ratio_avg = 0.0
@@ -760,9 +762,13 @@ class DataParallelPPOActor(BasePPOActor):
                         all_futures.append(grad_stats_future)
                         future_types.append('gradient')
                     
-                    if fisher_analysis_future is not None:
-                        all_futures.append(fisher_analysis_future)
-                        future_types.append('fisher')
+                    if fisher_detailed_future is not None:
+                        all_futures.append(fisher_detailed_future)
+                        future_types.append('fisher_detailed')
+                    
+                    if fisher_aggregated_future is not None:
+                        all_futures.append(fisher_aggregated_future)
+                        future_types.append('fisher_aggregated')
                     
                     if all_futures:
                         
@@ -824,7 +830,13 @@ class DataParallelPPOActor(BasePPOActor):
                                                     self.logger.info(f"    - {short_name:<40} | Ratio: {mat_stats.get('ratio', 0.0):.4%} | Norms (min/avg/max): {min_norm:.4e} / {avg_norm:.4e} / {max_norm:.4e}")
                                     self.logger.info("-" * 60)
                             
-                            elif future_type == 'fisher':
+                            elif future_type == 'fisher_detailed':
+                                fisher_detailed_stats = result
+                                # Store detailed stats for C_K reset analysis
+                                self.fisher_detailed_stats = fisher_detailed_stats
+                                print(f"[INFO][Fisher] Detailed component stats received for C_K reset analysis")
+                                
+                            elif future_type == 'fisher_aggregated':
                                 fisher_stats = result
                                 if fisher_stats:
                                     self.logger.info(f"--- 📈 Fisher Information Analysis Results (Step {self.global_steps}) ---")
@@ -889,8 +901,8 @@ class DataParallelPPOActor(BasePPOActor):
                             print(f"[CK_RESET_DEBUG] Step {self.global_steps}: Entering C_K reset check logic")
                             # Get Fisher stats from the results we just processed
                             fisher_stats_for_reset = None
-                            if should_analyze_fisher and 'fisher_stats' in locals():
-                                fisher_stats_for_reset = fisher_stats
+                            if should_analyze_fisher and hasattr(self, 'fisher_detailed_stats'):
+                                fisher_stats_for_reset = self.fisher_detailed_stats
                             
                             print(f"[CK_RESET_DEBUG] Step {self.global_steps}: Calling should_reset_with_ck_analysis")
                             # Check if reset should be performed and get C_K weights

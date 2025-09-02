@@ -352,3 +352,20 @@ class FisherInfoAnalyzer:
               f"c_k_normalized={summary_stats['fisher/c_k_normalized']:.4f}, "
               f"l_k_normalized={summary_stats['fisher/l_k_normalized']:.6g}")
         return summary_stats
+    
+    def get_detailed_component_stats(self, identifier: str):
+        """
+        Returns detailed per-component and per-parameter statistics for C_K reset analysis.
+        
+        Returns:
+            Dictionary with structure: {'params': {'component_name': {'param_name': {'c_k': value}}}}
+        """
+        current_stats = self.stats.get(identifier)
+        if not current_stats or 'params' not in current_stats:
+            print(f"[FisherInfoAnalyzer] No detailed stats available for identifier '{identifier}'")
+            return {}
+        
+        print(f"[FisherInfoAnalyzer] Returning detailed component stats for '{identifier}': "
+              f"{len(current_stats['params'])} components")
+        
+        return {'params': current_stats['params']}

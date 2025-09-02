@@ -5,6 +5,7 @@ Shared reset state management using Ray for actor-critic synchronization.
 import ray
 from typing import Dict, List, Optional
 import logging
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +33,7 @@ class SharedResetState:
         self.reset_metadata[global_step] = {
             'strategy': strategy,
             'metadata': metadata or {},
-            'timestamp': ray.util.get_current_time_ms()
+            'timestamp': int(time.time() * 1000)  # milliseconds since epoch
         }
         
         logger.info(f"[SharedResetState] Stored reset layers for step {global_step}: {selected_layers}")

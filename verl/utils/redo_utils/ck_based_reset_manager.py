@@ -331,12 +331,9 @@ class CKBasedResetManager(LayerResetManager):
         print(f"[CK_RESET_DEBUG]   has_fisher_stats={fisher_stats is not None}")
         
         if should_reset and fisher_stats and self.reset_strategy == 'ck_guided':
-            # Only calculate C_K weights if we're using ck_guided strategy
-            layer_ck_weights = self.calculate_layer_ck_weights(fisher_stats, {})
-            
-            if not layer_ck_weights:
-                logger.warning(f"Step {global_step}: No C_K weights calculated, but reset is scheduled. "
-                              f"Will proceed with fallback strategy.")
+            # C_K weights will be calculated later with proper original_param_shapes
+            # This method only determines if reset should happen
+            print(f"[CK_RESET_DEBUG]   C_K guided reset will be performed with proper parameter shapes")
         
         return should_reset, layer_ck_weights
     

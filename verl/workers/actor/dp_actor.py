@@ -167,19 +167,65 @@ class DataParallelPPOActor(BasePPOActor):
         self.compute_entropy_from_logits = torch.compile(verl_F.entropy_from_logits, dynamic=True)
         self.debug_fqn_printed = False
     
-    def _save_actor_reset_layers(self, selected_layers, global_step):
-        """Save actor's selected reset layers for critic synchronization."""
+    def _save_actor_reset_layers(self, selected_layers: List[int], global_step: int):
+        """
+        Save selected reset layers for critic synchronization via Ray shared state.
+        """
         try:
-            rank = dist.get_rank() if dist.is_available() and dist.is_initialized() else 0
-            self._shared_reset_manager.save_actor_reset_layers(
-                global_step, selected_layers, 
-                strategy=self.ck_reset_manager.reset_strategy,
-                metadata={'actor_rank': rank}
-            )
+            reset_info = {
+                'layers': selected_layers,
+                'step': global_step,
+                'timestamp': time.time()
+            }
+            ray.put(reset_info, name=f"actor_reset_layers_step_{global_step}")
             print(f"[ACTOR_RESET_SYNC] Saved reset layers {selected_layers} for step {global_step} via Ray")
         except Exception as e:
-            print(f"[ACTOR_RESET_SYNC] Failed to save reset layers via Ray: {e}")
-            raise RuntimeError(f"Failed to save actor reset layers: {e}")
+            print(f"[ACTOR_RESET_SYNC] Failed to save reset layers: {e}")
+
+    @register(dispatch_mode=Dispatch.ONE_TO_ALL)
+    def reset_model_with_ck_analysis(self, layer_ck_weights: Dict[int, float], 
+                                   global_step: int, ref_worker) -> Dict[str, Any]:
+        """
+        Perform CK-based layer reset with reference worker passed from trainer.
+        
+        Args:
+            layer_ck_weights: C_K weighted values for each layer
+            global_step: Current global step
+            ref_worker: Reference worker to get layer weights from
+            
+        Returns:
+            Dictionary with reset results and metrics
+        """
+        print(f"[CK_RESET_DEBUG] Actor: reset_model_with_ck_analysis called with ref_worker type: {type(ref_worker).__name__ if ref_worker else 'None'}")
+        
+        if not hasattr(self, 'ck_reset_manager') or self.ck_reset_manager is None:
+            print(f"[CK_RESET_ERROR] Actor: No CK reset manager available")
+            return {'reset_params_count': 0, 'reset_layers': []}
+        
+        try:
+            # Perform actual layer reset using the provided reference worker
+            reset_param_names = self.ck_reset_manager.reset_model_with_ck_analysis(
+                current_model=self.actor_module,
+                ref_worker=ref_worker,
+                layer_ck_weights=layer_ck_weights,
+                global_step=global_step,
+                model_name="actor",
+                current_worker=None
+            )
+            
+            reset_count = len(reset_param_names)
+            print(f"[CK_RESET_REAL] Actor: Reset {reset_count} parameters at step {global_step}")
+            
+            return {
+                'reset_params_count': reset_count,
+                'reset_layers': list(layer_ck_weights.keys()) if layer_ck_weights else []
+            }
+            
+        except Exception as e:
+            import traceback
+            print(f"[CK_RESET_ERROR] Actor: Failed to perform CK reset: {e}")
+            print(f"[CK_RESET_ERROR] Actor: Traceback: {traceback.format_exc()}")
+            return {'reset_params_count': 0, 'reset_layers': []}
 
     def _init_optimizer_config(self):
         """Initialize optimizer configuration."""
@@ -954,7 +1000,13 @@ class DataParallelPPOActor(BasePPOActor):
                                     # Method 1: Check if we have access to reference worker via Ray object store
                                     try:
                                         # Try to get reference worker from Ray object store (set by trainer)
-                                        ref_worker_info = ray.get("ck_reset_ref_worker_info")
+                                        try:
+                                            ref_worker_info_ref = ray.get_actor("ck_reset_ref_worker_info")
+                                            ref_worker_info = ray.get(ref_worker_info_ref)
+                                        except:
+                                            # Fallback: try direct named object access
+                                            ref_worker_info = None
+                                            
                                         if ref_worker_info:
                                             ref_worker_ref = ref_worker_info.get('ref_worker_ref')
                                             ref_worker_type = ref_worker_info.get('type')

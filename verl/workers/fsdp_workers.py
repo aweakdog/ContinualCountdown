@@ -1256,10 +1256,10 @@ class CriticWorker(Worker):
                         metrics['critic/ck_reset_layers_count'] = 0.0
                         
                 except Exception as e:
-                    print(f"[CK_RESET_ERROR] Critic Step {self.critic_update_step}: Error in C_K reset logic: {e}")
                     import traceback
-                    traceback.print_exc()
-                    metrics['critic/ck_reset_triggered'] = 0.0
+                    print(f"[CK_RESET_ERROR] Critic: Failed to perform CK reset: {e}")
+                    print(f"[CK_RESET_ERROR] Critic: Traceback: {traceback.format_exc()}")
+                    metrics['critic/ck_reset_triggered'] = -1.0  # Indicate failure
                     metrics['critic/ck_reset_layers_count'] = 0.0
 
             output = DataProto(batch=None, meta_info={'metrics': metrics})

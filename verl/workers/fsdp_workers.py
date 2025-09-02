@@ -18,7 +18,7 @@ The main entry point to run the PPO algorithm
 import logging
 import os
 import warnings
-from typing import List, Dict
+from typing import List, Dict, Any
 
 import torch
 import torch.distributed

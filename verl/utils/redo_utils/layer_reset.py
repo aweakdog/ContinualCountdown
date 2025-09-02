@@ -321,7 +321,69 @@ class LayerResetManager:
             import torch.distributed as dist
             if dist.is_initialized():
                 current_rank = dist.get_rank()
-                print(f"[LAYER_RESET_DEBUG] Rank {current_rank}: Processing {len(ref_layer_state_dict)} reference parameters")
+                print(f"[LAYER_RESET_DEBUG] Rank {current_rank}: Processing reset with reinitialization fallback")
+                
+                # Check if we have None values (reinitialization markers)
+                has_reinit_markers = any(param is None for param in ref_layer_state_dict.values())
+                
+                if has_reinit_markers:
+                    print(f"[LAYER_RESET_DEBUG] Rank {current_rank}: Using reinitialization approach for marked layers")
+                    
+                    # Reinitialize the specified layers using their original initialization
+                    params_reset = 0
+                    for param_name, ref_param in ref_layer_state_dict.items():
+                        if ref_param is None:  # Reinitialization marker
+                            # Find the actual parameter in the model
+                            param_found = False
+                            for name, param in model.named_parameters():
+                                if name == param_name:
+                                    # Reinitialize using the same method as original initialization
+                                    if 'weight' in name and param.dim() >= 2:
+                                        torch.nn.init.xavier_uniform_(param)
+                                    elif 'bias' in name:
+                                        torch.nn.init.zeros_(param)
+                                    else:
+                                        torch.nn.init.normal_(param, mean=0.0, std=0.02)
+                                    
+                                    params_reset += 1
+                                    param_found = True
+                                    print(f"[LAYER_RESET_DEBUG] Rank {current_rank}: Reinitialized parameter {param_name}")
+                                    break
+                            
+                            if not param_found:
+                                print(f"[LAYER_RESET_DEBUG] Rank {current_rank}: Parameter {param_name} not found for reinitialization")
+                    
+                    print(f"[LAYER_RESET_DEBUG] Rank {current_rank}: Successfully reinitialized {params_reset} parameters")
+                    
+                else:
+                    print(f"[LAYER_RESET_DEBUG] Rank {current_rank}: Starting FSDP collective state_dict call")
+                    
+                    # Use FSDP context for proper parameter handling
+                    with FSDP.state_dict_type(model, StateDictType.FULL_STATE_DICT,
+                                             FullStateDictConfig(offload_to_cpu=False, rank0_only=False)):
+                        target_state_dict = model.state_dict()
+                        
+                        print(f"[LAYER_RESET_DEBUG] Rank {current_rank}: FSDP collective state_dict call completed")
+                        print(f"[LAYER_RESET_DEBUG] Rank {current_rank}: Target state dict has {len(target_state_dict)} parameters")
+                        
+                        # Copy reference parameters to target state dict
+                        params_copied = 0
+                        for param_name, ref_param in ref_layer_state_dict.items():
+                            if param_name in target_state_dict:
+                                target_state_dict[param_name].copy_(ref_param)
+                                params_copied += 1
+                                print(f"[LAYER_RESET_DEBUG] Rank {current_rank}: Copied parameter {param_name}")
+                            else:
+                                print(f"[LAYER_RESET_DEBUG] Rank {current_rank}: Parameter {param_name} not found in target model")
+                        
+                        print(f"[LAYER_RESET_DEBUG] Rank {current_rank}: Starting model.load_state_dict call")
+                        
+                        # Load the updated state dict back to the model
+                        model.load_state_dict(target_state_dict)
+                        
+                        print(f"[LAYER_RESET_DEBUG] Rank {current_rank}: model.load_state_dict completed")
+                        print(f"[LAYER_RESET_DEBUG] Rank {current_rank}: Successfully reset {params_copied} parameters")
+                
             else:
                 print(f"[LAYER_RESET_DEBUG] Processing {len(ref_layer_state_dict)} reference parameters (non-distributed)")
                 

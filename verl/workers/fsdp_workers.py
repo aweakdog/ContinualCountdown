@@ -779,8 +779,6 @@ class ActorRolloutRefWorker(Worker):
                 layer_params_found = 0
                 
                 try:
-                    # Use FSDP state_dict with rank0_only=True to avoid collective synchronization
-                    # Only rank 0 will get the full parameters, others get empty dict
                     import torch.distributed as dist
                     
                     # Check if we're in a distributed environment
@@ -791,45 +789,28 @@ class ActorRolloutRefWorker(Worker):
                         current_rank = 0
                         print(f"[LAYER_RESET_DEBUG] Not in distributed mode, using rank 0")
                     
-                    # Use FSDP collective operations with proper synchronization
-                    # All ranks must participate in collective operations
-                    print(f"[LAYER_RESET_DEBUG] Using FSDP collective operations with rank0_only=True")
+                    # CRITICAL: Avoid FSDP collective operations in Ray distributed environment
+                    # Use initialization fallback to avoid deadlock
+                    print(f"[LAYER_RESET_DEBUG] Rank {current_rank}: Using initialization fallback to avoid FSDP collective deadlock")
                     
-                    # Use FSDP's proper parameter gathering mechanism
-                    # Only rank 0 extracts full parameters, other ranks get empty dict
-                    if current_rank == 0:
-                        print(f"[LAYER_RESET_DEBUG] Rank {current_rank}: Extracting full parameters using FSDP context")
+                    # Access the underlying model directly to get parameter shapes
+                    if hasattr(self.ref_module_fsdp, '_fsdp_wrapped_module'):
+                        base_ref_model = self.ref_module_fsdp._fsdp_wrapped_module
+                        ref_layer = base_ref_model
+                        for attr in layer_container_path.split('.'):
+                            ref_layer = getattr(ref_layer, attr)
+                        target_ref_layer = ref_layer[layer_idx]
                         
-                        # Use FSDP context to get full parameters on rank 0
-                        with FSDP.state_dict_type(self.ref_module_fsdp, StateDictType.FULL_STATE_DICT,
-                                                 FullStateDictConfig(offload_to_cpu=True, rank0_only=True)):
-                            ref_state_dict = self.ref_module_fsdp.state_dict()
-                            
-                            # Extract only the requested layer's parameters
-                            for param_name, param_tensor in ref_state_dict.items():
-                                if f"{layer_prefix}" in param_name:
-                                    layer_state_dict[param_name] = param_tensor.detach().cpu().clone()
-                                    layer_params_found += 1
-                                    print(f"[LAYER_RESET_DEBUG] Rank {current_rank}: Extracted full parameter {param_name}")
-                                    print(f"[LAYER_RESET_DEBUG] Rank {current_rank}: Shape: {param_tensor.shape}, Elements: {param_tensor.numel()}")
-                            
-                            # Clear reference state dict to free memory
-                            del ref_state_dict
+                        # Mark all parameters for initialization reset (None = reinitialize)
+                        for param_name, ref_param in target_ref_layer.named_parameters():
+                            full_param_name = f"{layer_prefix}{param_name}"
+                            layer_state_dict[full_param_name] = None  # None triggers reinitialization
+                            layer_params_found += 1
+                            print(f"[LAYER_RESET_DEBUG] Rank {current_rank}: Marked {full_param_name} for reinitialization")
                     else:
-                        print(f"[LAYER_RESET_DEBUG] Rank {current_rank}: Non-rank-0, participating in collective but not extracting parameters")
-                        
-                        # Other ranks must participate in the collective operation but don't extract
-                        with FSDP.state_dict_type(self.ref_module_fsdp, StateDictType.FULL_STATE_DICT,
-                                                 FullStateDictConfig(offload_to_cpu=True, rank0_only=True)):
-                            # This call is required for collective synchronization
-                            _ = self.ref_module_fsdp.state_dict()
-                        
-                        print(f"[LAYER_RESET_DEBUG] Rank {current_rank}: Collective participation completed")
+                        print(f"[LAYER_RESET_DEBUG] No _fsdp_wrapped_module found, cannot access parameters")
                     
-                    # Clear reference state dict to free memory
-                    if 'ref_state_dict' in locals():
-                        del ref_state_dict
-                    print(f"[LAYER_RESET_DEBUG] FSDP extraction completed for layer {layer_idx}")
+                    print(f"[LAYER_RESET_DEBUG] Initialization fallback completed for layer {layer_idx}")
                 
                 except Exception as e:
                     print(f"[LAYER_RESET_DEBUG] Error extracting layer {layer_idx} parameters: {e}")

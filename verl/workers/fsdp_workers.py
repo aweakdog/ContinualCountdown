@@ -791,39 +791,40 @@ class ActorRolloutRefWorker(Worker):
                         current_rank = 0
                         print(f"[LAYER_RESET_DEBUG] Not in distributed mode, using rank 0")
                     
-                    # Use direct parameter access to avoid FSDP collective operations entirely
-                    # This prevents deadlock in Ray distributed environment
-                    print(f"[LAYER_RESET_DEBUG] Using direct parameter access to avoid FSDP collective operations")
+                    # Use FSDP collective operations with proper synchronization
+                    # All ranks must participate in collective operations
+                    print(f"[LAYER_RESET_DEBUG] Using FSDP collective operations with rank0_only=True")
                     
-                    # Access the underlying model directly
-                    if hasattr(self.ref_module_fsdp, '_fsdp_wrapped_module'):
-                        base_ref_model = self.ref_module_fsdp._fsdp_wrapped_module
-                        ref_layer = base_ref_model
-                        for attr in layer_container_path.split('.'):
-                            ref_layer = getattr(ref_layer, attr)
-                        target_ref_layer = ref_layer[layer_idx]
+                    # Use FSDP's proper parameter gathering mechanism
+                    # Only rank 0 extracts full parameters, other ranks get empty dict
+                    if current_rank == 0:
+                        print(f"[LAYER_RESET_DEBUG] Rank {current_rank}: Extracting full parameters using FSDP context")
                         
-                        print(f"[LAYER_RESET_DEBUG] Rank {current_rank}: Accessing layer {layer_idx} parameters directly")
-                        
-                        # Extract parameters - they may be sharded or full depending on FSDP state
-                        # When accessing _fsdp_wrapped_module, parameters might be in their original form
-                        for param_name, ref_param in target_ref_layer.named_parameters():
-                            full_param_name = f"{layer_prefix}{param_name}"
+                        # Use FSDP context to get full parameters on rank 0
+                        with FSDP.state_dict_type(self.ref_module_fsdp, StateDictType.FULL_STATE_DICT,
+                                                 FullStateDictConfig(offload_to_cpu=True, rank0_only=True)):
+                            ref_state_dict = self.ref_module_fsdp.state_dict()
                             
-                            # Extract the parameter as-is - let the target model handle sharding during reset
-                            # The parameter might be sharded or full depending on FSDP's current state
-                            layer_state_dict[full_param_name] = ref_param.data.detach().cpu().clone()
-                            layer_params_found += 1
-                            print(f"[LAYER_RESET_DEBUG] Rank {current_rank}: Extracted parameter {full_param_name}")
-                            print(f"[LAYER_RESET_DEBUG] Rank {current_rank}: Shape: {ref_param.data.shape}, Elements: {ref_param.data.numel()}")
+                            # Extract only the requested layer's parameters
+                            for param_name, param_tensor in ref_state_dict.items():
+                                if f"{layer_prefix}" in param_name:
+                                    layer_state_dict[param_name] = param_tensor.detach().cpu().clone()
+                                    layer_params_found += 1
+                                    print(f"[LAYER_RESET_DEBUG] Rank {current_rank}: Extracted full parameter {param_name}")
+                                    print(f"[LAYER_RESET_DEBUG] Rank {current_rank}: Shape: {param_tensor.shape}, Elements: {param_tensor.numel()}")
                             
-                            # Debug: Check if this looks like a shard or full parameter
-                            if ref_param.data.numel() > 1000000:  # Large parameter, likely full
-                                print(f"[LAYER_RESET_DEBUG] Rank {current_rank}: Parameter {full_param_name} appears to be FULL (large size)")
-                            else:
-                                print(f"[LAYER_RESET_DEBUG] Rank {current_rank}: Parameter {full_param_name} appears to be SHARDED (small size)")
+                            # Clear reference state dict to free memory
+                            del ref_state_dict
                     else:
-                        print(f"[LAYER_RESET_DEBUG] No _fsdp_wrapped_module found, cannot extract parameters")
+                        print(f"[LAYER_RESET_DEBUG] Rank {current_rank}: Non-rank-0, participating in collective but not extracting parameters")
+                        
+                        # Other ranks must participate in the collective operation but don't extract
+                        with FSDP.state_dict_type(self.ref_module_fsdp, StateDictType.FULL_STATE_DICT,
+                                                 FullStateDictConfig(offload_to_cpu=True, rank0_only=True)):
+                            # This call is required for collective synchronization
+                            _ = self.ref_module_fsdp.state_dict()
+                        
+                        print(f"[LAYER_RESET_DEBUG] Rank {current_rank}: Collective participation completed")
                     
                     # Clear reference state dict to free memory
                     if 'ref_state_dict' in locals():

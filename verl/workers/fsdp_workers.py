@@ -1183,7 +1183,9 @@ class CriticWorker(Worker):
             metrics['critic/lr'] = lr
 
             # C_K-based layer reset logic for critic
-            if self.rank == 0 and self.ck_reset_manager is not None:
+            # IMPORTANT: All ranks must participate in FSDP collective operations
+            # Remove rank == 0 check to avoid deadlock with FSDP
+            if self.ck_reset_manager is not None:
                 try:
                     # For critic, we use a simplified approach since we don't have Fisher analysis
                     # Check if reset should be performed based on global steps
@@ -1192,22 +1194,27 @@ class CriticWorker(Worker):
                     )
                     
                     if should_reset_ck:
-                        print(f"[CK_RESET_TRIGGER] Critic Step {self.critic_update_step}: C_K-based reset triggered!")
+                        # Only rank 0 prints the trigger message to avoid spam
+                        if self.rank == 0:
+                            print(f"[CK_RESET_TRIGGER] Critic Step {self.critic_update_step}: C_K-based reset triggered!")
                         
-                        # Log reset statistics before performing reset
-                        self.ck_reset_manager.log_reset_statistics(self.critic_update_step)
+                        # Log reset statistics before performing reset (rank 0 only)
+                        if self.rank == 0:
+                            self.ck_reset_manager.log_reset_statistics(self.critic_update_step)
                         
-                        # Get selected layers for reset
+                        # Get selected layers for reset - all ranks participate
                         transformer_layers = self.ck_reset_manager.get_transformer_layers(self.critic_module)
                         total_layers = len(transformer_layers)
                         
                         # Use critic-specific strategy configuration
                         critic_strategy = os.environ.get('CK_RESET_CRITIC_STRATEGY', 'random')
-                        print(f"[CK_RESET_INFO] Critic using strategy: {critic_strategy}")
+                        if self.rank == 0:
+                            print(f"[CK_RESET_INFO] Critic using strategy: {critic_strategy}")
                         
                         if critic_strategy == 'ck_guided':
                             # For ck_guided strategy, try to use the same layers as actor
-                            print(f"[CK_RESET_INFO] Critic using ck_guided strategy - attempting to sync with actor")
+                            if self.rank == 0:
+                                print(f"[CK_RESET_INFO] Critic using ck_guided strategy - attempting to sync with actor")
                             
                             # Try to load actor's selected layers
                             actor_selected_layers = self._load_actor_reset_layers(self.critic_update_step)
@@ -1215,10 +1222,12 @@ class CriticWorker(Worker):
                             if actor_selected_layers is not None:
                                 # Use the exact same layers as actor
                                 selected_layers = actor_selected_layers
-                                print(f"[CK_RESET_INFO] Critic using same layers as actor: {selected_layers}")
+                                if self.rank == 0:
+                                    print(f"[CK_RESET_INFO] Critic using same layers as actor: {selected_layers}")
                             else:
                                 # Fallback: use synchronized random selection
-                                print(f"[CK_RESET_INFO] Actor layers not available, using synchronized random fallback")
+                                if self.rank == 0:
+                                    print(f"[CK_RESET_INFO] Actor layers not available, using synchronized random fallback")
                                 
                                 # Temporarily change to ck_guided strategy
                                 original_strategy = self.ck_reset_manager.reset_strategy
@@ -1244,8 +1253,9 @@ class CriticWorker(Worker):
                             # Restore original strategy
                             self.ck_reset_manager.reset_strategy = original_strategy
                         
-                        print(f"[CK_RESET_INFO] Critic Step {self.critic_update_step}: Resetting {len(selected_layers)} layers: {selected_layers}")
-                        print(f"[CK_RESET_INFO] Critic Strategy: {self.ck_reset_manager.reset_strategy}")
+                        if self.rank == 0:
+                            print(f"[CK_RESET_INFO] Critic Step {self.critic_update_step}: Resetting {len(selected_layers)} layers: {selected_layers}")
+                            print(f"[CK_RESET_INFO] Critic Strategy: {self.ck_reset_manager.reset_strategy}")
                         
                         # Perform actual reset using the C_K-based reset manager
                         try:

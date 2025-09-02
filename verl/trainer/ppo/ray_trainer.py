@@ -1395,18 +1395,28 @@ class RayPPOTrainer(object):
 
                 self.global_steps += 1
 
-                # Check for layer reset at specified global steps
-                print(f"[LAYER_RESET_DEBUG] ===== STEP {self.global_steps}: CHECKING LAYER RESET =====")
-                print(f"[LAYER_RESET_DEBUG] LayerResetManager exists: {hasattr(self, 'layer_reset_manager')}")
-                if hasattr(self, 'layer_reset_manager'):
-                    print(f"[LAYER_RESET_DEBUG] LayerResetManager.enable_reset: {self.layer_reset_manager.enable_reset}")
-                    print(f"[LAYER_RESET_DEBUG] LayerResetManager.reset_steps: {self.layer_reset_manager.reset_steps}")
-                    print(f"[LAYER_RESET_DEBUG] Current global_step: {self.global_steps}")
-                    print(f"[LAYER_RESET_DEBUG] Is global_step in reset_steps: {self.global_steps in self.layer_reset_manager.reset_steps}")
-                    should_reset = self.layer_reset_manager.should_reset(self.global_steps)
-                    print(f"[LAYER_RESET_DEBUG] should_reset() returned: {should_reset}")
-                else:
-                    print(f"[LAYER_RESET_DEBUG] ERROR: LayerResetManager not found!")
+                # Check for CK-based layer reset at specified global steps
+                print(f"[CK_RESET_DEBUG] ===== TRAINER STEP {self.global_steps}: CHECKING CK RESET =====")
+                
+                # Get CK reset manager from actor worker to check reset conditions
+                should_reset = False
+                layer_ck_weights = {}
+                
+                try:
+                    # Get CK reset status from actor worker
+                    actor_ck_status = self.actor_rollout_wg.get_ck_reset_status(self.global_steps)
+                    actor_status_list = actor_ck_status if isinstance(actor_ck_status, list) else [actor_ck_status]
+                    
+                    # Use the first worker's status (all should be the same)
+                    if actor_status_list and actor_status_list[0]:
+                        should_reset = actor_status_list[0].get('should_reset', False)
+                        layer_ck_weights = actor_status_list[0].get('layer_ck_weights', {})
+                        print(f"[CK_RESET_DEBUG] Trainer: Actor reports should_reset={should_reset}, layers={len(layer_ck_weights)}")
+                    else:
+                        print(f"[CK_RESET_DEBUG] Trainer: No CK reset status from actor")
+                        
+                except Exception as e:
+                    print(f"[CK_RESET_DEBUG] Trainer: Error getting CK reset status: {e}")
                     should_reset = False
                 
                 if should_reset:

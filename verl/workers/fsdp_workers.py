@@ -685,6 +685,147 @@ class ActorRolloutRefWorker(Worker):
             return {'reset_params_count': 0, 'reset_layers': []}
     
     @register(dispatch_mode=Dispatch.ONE_TO_ALL)
+    def direct_reset_layers_from_ref(self, layer_indices: List[int]) -> Dict[str, Any]:
+        """
+        Directly reset specified layers from reference model to target model.
+        Much simpler than extract-then-reset approach.
+        
+        Args:
+            layer_indices: List of layer indices to reset
+            
+        Returns:
+            Dictionary with reset results
+        """
+        print(f"[LAYER_RESET_DEBUG] Direct reset layers {layer_indices}")
+        
+        if not self._is_ref:
+            raise RuntimeError("direct_reset_layers_from_ref can only be called on reference worker")
+        
+        if not hasattr(self, 'actor_module_fsdp') or not hasattr(self, 'ref_module_fsdp'):
+            raise RuntimeError("Both actor and reference models must be available")
+        
+        reset_param_count = 0
+        
+        try:
+            # Get base models (unwrap FSDP if needed)
+            if hasattr(self.actor_module_fsdp, '_fsdp_wrapped_module'):
+                target_base = self.actor_module_fsdp._fsdp_wrapped_module
+            else:
+                target_base = self.actor_module_fsdp
+                
+            if hasattr(self.ref_module_fsdp, '_fsdp_wrapped_module'):
+                ref_base = self.ref_module_fsdp._fsdp_wrapped_module
+            else:
+                ref_base = self.ref_module_fsdp
+            
+            # Find transformer layers
+            layer_patterns = ['model.layers', 'transformer.h', 'transformer.layers', 'layers']
+            target_layers = None
+            ref_layers = None
+            
+            for pattern in layer_patterns:
+                try:
+                    target_layers = target_base
+                    ref_layers = ref_base
+                    for attr in pattern.split('.'):
+                        target_layers = getattr(target_layers, attr)
+                        ref_layers = getattr(ref_layers, attr)
+                    if isinstance(target_layers, (list, torch.nn.ModuleList)):
+                        print(f"[LAYER_RESET_DEBUG] Found {len(target_layers)} layers using pattern '{pattern}'")
+                        break
+                except AttributeError:
+                    continue
+            
+            if target_layers is None or ref_layers is None:
+                raise RuntimeError("Could not find transformer layers in models")
+            
+            # Direct parameter copying for each layer
+            for layer_idx in layer_indices:
+                if layer_idx >= len(target_layers):
+                    print(f"[LAYER_RESET_DEBUG] Skipping layer {layer_idx} (out of range)")
+                    continue
+                    
+                target_layer = target_layers[layer_idx]
+                ref_layer = ref_layers[layer_idx]
+                
+                print(f"[LAYER_RESET_DEBUG] Directly copying layer {layer_idx} parameters...")
+                
+                # Copy parameters directly
+                for (target_name, target_param), (ref_name, ref_param) in zip(
+                    target_layer.named_parameters(), ref_layer.named_parameters()
+                ):
+                    if target_name != ref_name:
+                        print(f"[LAYER_RESET_WARNING] Parameter name mismatch: {target_name} vs {ref_name}")
+                        continue
+                    
+                    # Direct parameter copy (both on same device)
+                    with torch.no_grad():
+                        target_param.data.copy_(ref_param.data)
+                        reset_param_count += 1
+                        
+                print(f"[LAYER_RESET_DEBUG] Layer {layer_idx} reset completed")
+            
+            print(f"[LAYER_RESET_REAL] Direct reset completed: {reset_param_count} parameters in {len(layer_indices)} layers")
+            
+            return {
+                'reset_params_count': reset_param_count,
+                'reset_layers': layer_indices
+            }
+            
+        except Exception as e:
+            print(f"[LAYER_RESET_ERROR] Direct reset failed: {e}")
+            import traceback
+            print(f"[LAYER_RESET_ERROR] Traceback: {traceback.format_exc()}")
+            return {'reset_params_count': 0, 'reset_layers': []}
+
+    @register(dispatch_mode=Dispatch.ONE_TO_ALL)
+    def get_layer_parameters(self, layer_indices: List[int]) -> Dict[str, torch.Tensor]:
+        """
+        Get reference model layer parameters for reset.
+        Simple parameter retrieval without complex extraction logic.
+        
+        Args:
+            layer_indices: List of layer indices to get parameters from
+            
+        Returns:
+            Dictionary containing parameters for specified layers (on CPU)
+        """
+        if not self._is_ref:
+            return {}
+        
+        if not hasattr(self, 'ref_module_fsdp'):
+            return {}
+        
+        # Get reference base model
+        ref_base = self.ref_module_fsdp._fsdp_wrapped_module if hasattr(self.ref_module_fsdp, '_fsdp_wrapped_module') else self.ref_module_fsdp
+        
+        # Find transformer layers
+        ref_layers = None
+        for pattern in ['model.layers', 'transformer.h', 'transformer.layers', 'layers']:
+            try:
+                ref_layers = ref_base
+                for attr in pattern.split('.'):
+                    ref_layers = getattr(ref_layers, attr)
+                if isinstance(ref_layers, (list, torch.nn.ModuleList)):
+                    break
+            except AttributeError:
+                continue
+        
+        if ref_layers is None:
+            return {}
+        
+        # Get parameters for specified layers
+        layer_params = {}
+        for layer_idx in layer_indices:
+            if layer_idx < len(ref_layers):
+                ref_layer = ref_layers[layer_idx]
+                for param_name, param in ref_layer.named_parameters():
+                    key = f"layer_{layer_idx}.{param_name}"
+                    layer_params[key] = param.data.detach().cpu().clone()
+        
+        return layer_params
+
+    @register(dispatch_mode=Dispatch.ONE_TO_ALL)
     def extract_layers_for_reset(self, layer_indices: List[int]) -> Dict[str, torch.Tensor]:
         """
         Extract specific transformer layers from reference model for layer reset.
@@ -1352,22 +1493,25 @@ class CriticWorker(Worker):
             return {'reset_params_count': 0, 'reset_layers': []}
         
         try:
-            # Perform actual layer reset using the provided reference worker
-            reset_param_names = self.ck_reset_manager.reset_model_with_ck_analysis(
-                current_model=self.critic_module,
-                ref_worker=ref_worker,
-                layer_ck_weights=layer_ck_weights,
-                global_step=global_step,
-                model_name="critic",
-                current_worker=None
-            )
+            # Get layers to reset
+            if not layer_ck_weights:
+                return {'reset_params_count': 0, 'reset_layers': []}
             
-            reset_count = len(reset_param_names)
-            print(f"[CK_RESET_REAL] Critic: Reset {reset_count} parameters at step {global_step}")
+            sorted_layers = sorted(layer_ck_weights.items(), key=lambda x: x[1], reverse=True)
+            reset_count = min(self.ck_reset_manager.reset_k_layers, len(sorted_layers))
+            layers_to_reset = [layer_idx for layer_idx, _ in sorted_layers[:reset_count]]
+            
+            # Get parameters from reference worker
+            layer_params = ref_worker.get_layer_parameters(layers_to_reset)
+            if not layer_params:
+                return {'reset_params_count': 0, 'reset_layers': []}
+            
+            # Apply parameters to critic
+            applied_count = self.apply_layer_parameters(layer_params)
             
             return {
-                'reset_params_count': reset_count,
-                'reset_layers': list(layer_ck_weights.keys()) if layer_ck_weights else []
+                'reset_params_count': applied_count,
+                'reset_layers': layers_to_reset
             }
             
         except Exception as e:
@@ -1399,6 +1543,61 @@ class CriticWorker(Worker):
             self.initial_critic_state_dict = copy.deepcopy(self.critic_module.state_dict())
         
         logger.info(f"Stored initial critic state with {len(self.initial_critic_state_dict)} parameters")
+
+    @register(dispatch_mode=Dispatch.ONE_TO_ALL)
+    def apply_layer_parameters(self, layer_params: Dict[str, torch.Tensor]) -> int:
+        """
+        Apply layer parameters to critic model.
+        Simple parameter application without complex logic.
+        
+        Args:
+            layer_params: Dictionary of parameters to apply
+            
+        Returns:
+            Number of parameters applied
+        """
+        if not layer_params:
+            return 0
+        
+        # Get critic base model
+        critic_base = self.critic_module._fsdp_wrapped_module if hasattr(self.critic_module, '_fsdp_wrapped_module') else self.critic_module
+        
+        # Find transformer layers
+        critic_layers = None
+        for pattern in ['model.layers', 'transformer.h', 'transformer.layers', 'layers']:
+            try:
+                critic_layers = critic_base
+                for attr in pattern.split('.'):
+                    critic_layers = getattr(critic_layers, attr)
+                if isinstance(critic_layers, (list, torch.nn.ModuleList)):
+                    break
+            except AttributeError:
+                continue
+        
+        if critic_layers is None:
+            return 0
+        
+        # Apply parameters
+        applied_count = 0
+        for key, ref_param_data in layer_params.items():
+            # Parse layer index and parameter name from key
+            parts = key.split('.', 1)
+            if len(parts) != 2 or not parts[0].startswith('layer_'):
+                continue
+                
+            layer_idx = int(parts[0].replace('layer_', ''))
+            param_name = parts[1]
+            
+            if layer_idx < len(critic_layers):
+                critic_layer = critic_layers[layer_idx]
+                for name, param in critic_layer.named_parameters():
+                    if name == param_name:
+                        with torch.no_grad():
+                            param.data.copy_(ref_param_data.to(param.device))
+                        applied_count += 1
+                        break
+        
+        return applied_count
 
     @register(dispatch_mode=Dispatch.ONE_TO_ALL)
     def reset_layers(self, layer_reset_manager, ref_worker=None) -> None:

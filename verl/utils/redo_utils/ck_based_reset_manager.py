@@ -384,32 +384,77 @@ class CKBasedResetManager(LayerResetManager):
             if ref_worker is not None:
                 print(f"[CK_RESET_DEBUG] Using provided ref_worker: {type(ref_worker).__name__}")
                 
-                # Check if ref_worker is a RayWorkerGroup or individual worker
-                if hasattr(ref_worker, 'extract_layers_for_reset'):
-                    # Direct worker with extract method
+                # Check if ref_worker supports direct reset (much simpler!)
+                if hasattr(ref_worker, 'direct_reset_layers_from_ref'):
+                    # Direct reset - no extraction needed!
+                    print(f"[CK_RESET_DEBUG] Using direct reset method (no extraction needed)")
+                    reset_results = ref_worker.direct_reset_layers_from_ref(layer_indices)
+                    print(f"[CK_RESET_REAL] Direct reset completed: {reset_results}")
+                    return reset_results.get('reset_params_count', 0)
+                elif hasattr(ref_worker, 'extract_layers_for_reset'):
+                    # Fallback to old extract method
+                    print(f"[CK_RESET_DEBUG] Using legacy extract-then-reset method")
                     ref_layer_state_dict = ref_worker.extract_layers_for_reset(layer_indices)
                     print(f"[CK_RESET_REAL] Retrieved {len(ref_layer_state_dict)} reference parameters from direct ref_worker")
                 elif hasattr(ref_worker, 'apply_async'):
-                    # RayWorkerGroup - call method on all workers and get first result
-                    print(f"[CK_RESET_DEBUG] ref_worker is RayWorkerGroup, calling extract_layers_for_reset via apply_async")
-                    futures = ref_worker.apply_async('extract_layers_for_reset', layer_indices)
-                    results = ray.get(futures)
-                    # Use the first non-empty result
-                    for result in results:
-                        if result:
-                            ref_layer_state_dict = result
-                            break
-                    print(f"[CK_RESET_REAL] Retrieved {len(ref_layer_state_dict)} reference parameters from RayWorkerGroup")
+                    # RayWorkerGroup - try direct reset first, fallback to extract
+                    print(f"[CK_RESET_DEBUG] ref_worker is RayWorkerGroup, trying direct reset first")
+                    try:
+                        # Try direct reset first
+                        futures = ref_worker.apply_async('direct_reset_layers_from_ref', layer_indices)
+                        print(f"[CK_RESET_DEBUG] Got direct reset futures, waiting for results with timeout...")
+                        results = ray.get(futures, timeout=60.0)  # 60 second timeout
+                        print(f"[CK_RESET_DEBUG] Got {len(results)} direct reset results from RayWorkerGroup")
+                        # Use the first successful result
+                        for i, result in enumerate(results):
+                            if result and result.get('reset_params_count', 0) > 0:
+                                print(f"[CK_RESET_REAL] Direct reset completed via RayWorkerGroup worker {i}: {result}")
+                                return result.get('reset_params_count', 0)
+                        print(f"[CK_RESET_DEBUG] Direct reset not available, falling back to extract method")
+                    except Exception as e:
+                        print(f"[CK_RESET_DEBUG] Direct reset failed, falling back to extract method: {e}")
+                    
+                    # Fallback to extract method
+                    print(f"[CK_RESET_DEBUG] Using extract-then-reset fallback via apply_async")
+                    try:
+                        futures = ref_worker.apply_async('extract_layers_for_reset', layer_indices)
+                        print(f"[CK_RESET_DEBUG] Got extract futures, waiting for results with timeout...")
+                        results = ray.get(futures, timeout=60.0)  # 60 second timeout
+                        print(f"[CK_RESET_DEBUG] Got {len(results)} extract results from RayWorkerGroup")
+                        # Use the first non-empty result
+                        for i, result in enumerate(results):
+                            if result:
+                                ref_layer_state_dict = result
+                                print(f"[CK_RESET_DEBUG] Using extract result from worker {i} with {len(result)} parameters")
+                                break
+                        print(f"[CK_RESET_REAL] Retrieved {len(ref_layer_state_dict)} reference parameters from RayWorkerGroup")
+                    except ray.exceptions.GetTimeoutError:
+                        print(f"[CK_RESET_ERROR] Timeout waiting for extract_layers_for_reset results")
+                        raise RuntimeError("Timeout waiting for reference layer extraction")
+                    except Exception as e:
+                        print(f"[CK_RESET_ERROR] Error getting results from RayWorkerGroup: {e}")
+                        raise
                 elif hasattr(ref_worker, 'execute_all_async'):
                     # Alternative RayWorkerGroup method
                     print(f"[CK_RESET_DEBUG] ref_worker is RayWorkerGroup, calling extract_layers_for_reset via execute_all_async")
-                    futures = ref_worker.execute_all_async('extract_layers_for_reset', layer_indices)
-                    results = ray.get(futures)
-                    # Use the first non-empty result
-                    for result in results:
-                        if result:
-                            ref_layer_state_dict = result
-                            break
+                    try:
+                        futures = ref_worker.execute_all_async('extract_layers_for_reset', layer_indices)
+                        print(f"[CK_RESET_DEBUG] Got futures via execute_all_async, waiting for results with timeout...")
+                        # Add timeout to prevent indefinite hanging
+                        results = ray.get(futures, timeout=60.0)  # 60 second timeout
+                        print(f"[CK_RESET_DEBUG] Got {len(results)} results from execute_all_async")
+                        # Use the first non-empty result
+                        for i, result in enumerate(results):
+                            if result:
+                                ref_layer_state_dict = result
+                                print(f"[CK_RESET_DEBUG] Using result from worker {i} with {len(result)} parameters")
+                                break
+                    except ray.exceptions.GetTimeoutError:
+                        print(f"[CK_RESET_ERROR] Timeout waiting for execute_all_async results")
+                        raise RuntimeError("Timeout waiting for reference layer extraction via execute_all_async")
+                    except Exception as e:
+                        print(f"[CK_RESET_ERROR] Error getting results from execute_all_async: {e}")
+                        raise
                     print(f"[CK_RESET_REAL] Retrieved {len(ref_layer_state_dict)} reference parameters from RayWorkerGroup (execute_all_async)")
                 else:
                     print(f"[CK_RESET_DEBUG] ref_worker does not have expected methods. Available methods: {[m for m in dir(ref_worker) if not m.startswith('_')]}")

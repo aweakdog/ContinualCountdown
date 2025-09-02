@@ -224,6 +224,60 @@ class DataParallelPPOActor(BasePPOActor):
             return {'should_reset': False, 'layer_ck_weights': {}}
 
     @register(dispatch_mode=Dispatch.ONE_TO_ALL)
+    def apply_layer_parameters(self, layer_params: Dict[str, torch.Tensor]) -> int:
+        """
+        Apply layer parameters to actor model.
+        
+        Args:
+            layer_params: Dictionary of parameters to apply
+            
+        Returns:
+            Number of parameters applied
+        """
+        if not layer_params:
+            return 0
+        
+        # Get actor base model
+        actor_base = self.actor_module._fsdp_wrapped_module if hasattr(self.actor_module, '_fsdp_wrapped_module') else self.actor_module
+        
+        # Find transformer layers
+        actor_layers = None
+        for pattern in ['model.layers', 'transformer.h', 'transformer.layers', 'layers']:
+            try:
+                actor_layers = actor_base
+                for attr in pattern.split('.'):
+                    actor_layers = getattr(actor_layers, attr)
+                if isinstance(actor_layers, (list, torch.nn.ModuleList)):
+                    break
+            except AttributeError:
+                continue
+        
+        if actor_layers is None:
+            return 0
+        
+        # Apply parameters
+        applied_count = 0
+        for key, ref_param_data in layer_params.items():
+            # Parse layer index and parameter name from key
+            parts = key.split('.', 1)
+            if len(parts) != 2 or not parts[0].startswith('layer_'):
+                continue
+                
+            layer_idx = int(parts[0].replace('layer_', ''))
+            param_name = parts[1]
+            
+            if layer_idx < len(actor_layers):
+                actor_layer = actor_layers[layer_idx]
+                for name, param in actor_layer.named_parameters():
+                    if name == param_name:
+                        with torch.no_grad():
+                            param.data.copy_(ref_param_data.to(param.device))
+                        applied_count += 1
+                        break
+        
+        return applied_count
+
+    @register(dispatch_mode=Dispatch.ONE_TO_ALL)
     def reset_model_with_ck_analysis(self, layer_ck_weights: Dict[int, float], 
                                    global_step: int, ref_worker) -> Dict[str, Any]:
         """
@@ -244,64 +298,25 @@ class DataParallelPPOActor(BasePPOActor):
             return {'reset_params_count': 0, 'reset_layers': []}
         
         try:
-            # Show which layers will be reset
-            if layer_ck_weights:
-                sorted_layers = sorted(layer_ck_weights.items(), key=lambda x: x[1], reverse=True)
-                reset_count = min(self.ck_reset_manager.reset_k_layers, len(sorted_layers))
-                layers_to_reset = [layer_idx for layer_idx, _ in sorted_layers[:reset_count]]
-                print(f"[CK_RESET_EXECUTE] Actor Step {global_step}: Resetting top {reset_count} layers: {layers_to_reset}")
-                
-                # Sample a few parameters to show before/after values
-                sample_params = {}
-                for layer_idx in layers_to_reset[:2]:  # Show first 2 layers
-                    layer_name = f"model.layers.{layer_idx}"
-                    for name, param in self.actor_module.named_parameters():
-                        if layer_name in name and "weight" in name:
-                            # Store sample values before reset with FSDP safety check
-                            try:
-                                # Check FSDP state and parameter availability
-                                if hasattr(param, '_fsdp_flattened') and param._fsdp_flattened:
-                                    sample_params[name] = f"[FSDP_FLATTENED] Parameter is flattened by FSDP"
-                                elif param.data.numel() > 0:  # Check if parameter has data on this rank
-                                    sample_values = param.data.flatten()[:5].clone().cpu().tolist()
-                                    sample_params[name] = sample_values
-                                else:
-                                    rank = torch.distributed.get_rank() if torch.distributed.is_initialized() else 0
-                                    sample_params[name] = f"[FSDP_SHARD] No data on rank {rank}, numel={param.data.numel()}"
-                            except Exception as e:
-                                sample_params[name] = f"[ERROR] {str(e)}"
-                            break
-                
-                print(f"[CK_RESET_BEFORE] Sample parameter values before reset:")
-                for name, values in sample_params.items():
-                    print(f"[CK_RESET_BEFORE]   {name}: {values}")
+            # Get layers to reset
+            if not layer_ck_weights:
+                return {'reset_params_count': 0, 'reset_layers': []}
             
-            # Perform actual layer reset using the provided reference worker
-            reset_param_names = self.ck_reset_manager.reset_model_with_ck_analysis(
-                current_model=self.actor_module,
-                ref_worker=ref_worker,
-                layer_ck_weights=layer_ck_weights,
-                global_step=global_step,
-                model_name="actor",
-                current_worker=None
-            )
+            sorted_layers = sorted(layer_ck_weights.items(), key=lambda x: x[1], reverse=True)
+            reset_count = min(self.ck_reset_manager.reset_k_layers, len(sorted_layers))
+            layers_to_reset = [layer_idx for layer_idx, _ in sorted_layers[:reset_count]]
             
-            # Show parameter values after reset
-            if layer_ck_weights and sample_params:
-                print(f"[CK_RESET_AFTER] Sample parameter values after reset:")
-                for name in sample_params.keys():
-                    for param_name, param in self.actor_module.named_parameters():
-                        if param_name == name:
-                            after_values = param.data.flatten()[:5].clone().cpu().tolist()
-                            print(f"[CK_RESET_AFTER]   {name}: {after_values}")
-                            break
+            # Get parameters from reference worker
+            layer_params = ref_worker.get_layer_parameters(layers_to_reset)
+            if not layer_params:
+                return {'reset_params_count': 0, 'reset_layers': []}
             
-            reset_count = len(reset_param_names)
-            print(f"[CK_RESET_REAL] Actor: Reset {reset_count} parameters at step {global_step}")
+            # Apply parameters to actor
+            applied_count = self.apply_layer_parameters(layer_params)
             
             return {
-                'reset_params_count': reset_count,
-                'reset_layers': list(layer_ck_weights.keys()) if layer_ck_weights else []
+                'reset_params_count': applied_count,
+                'reset_layers': layers_to_reset
             }
             
         except Exception as e:

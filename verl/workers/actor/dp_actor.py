@@ -108,29 +108,15 @@ class DataParallelPPOActor(BasePPOActor):
         # Initialize C_K-based reset manager
         self.ck_reset_manager = None
         
-        # Debug: Print config structure to understand the issue
-        print(f"[CK_RESET_DEBUG] Actor config keys: {list(self.config.__dict__.keys()) if hasattr(self.config, '__dict__') else 'No __dict__'}")
-        print(f"[CK_RESET_DEBUG] Has ck_reset attr: {hasattr(self.config, 'ck_reset')}")
-        print(f"[CK_RESET_DEBUG] Config type: {type(self.config)}")
-        
-        # Try to access config content
-        if hasattr(self.config, '_content'):
-            print(f"[CK_RESET_DEBUG] Config _content keys: {list(self.config._content.keys()) if hasattr(self.config._content, 'keys') else 'No keys'}")
-            if hasattr(self.config._content, 'keys') and 'ck_reset' in self.config._content:
-                print(f"[CK_RESET_DEBUG] Found ck_reset in _content: {self.config._content['ck_reset']}")
-        
         # Check for ck_reset in different possible locations
-        # Based on ray_trainer.py line 821, config comes from actor_rollout_ref
         ck_reset_config = None
         
         # Try actor.ck_reset path (most likely location)
         if hasattr(self.config, 'actor') and hasattr(self.config.actor, 'ck_reset'):
             ck_reset_config = self.config.actor.ck_reset
-            print(f"[CK_RESET_DEBUG] Found ck_reset in config.actor.ck_reset: {ck_reset_config}")
         # Try direct ck_reset path
         elif hasattr(self.config, 'ck_reset'):
             ck_reset_config = self.config.ck_reset
-            print(f"[CK_RESET_DEBUG] Found ck_reset in config.ck_reset: {ck_reset_config}")
         # Try _content paths
         elif hasattr(self.config, '_content') and hasattr(self.config._content, 'get'):
             ck_reset_config = self.config._content.get('ck_reset')
@@ -138,14 +124,12 @@ class DataParallelPPOActor(BasePPOActor):
                 actor_config = self.config._content.get('actor', {})
                 if hasattr(actor_config, 'get'):
                     ck_reset_config = actor_config.get('ck_reset')
-                    print(f"[CK_RESET_DEBUG] Found ck_reset in _content.actor.ck_reset: {ck_reset_config}")
         # Try get method
         elif hasattr(self.config, 'get'):
             ck_reset_config = self.config.get('ck_reset')
         
-        print(f"[CK_RESET_DEBUG] Final ck_reset_config: {ck_reset_config}")
-        
         if ck_reset_config and ck_reset_config.get('enable_reset', False):
+            from verl.utils.redo_utils.ck_based_reset_manager import create_ck_based_reset_manager
             self.ck_reset_manager = create_ck_based_reset_manager(ck_reset_config)
             print(f"[DataParallelPPOActor] Initialized C_K-based reset manager with strategy: {ck_reset_config.get('reset_strategy', 'ck_guided')}")
         else:
@@ -166,6 +150,124 @@ class DataParallelPPOActor(BasePPOActor):
         # Initialize entropy computation function
         self.compute_entropy_from_logits = torch.compile(verl_F.entropy_from_logits, dynamic=True)
         self.debug_fqn_printed = False
+
+    @register(dispatch_mode=Dispatch.ONE_TO_ALL)
+    def get_ck_reset_status(self, global_step: int) -> Dict[str, Any]:
+        """
+        Check if CK reset should be performed and return status with C_K weights.
+        
+        Args:
+            global_step: Current global step
+            
+        Returns:
+            Dictionary with reset status and C_K weights
+        """
+        if not hasattr(self, 'ck_reset_manager') or self.ck_reset_manager is None:
+            return {'should_reset': False, 'layer_ck_weights': {}}
+        
+        try:
+            # Check if we have Fisher stats from the last analysis
+            fisher_stats_for_reset = None
+            if hasattr(self, 'fisher_detailed_stats'):
+                fisher_stats_for_reset = self.fisher_detailed_stats
+            
+            # Check if reset should be performed and calculate C_K weights if needed
+            should_reset_ck, _ = self.ck_reset_manager.should_reset_with_ck_analysis(
+                global_step, fisher_stats_for_reset
+            )
+            
+            # Calculate C_K weights if reset is needed and we have Fisher stats
+            layer_ck_weights = {}
+            if should_reset_ck and fisher_stats_for_reset and self.ck_reset_manager.reset_strategy == 'ck_guided':
+                layer_ck_weights = self.ck_reset_manager.calculate_layer_ck_weights(
+                    fisher_stats_for_reset, self.original_param_shapes or {}
+                )
+            
+            return {
+                'should_reset': should_reset_ck,
+                'layer_ck_weights': layer_ck_weights or {}
+            }
+            
+        except Exception as e:
+            print(f"[CK_RESET_ERROR] Actor: Error in get_ck_reset_status: {e}")
+            return {'should_reset': False, 'layer_ck_weights': {}}
+
+    @register(dispatch_mode=Dispatch.ONE_TO_ALL)
+    def reset_model_with_ck_analysis(self, layer_ck_weights: Dict[int, float], 
+                                   global_step: int, ref_worker) -> Dict[str, Any]:
+        """
+        Perform CK-based layer reset using safe traditional calling pattern.
+        
+        Args:
+            layer_ck_weights: C_K weighted values for each layer
+            global_step: Current global step
+            ref_worker: Reference worker to get layer weights from
+            
+        Returns:
+            Dictionary with reset results and metrics
+        """
+        print(f"[CK_RESET_DEBUG] Actor: reset_model_with_ck_analysis called with ref_worker type: {type(ref_worker).__name__ if ref_worker else 'None'}")
+        
+        if not hasattr(self, 'ck_reset_manager') or self.ck_reset_manager is None:
+            print(f"[CK_RESET_ERROR] Actor: No CK reset manager available")
+            return {'reset_params_count': 0, 'reset_layers': []}
+        
+        try:
+            # Get layers to reset based on C_K weights
+            if not layer_ck_weights:
+                return {'reset_params_count': 0, 'reset_layers': []}
+            
+            # Get transformer layers count
+            transformer_layers = self.ck_reset_manager.get_transformer_layers(self.actor_module)
+            total_layers = len(transformer_layers)
+            
+            # Select layers to reset using C_K weights
+            layers_to_reset = self.ck_reset_manager.select_layers_to_reset(
+                total_layers, layer_ck_weights, global_step
+            )
+            
+            if not layers_to_reset:
+                return {'reset_params_count': 0, 'reset_layers': []}
+            
+            print(f"[CK_RESET_DEBUG] Actor: Selected layers to reset: {layers_to_reset}")
+            
+            # Use safe traditional calling pattern: extract then apply
+            print(f"[CK_RESET_DEBUG] Actor: Extracting reference layers from ref_worker")
+            
+            # Extract reference layers (safe trainer->worker call)
+            ref_layer_state_dict_result = ref_worker.extract_layers_for_reset(layers_to_reset)
+            
+            # Handle RayWorkerGroup result (list) vs direct worker result (dict)
+            if isinstance(ref_layer_state_dict_result, list):
+                ref_layer_state_dict = ref_layer_state_dict_result[0] if ref_layer_state_dict_result else {}
+            else:
+                ref_layer_state_dict = ref_layer_state_dict_result or {}
+            
+            print(f"[CK_RESET_DEBUG] Actor: Received {len(ref_layer_state_dict)} reference parameters")
+            
+            if not ref_layer_state_dict:
+                return {'reset_params_count': 0, 'reset_layers': []}
+            
+            # Apply parameters using traditional reset method (safe)
+            reset_param_names = self.ck_reset_manager.reset_model_layers_from_ref(
+                model=self.actor_module,
+                ref_layer_state_dict=ref_layer_state_dict,
+                reset_k_first=0,  # Not used in CK guided mode
+                reset_k_last=0    # Not used in CK guided mode
+            )
+            
+            print(f"[CK_RESET_DEBUG] Actor: Successfully reset {len(reset_param_names)} parameters")
+            
+            return {
+                'reset_params_count': len(reset_param_names),
+                'reset_layers': layers_to_reset
+            }
+            
+        except Exception as e:
+            import traceback
+            print(f"[CK_RESET_ERROR] Actor: Failed to perform CK reset: {e}")
+            print(f"[CK_RESET_ERROR] Actor: Traceback: {traceback.format_exc()}")
+            return {'reset_params_count': 0, 'reset_layers': []}
     
     def _save_actor_reset_layers(self, selected_layers: List[int], global_step: int):
         """

@@ -1294,13 +1294,13 @@ class RayPPOTrainer(object):
                                         
                                         # Step 3: Apply to actor using traditional reset method (SAFE)
                                         print(f"[CK_RESET_EXECUTE] Resetting actor layers...")
-                                        self.actor_rollout_wg.reset_layers_with_ref_dict(None, ref_layer_state_dict)  # Use traditional method
+                                        self.actor_rollout_wg.reset_layers_with_ref_dict(self.layer_reset_manager, ref_layer_state_dict)
                                         print(f"[CK_RESET_EXECUTE] Actor layers reset completed")
                                         
                                         # Step 4: Apply to critic using same reference (SAFE)
                                         if self.use_critic:
                                             print(f"[CK_RESET_EXECUTE] Resetting critic layers...")
-                                            self.critic_wg.reset_layers_with_ref_dict(None, ref_layer_state_dict)  # Use traditional method
+                                            self.critic_wg.reset_layers_with_ref_dict(self.layer_reset_manager, ref_layer_state_dict)
                                             print(f"[CK_RESET_EXECUTE] Critic layers reset completed")
                                     
                                     print(f"[CK_RESET_EXECUTE] *** CK RESET COMPLETED at global step {self.global_steps} (CURRICULUM) ***")

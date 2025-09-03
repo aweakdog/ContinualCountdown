@@ -1235,6 +1235,57 @@ class DataParallelPPOActor(BasePPOActor):
         return metrics
 
     @register(dispatch_mode=Dispatch.ONE_TO_ALL)
+    def get_ck_reset_status(self, global_step: int) -> Dict[str, Any]:
+        """
+        Check if CK reset should be performed and return C_K weights.
+        Uses existing Fisher analysis results to avoid duplicate computation.
+        
+        Args:
+            global_step: Current global step
+            
+        Returns:
+            Dictionary with reset status and C_K weights
+        """
+        # Check if we have Fisher stats from recent analysis
+        fisher_stats_for_reset = None
+        if hasattr(self, 'fisher_detailed_stats'):
+            fisher_stats_for_reset = self.fisher_detailed_stats
+        
+        # Simple step-based reset trigger (can be made configurable)
+        reset_steps = [1, 40, 80, 120]  # Example reset steps
+        should_reset = global_step in reset_steps
+        
+        # Calculate C_K weights if we have Fisher stats and should reset
+        layer_ck_weights = {}
+        if should_reset and fisher_stats_for_reset:
+            try:
+                # Extract C_K values from Fisher stats for each layer
+                for component_name, component_stats in fisher_stats_for_reset.items():
+                    if 'layers.' in component_name:
+                        # Extract layer index from component name (e.g., "layers.0" -> 0)
+                        layer_parts = component_name.split('.')
+                        for i, part in enumerate(layer_parts):
+                            if part == 'layers' and i + 1 < len(layer_parts):
+                                try:
+                                    layer_idx = int(layer_parts[i + 1])
+                                    # Use average Fisher information as C_K weight
+                                    if 'avg_fisher_info' in component_stats:
+                                        layer_ck_weights[layer_idx] = component_stats['avg_fisher_info']
+                                    elif 'fisher_trace' in component_stats:
+                                        layer_ck_weights[layer_idx] = component_stats['fisher_trace']
+                                    break
+                                except (ValueError, IndexError):
+                                    continue
+            except Exception as e:
+                print(f"[CK_RESET_DEBUG] Error calculating C_K weights: {e}")
+                layer_ck_weights = {}
+        
+        return {
+            'should_reset': should_reset,
+            'layer_ck_weights': layer_ck_weights
+        }
+
+    @register(dispatch_mode=Dispatch.ONE_TO_ALL)
     def get_transformer_layer_count(self) -> int:
         """
         Get the number of transformer layers in the actor model.

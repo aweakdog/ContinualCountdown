@@ -1265,29 +1265,42 @@ class RayPPOTrainer(object):
                                 with _timer('layer_reset', timing_raw):
                                     print(f"[CK_RESET_EXECUTE] *** PERFORMING CK RESET at global step {self.global_steps} (CURRICULUM) ***")
                                     
-                                    # Get reference worker for memory-efficient layer extraction
-                                    # Based on configuration, ref_policy_wg is always available when use_reference_policy=True
+                                    # Use TRADITIONAL SAFE calling pattern: extract first, then apply
                                     ref_worker = self.ref_policy_wg
                                     print(f"[CK_RESET_EXECUTE] Using ref_policy_wg as reference worker")
                                     
-                                    # Reset actor layers with reference worker
-                                    print(f"[CK_RESET_EXECUTE] Resetting actor layers...")
-                                    actor_reset_results = self.actor_rollout_wg.reset_model_with_ck_analysis(
-                                        layer_ck_weights=layer_ck_weights,
-                                        global_step=self.global_steps,
-                                        ref_worker=ref_worker
-                                    )
-                                    print(f"[CK_RESET_EXECUTE] Actor layers reset completed at step {self.global_steps}")
+                                    # Step 1: Get layers to reset from actor (using C_K weights)
+                                    if layer_ck_weights:
+                                        # Get total layers count from actor
+                                        total_layers_list = self.actor_rollout_wg.get_transformer_layer_count()
+                                        total_layers = total_layers_list[0] if isinstance(total_layers_list, list) else total_layers_list
+                                        
+                                        # Calculate layers to reset based on C_K weights (in trainer)
+                                        sorted_layers = sorted(layer_ck_weights.items(), key=lambda x: x[1], reverse=True)
+                                        reset_k_layers = 4  # Default from config, should be configurable
+                                        layers_to_reset = [layer_idx for layer_idx, _ in sorted_layers[:reset_k_layers]]
+                                        
+                                        print(f"[CK_RESET_EXECUTE] Selected layers to reset based on C_K weights: {layers_to_reset}")
+                                    else:
+                                        layers_to_reset = []
                                     
-                                    # Reset critic layers with same reference worker
-                                    if self.use_critic:
-                                        print(f"[CK_RESET_EXECUTE] Resetting critic layers...")
-                                        critic_reset_results = self.critic_wg.reset_model_with_ck_analysis(
-                                            layer_ck_weights=layer_ck_weights,
-                                            global_step=self.global_steps,
-                                            ref_worker=ref_worker
-                                        )
-                                        print(f"[CK_RESET_EXECUTE] Critic layers reset completed at step {self.global_steps}")
+                                    if layers_to_reset:
+                                        # Step 2: Extract reference layers (SAFE trainer->worker call)
+                                        print(f"[CK_RESET_EXECUTE] Pre-extracting reference layers to avoid Ray deadlock...")
+                                        ref_layer_state_dict_result = ref_worker.extract_layers_for_reset(layers_to_reset)
+                                        ref_layer_state_dict = ref_layer_state_dict_result[0] if isinstance(ref_layer_state_dict_result, list) else ref_layer_state_dict_result
+                                        print(f"[CK_RESET_EXECUTE] Reference layers extracted successfully ({len(ref_layer_state_dict)} parameters)")
+                                        
+                                        # Step 3: Apply to actor using traditional reset method (SAFE)
+                                        print(f"[CK_RESET_EXECUTE] Resetting actor layers...")
+                                        self.actor_rollout_wg.reset_layers_with_ref_dict(None, ref_layer_state_dict)  # Use traditional method
+                                        print(f"[CK_RESET_EXECUTE] Actor layers reset completed")
+                                        
+                                        # Step 4: Apply to critic using same reference (SAFE)
+                                        if self.use_critic:
+                                            print(f"[CK_RESET_EXECUTE] Resetting critic layers...")
+                                            self.critic_wg.reset_layers_with_ref_dict(None, ref_layer_state_dict)  # Use traditional method
+                                            print(f"[CK_RESET_EXECUTE] Critic layers reset completed")
                                     
                                     print(f"[CK_RESET_EXECUTE] *** CK RESET COMPLETED at global step {self.global_steps} (CURRICULUM) ***")
 

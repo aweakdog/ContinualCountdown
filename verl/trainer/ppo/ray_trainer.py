@@ -849,8 +849,10 @@ class RayPPOTrainer(object):
         # create reference policy if needed
         if self.use_reference_policy:
             resource_pool = self.resource_pool_manager.get_resource_pool(Role.RefPolicy)
+            # Ensure reference worker has correct role for _is_ref flag
+            ref_config = self.config.actor_rollout_ref.copy()
             ref_policy_cls = RayClassWithInitArgs(self.role_worker_mapping[Role.RefPolicy],
-                                                  config=self.config.actor_rollout_ref,
+                                                  config=ref_config,
                                                   role='ref')
             self.resource_pool_to_cls[resource_pool]['ref'] = ref_policy_cls
 

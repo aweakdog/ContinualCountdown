@@ -76,6 +76,7 @@ class ActorRolloutRefWorker(Worker):
         self.critic_update_step = 0
         self.config = config
         self.role = role
+        print(f"[WORKER_INIT_DEBUG] ActorRolloutRefWorker initialized with role: {role}")
         import torch.distributed
         if not torch.distributed.is_initialized():
             torch.distributed.init_process_group(backend="nccl")
@@ -102,11 +103,13 @@ class ActorRolloutRefWorker(Worker):
         self.ulysses_sharding_manager = FSDPUlyssesShardingManager(self.ulysses_device_mesh)
 
         self.role = role
+        print(f"[WORKER_INIT_DEBUG] Role set to: {self.role}")
         assert self.role in ['actor', 'rollout', 'ref', 'actor_rollout', 'actor_rollout_ref']
 
         self._is_actor = self.role in ['actor', 'actor_rollout', 'actor_rollout_ref']
         self._is_rollout = self.role in ['rollout', 'actor_rollout', 'actor_rollout_ref']
         self._is_ref = self.role in ['ref', 'actor_rollout_ref']
+        print(f"[WORKER_INIT_DEBUG] _is_ref set to: {self._is_ref} (role={self.role})")
 
         self._is_offload_param = False
         self._is_offload_grad = False

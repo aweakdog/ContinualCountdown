@@ -1246,22 +1246,37 @@ class DataParallelPPOActor(BasePPOActor):
         Returns:
             Dictionary with reset status and C_K weights
         """
+        print(f"[CK_RESET_DEBUG] Actor: get_ck_reset_status called for step {global_step}")
+        
         # Check if we have Fisher stats from recent analysis
         fisher_stats_for_reset = None
-        if hasattr(self, 'fisher_detailed_stats'):
+        has_fisher_stats = hasattr(self, 'fisher_detailed_stats')
+        print(f"[CK_RESET_DEBUG] Actor: has_fisher_detailed_stats = {has_fisher_stats}")
+        
+        if has_fisher_stats:
             fisher_stats_for_reset = self.fisher_detailed_stats
+            if fisher_stats_for_reset:
+                print(f"[CK_RESET_DEBUG] Actor: fisher_detailed_stats has {len(fisher_stats_for_reset)} components")
+                # Show first few component names for debugging
+                component_names = list(fisher_stats_for_reset.keys())[:5]
+                print(f"[CK_RESET_DEBUG] Actor: Sample component names: {component_names}")
+            else:
+                print(f"[CK_RESET_DEBUG] Actor: fisher_detailed_stats is None or empty")
         
         # Simple step-based reset trigger (can be made configurable)
         reset_steps = [1, 40, 80, 120]  # Example reset steps
         should_reset = global_step in reset_steps
+        print(f"[CK_RESET_DEBUG] Actor: should_reset = {should_reset} (step {global_step} in {reset_steps})")
         
         # Calculate C_K weights if we have Fisher stats and should reset
         layer_ck_weights = {}
         if should_reset and fisher_stats_for_reset:
+            print(f"[CK_RESET_DEBUG] Actor: Attempting to calculate C_K weights...")
             try:
                 # Extract C_K values from Fisher stats for each layer
                 for component_name, component_stats in fisher_stats_for_reset.items():
                     if 'layers.' in component_name:
+                        print(f"[CK_RESET_DEBUG] Actor: Processing component: {component_name}")
                         # Extract layer index from component name (e.g., "layers.0" -> 0)
                         layer_parts = component_name.split('.')
                         for i, part in enumerate(layer_parts):
@@ -1271,19 +1286,33 @@ class DataParallelPPOActor(BasePPOActor):
                                     # Use average Fisher information as C_K weight
                                     if 'avg_fisher_info' in component_stats:
                                         layer_ck_weights[layer_idx] = component_stats['avg_fisher_info']
+                                        print(f"[CK_RESET_DEBUG] Actor: Layer {layer_idx} C_K weight = {component_stats['avg_fisher_info']}")
                                     elif 'fisher_trace' in component_stats:
                                         layer_ck_weights[layer_idx] = component_stats['fisher_trace']
+                                        print(f"[CK_RESET_DEBUG] Actor: Layer {layer_idx} C_K weight = {component_stats['fisher_trace']}")
+                                    else:
+                                        print(f"[CK_RESET_DEBUG] Actor: Component {component_name} has no fisher info: {list(component_stats.keys())}")
                                     break
-                                except (ValueError, IndexError):
+                                except (ValueError, IndexError) as e:
+                                    print(f"[CK_RESET_DEBUG] Actor: Error parsing layer index from {component_name}: {e}")
                                     continue
+                print(f"[CK_RESET_DEBUG] Actor: Final C_K weights: {len(layer_ck_weights)} layers")
             except Exception as e:
-                print(f"[CK_RESET_DEBUG] Error calculating C_K weights: {e}")
+                print(f"[CK_RESET_DEBUG] Actor: Error calculating C_K weights: {e}")
+                import traceback
+                print(f"[CK_RESET_DEBUG] Actor: Traceback: {traceback.format_exc()}")
                 layer_ck_weights = {}
+        elif should_reset and not fisher_stats_for_reset:
+            print(f"[CK_RESET_DEBUG] Actor: Should reset but no Fisher stats available")
+        elif not should_reset:
+            print(f"[CK_RESET_DEBUG] Actor: Not a reset step")
         
-        return {
+        result = {
             'should_reset': should_reset,
             'layer_ck_weights': layer_ck_weights
         }
+        print(f"[CK_RESET_DEBUG] Actor: Returning {result}")
+        return result
 
     @register(dispatch_mode=Dispatch.ONE_TO_ALL)
     def get_sample_layer_weights(self, layer_indices: List[int]) -> Dict[str, Any]:

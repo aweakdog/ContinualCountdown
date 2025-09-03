@@ -1260,6 +1260,7 @@ class RayPPOTrainer(object):
                             except Exception as e:
                                 print(f"[CK_RESET_DEBUG] Curriculum: Error getting CK reset status: {e}")
                                 should_reset = False
+                            continue
                             
                             if should_reset:
                                 with _timer('layer_reset', timing_raw):

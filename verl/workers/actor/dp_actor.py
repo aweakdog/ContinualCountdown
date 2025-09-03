@@ -1061,62 +1061,7 @@ class DataParallelPPOActor(BasePPOActor):
                                 else:
                                     self.logger.warning(f"[Actor][Step {self.global_steps}] Failed to get Fisher analysis results.")
                         
-                    # C_K-based layer reset logic (after Fisher analysis is complete)
-                    print(f"[CK_RESET_DEBUG] Step {self.global_steps}: Checking C_K reset conditions - rank={rank}, ck_reset_manager={self.ck_reset_manager is not None}")
-                    if rank == 0 and self.ck_reset_manager is not None:
-                        try:
-                            print(f"[CK_RESET_DEBUG] Step {self.global_steps}: Entering C_K reset check logic")
-                            # Get Fisher stats from the results we just processed
-                            fisher_stats_for_reset = None
-                            if should_analyze_fisher and hasattr(self, 'fisher_detailed_stats'):
-                                fisher_stats_for_reset = self.fisher_detailed_stats
-                            
-                            print(f"[CK_RESET_DEBUG] Step {self.global_steps}: Calling should_reset_with_ck_analysis")
-                            # Check if reset should be performed
-                            should_reset_ck, _ = self.ck_reset_manager.should_reset_with_ck_analysis(
-                                self.global_steps, fisher_stats_for_reset
-                            )
-                            print(f"[CK_RESET_DEBUG] Step {self.global_steps}: should_reset_ck={should_reset_ck}")
-                            
-                            # Calculate C_K weights if reset is needed and we have Fisher stats
-                            layer_ck_weights = {}
-                            if should_reset_ck and fisher_stats_for_reset and self.ck_reset_manager.reset_strategy == 'ck_guided':
-                                layer_ck_weights = self.ck_reset_manager.calculate_layer_ck_weights(
-                                    fisher_stats_for_reset, self.original_param_shapes or {}
-                                )
-                                print(f"[CK_WEIGHT_CALC] Step {self.global_steps}: Calculated C_K weights for {len(layer_ck_weights)} layers")
-                            
-                            if should_reset_ck:
-                                print(f"[CK_RESET_TRIGGER] Step {self.global_steps}: C_K-based reset triggered!")
-                                
-                                # Show which layers will be reset based on C_K weights
-                                if layer_ck_weights:
-                                    # Sort layers by C_K weight (descending) and show top layers to be reset
-                                    sorted_layers = sorted(layer_ck_weights.items(), key=lambda x: x[1], reverse=True)
-                                    reset_count = min(self.ck_reset_manager.reset_k_layers, len(sorted_layers))
-                                    layers_to_reset = [layer_idx for layer_idx, _ in sorted_layers[:reset_count]]
-                                    
-                                    print(f"[CK_RESET_LAYERS] Step {self.global_steps}: Will reset top {reset_count} layers: {layers_to_reset}")
-                                    print(f"[CK_RESET_WEIGHTS] Top layer C_K weights:")
-                                    for i, (layer_idx, weight) in enumerate(sorted_layers[:reset_count]):
-                                        print(f"[CK_RESET_WEIGHTS]   Layer {layer_idx}: C_K={weight:.4f}")
-                                
-                                print(f"[CK_RESET_INFO] Actor CK reset will be handled by trainer via reset_model_with_ck_analysis method")
-                                
-                                # Note: The actual CK reset is now handled by trainer calling reset_model_with_ck_analysis
-                                # This ensures consistent reference worker access across actor and critic
-                                
-                                # Store basic metrics to indicate CK reset was triggered
-                                metrics['actor/ck_reset_triggered'] = 1.0
-                                metrics['actor/ck_reset_strategy'] = hash(self.ck_reset_manager.reset_strategy) % 1000
-                            else:
-                                metrics['actor/ck_reset_triggered'] = 0.0
-                                
-                        except Exception as e:
-                            print(f"[CK_RESET_ERROR] Step {self.global_steps}: Error in C_K reset logic: {e}")
-                            import traceback
-                            traceback.print_exc()
-                            metrics['actor/ck_reset_triggered'] = -1.0
+                    # CK reset is now handled centrally by trainer via get_ck_reset_status and reset_model_with_ck_analysis
                     
                     # Set the metrics with the correct value
                     metrics['actor/zero_gradspace_ratio'] = zero_gradspace_ratio_avg

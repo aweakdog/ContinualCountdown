@@ -1245,25 +1245,18 @@ class RayPPOTrainer(object):
                             should_reset = False
                             layer_ck_weights = {}
                             
-                            try:
-                                # Get CK reset status from actor worker (using current step)
-                                actor_status_list = self.actor_rollout_wg.get_ck_reset_status(self.global_steps)
-                                
-                                # The call returns a list of lists: [[result_rank0, result_rank1], ...]
-                                # We need the result from the first worker, and from the first rank within that worker.
-                                if actor_status_list and actor_status_list[0] and actor_status_list[0][0]:
-                                    result = actor_status_list[0][0]
-                                    should_reset = result.get('should_reset', False)
-                                    layer_ck_weights = result.get('layer_ck_weights', {})
-                                    print(f"[CK_RESET_DEBUG] Curriculum: Actor reports should_reset={should_reset}, layers={len(layer_ck_weights)}")
-                                else:
-                                    print(f"[CK_RESET_DEBUG] Curriculum: No CK reset status from actor")
-                                    
-                            except Exception as e:
-                                print(f"[CK_RESET_DEBUG] Curriculum: Error getting CK reset status: {e}")
-                                should_reset = False
+                            # Get CK reset status from actor worker (using current step)
+                            actor_status_list = self.actor_rollout_wg.get_ck_reset_status(self.global_steps)
                             
-                            continue
+                            # The call returns a list of lists: [[result_rank0, result_rank1], ...]
+                            # We need the result from the first worker, and from the first rank within that worker.
+                            if actor_status_list and actor_status_list[0] and actor_status_list[0][0]:
+                                result = actor_status_list[0][0]
+                                should_reset = result.get('should_reset', False)
+                                layer_ck_weights = result.get('layer_ck_weights', {})
+                                print(f"[CK_RESET_DEBUG] Curriculum: Actor reports should_reset={should_reset}, layers={len(layer_ck_weights)}")
+                            else:
+                                print(f"[CK_RESET_DEBUG] Curriculum: No CK reset status from actor")
 
                             if should_reset:
                                 with _timer('layer_reset', timing_raw):

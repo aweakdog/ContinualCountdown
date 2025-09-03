@@ -676,8 +676,7 @@ class ActorRolloutRefWorker(Worker):
         """Forward CK reset status call to the actor instance."""
         if hasattr(self, 'actor') and self.actor is not None:
             return self.actor.get_ck_reset_status(global_step)
-        else:
-            return {'should_reset': False, 'layer_ck_weights': {}}
+        return {'should_reset': False, 'layer_ck_weights': {}}
     
     @register(dispatch_mode=Dispatch.ONE_TO_ALL)
     def reset_model_with_ck_analysis(self, layer_ck_weights, global_step: int, ref_worker):

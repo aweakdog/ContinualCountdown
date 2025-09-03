@@ -18,7 +18,7 @@ The main entry point to run the PPO algorithm
 import logging
 import os
 import warnings
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 
 import torch
 import torch.distributed
@@ -883,7 +883,7 @@ class ActorRolloutRefWorker(Worker):
         return layer_params
 
     @register(dispatch_mode=Dispatch.ONE_TO_ALL)
-    def reset_layers_with_ref_dict(self, layer_reset_manager, ref_layer_state_dict: Dict[str, torch.Tensor]) -> None:
+    def reset_layers_with_ref_dict(self, layer_reset_manager, ref_layer_state_dict: Dict[str, torch.Tensor], layer_indices: Optional[List[int]] = None) -> None:
         """
         Reset specific transformer layers of the actor model using pre-extracted reference state dict.
         This avoids Ray deadlock by not calling other Ray workers from within this worker.
@@ -891,6 +891,7 @@ class ActorRolloutRefWorker(Worker):
         Args:
             layer_reset_manager: LayerResetManager instance with reset configuration
             ref_layer_state_dict: Pre-extracted reference layer state dict (on CPU)
+            layer_indices: Optional explicit list of layer indices to reset. If provided, use these directly.
         """
         if not self._is_actor:
             return  # Only reset if this worker has an actor
@@ -902,8 +903,12 @@ class ActorRolloutRefWorker(Worker):
         total_layers = len(transformer_layers)
         print(f"[LAYER_RESET_DEBUG] Actor model has {total_layers} transformer layers")
         
-        # Get layer indices to reset
-        layer_indices = layer_reset_manager.get_layer_indices_to_reset(total_layers)
+        # Determine layer indices to reset
+        if layer_indices is None:
+            layer_indices = layer_reset_manager.get_layer_indices_to_reset(total_layers)
+        else:
+            # sanitize and cap to valid range
+            layer_indices = sorted({idx for idx in layer_indices if 0 <= idx < total_layers})
         
         if not layer_indices:
             print(f"[LAYER_RESET_DEBUG] No layers to reset for actor")
@@ -927,7 +932,8 @@ class ActorRolloutRefWorker(Worker):
             model=self.actor_module_fsdp,
             ref_layer_state_dict=ref_layer_state_dict,
             reset_k_first=layer_reset_manager.reset_k_first,
-            reset_k_last=layer_reset_manager.reset_k_last
+            reset_k_last=layer_reset_manager.reset_k_last,
+            layer_indices=layer_indices
         )
         
         # Reset optimizer states for affected parameters
@@ -1792,7 +1798,7 @@ class CriticWorker(Worker):
         print(f"[LAYER_RESET_DEBUG] Critic layer reset completed")
     
     @register(dispatch_mode=Dispatch.ONE_TO_ALL)
-    def reset_layers_with_ref_dict(self, layer_reset_manager, ref_layer_state_dict: Dict[str, torch.Tensor]) -> None:
+    def reset_layers_with_ref_dict(self, layer_reset_manager, ref_layer_state_dict: Dict[str, torch.Tensor], layer_indices: Optional[List[int]] = None) -> None:
         """
         Reset specific transformer layers of the critic model using pre-extracted reference state dict.
         This avoids Ray deadlock by not calling other Ray workers from within this worker.
@@ -1800,6 +1806,7 @@ class CriticWorker(Worker):
         Args:
             layer_reset_manager: LayerResetManager instance with reset configuration
             ref_layer_state_dict: Pre-extracted reference layer state dict (on CPU)
+            layer_indices: Optional explicit list of layer indices to reset. If provided, use these directly.
         """
         if not layer_reset_manager.reset_critic:
             return  # Only reset if critic reset is enabled
@@ -1811,8 +1818,12 @@ class CriticWorker(Worker):
         total_layers = len(transformer_layers)
         print(f"[LAYER_RESET_DEBUG] Critic model has {total_layers} transformer layers")
         
-        # Get layer indices to reset
-        layer_indices = layer_reset_manager.get_layer_indices_to_reset(total_layers)
+        # Determine layer indices to reset
+        if layer_indices is None:
+            layer_indices = layer_reset_manager.get_layer_indices_to_reset(total_layers)
+        else:
+            # sanitize and cap to valid range
+            layer_indices = sorted({idx for idx in layer_indices if 0 <= idx < total_layers})
         
         if not layer_indices:
             print(f"[LAYER_RESET_DEBUG] No layers to reset for critic")
@@ -1836,7 +1847,8 @@ class CriticWorker(Worker):
             model=self.critic_module,
             ref_layer_state_dict=ref_layer_state_dict,
             reset_k_first=layer_reset_manager.reset_k_first,
-            reset_k_last=layer_reset_manager.reset_k_last
+            reset_k_last=layer_reset_manager.reset_k_last,
+            layer_indices=layer_indices
         )
         
         # Reset optimizer states for affected parameters

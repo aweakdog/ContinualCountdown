@@ -1419,12 +1419,12 @@ class RayPPOTrainer(object):
                                         try:
                                             direct_reset = getattr(self.actor_rollout_wg, 'reset_layers_with_ref_dict', None)
                                             if callable(direct_reset):
-                                                direct_reset(self.layer_reset_manager, ref_layer_state_dict)
+                                                direct_reset(self.layer_reset_manager, ref_layer_state_dict, layers_to_reset)
                                             else:
-                                                self.actor_rollout_wg.execute_all_sync('reset_layers_with_ref_dict', self.layer_reset_manager, ref_layer_state_dict)
+                                                self.actor_rollout_wg.execute_all_sync('reset_layers_with_ref_dict', self.layer_reset_manager, ref_layer_state_dict, layers_to_reset)
                                         except Exception as e:
                                             print(f"[CK_RESET_ERROR] Actor reset direct path failed: {e}; falling back to execute_all_sync")
-                                            self.actor_rollout_wg.execute_all_sync('reset_layers_with_ref_dict', self.layer_reset_manager, ref_layer_state_dict)
+                                            self.actor_rollout_wg.execute_all_sync('reset_layers_with_ref_dict', self.layer_reset_manager, ref_layer_state_dict, layers_to_reset)
                                         print(f"[CK_RESET_EXECUTE] Actor layers reset completed")
 
                                         if verify_samples:
@@ -1460,12 +1460,12 @@ class RayPPOTrainer(object):
                                             try:
                                                 critic_direct_reset = getattr(self.critic_wg, 'reset_layers_with_ref_dict', None)
                                                 if callable(critic_direct_reset):
-                                                    critic_direct_reset(self.layer_reset_manager, ref_layer_state_dict)
+                                                    critic_direct_reset(self.layer_reset_manager, ref_layer_state_dict, layers_to_reset)
                                                 else:
-                                                    self.critic_wg.execute_all_sync('reset_layers_with_ref_dict', self.layer_reset_manager, ref_layer_state_dict)
+                                                    self.critic_wg.execute_all_sync('reset_layers_with_ref_dict', self.layer_reset_manager, ref_layer_state_dict, layers_to_reset)
                                             except Exception as e:
                                                 print(f"[CK_RESET_ERROR] Critic reset direct path failed: {e}; falling back to execute_all_sync")
-                                                self.critic_wg.execute_all_sync('reset_layers_with_ref_dict', self.layer_reset_manager, ref_layer_state_dict)
+                                                self.critic_wg.execute_all_sync('reset_layers_with_ref_dict', self.layer_reset_manager, ref_layer_state_dict, layers_to_reset)
                                             print(f"[CK_RESET_EXECUTE] Critic layers reset completed")
 
                                         print(f"[CK_RESET_EXECUTE] *** CK RESET COMPLETED at global step {self.global_steps} (CURRICULUM) ***")

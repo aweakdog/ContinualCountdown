@@ -14,9 +14,9 @@ echo "[Model Config] SFT model name: $SFT_MODEL_NAME"
 echo "[Model Config] SFT checkpoint: $SFT_CHECKPOINT"
 
 # Experiment repetition control parameters
-export EXP1_REPEAT_COUNT=${EXP1_REPEAT_COUNT:-3}  # Default: run Experiment 1 once
-export EXP2_REPEAT_COUNT=${EXP2_REPEAT_COUNT:-3}  # Default: run Experiment 2 twice
-export EXP3_REPEAT_COUNT=${EXP3_REPEAT_COUNT:-3}  # Default: run Experiment 3 twice
+export EXP1_REPEAT_COUNT=${EXP1_REPEAT_COUNT:-0}  # Default: run Experiment 1 once
+export EXP2_REPEAT_COUNT=${EXP2_REPEAT_COUNT:-2}  # Default: run Experiment 2 twice
+export EXP3_REPEAT_COUNT=${EXP3_REPEAT_COUNT:-0}  # Default: run Experiment 3 twice
 
 echo "[Experiment Config] Experiment 1 will run $EXP1_REPEAT_COUNT time(s)"
 echo "[Experiment Config] Experiment 2 will run $EXP2_REPEAT_COUNT time(s)"
@@ -51,7 +51,7 @@ export RAY_ANALYZER_GPU_COUNT=${RAY_ANALYZER_GPU_COUNT:-4}  # Use 4 GPUs for ana
 echo "[GPU Config] Training will use GPUs 0-3, Analyzers will use GPUs 4-7"
 
 # Legacy Layer Reset Configuration (DISABLED - using C_K reset instead)
-export LAYER_RESET_ENABLE=false # 没用参数
+export LAYER_RESET_ENABLE=false
 export LAYER_RESET_K_FIRST=0
 export LAYER_RESET_K_LAST=0
 export LAYER_RESET_STEPS="[]"
@@ -59,7 +59,7 @@ echo "[Layer Reset] Legacy layer reset disabled - using C_K-based reset instead"
 
 # C_K-Based Reset Configuration - Actor and Critic Reset
 # Actor C_K Reset (Fisher Information guided)
-export CK_RESET_ENABLE=${CK_RESET_ENABLE:-false}              # Enable actor C_K reset
+export CK_RESET_ENABLE=${CK_RESET_ENABLE:-true}              # Enable actor C_K reset
 export CK_RESET_STRATEGY=${CK_RESET_STRATEGY:-"ck_guided"}   # Actor strategy: ck_guided
 export CK_RESET_K_LAYERS=${CK_RESET_K_LAYERS:-15}            # Number of layers to reset
 export CK_RESET_STEPS=${CK_RESET_STEPS:-"[1,2,40,80,120]"}     # Reset at global steps

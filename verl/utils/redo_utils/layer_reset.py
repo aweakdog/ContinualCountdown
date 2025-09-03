@@ -266,7 +266,8 @@ class LayerResetManager:
         return layer_state_dict
     
     def reset_model_layers_from_ref(self, model: torch.nn.Module, ref_layer_state_dict: Dict[str, torch.Tensor],
-                                   reset_k_first: int, reset_k_last: int) -> Set[str]:
+                                   reset_k_first: int, reset_k_last: int,
+                                   layer_indices: Optional[List[int]] = None) -> Set[str]:
         """
         Reset specified transformer layers of a model using a reference layer state dict.
         This is a memory-efficient version that uses pre-extracted reference layers.
@@ -289,7 +290,11 @@ class LayerResetManager:
             return reset_param_names
             
         total_layers = len(transformer_layers)
-        layers_to_reset = self.get_layer_indices_to_reset(total_layers)
+        # Prefer explicitly provided indices, fallback to legacy k-first/last computation
+        if layer_indices is not None:
+            layers_to_reset = sorted({idx for idx in layer_indices if 0 <= idx < total_layers})
+        else:
+            layers_to_reset = self.get_layer_indices_to_reset(total_layers)
         
         print(f"[LAYER_RESET_DEBUG] Resetting layers {layers_to_reset} out of {total_layers} total layers")
         

@@ -1213,10 +1213,19 @@ class DataParallelPPOActor(BasePPOActor):
             else:
                 print(f"[CK_RESET_DEBUG] Actor: fisher_detailed_stats is None or empty")
         
-        # Get reset steps from configuration (passed from training script)
-        reset_steps = getattr(self.config, 'reset_steps', [1, 40, 80, 120])  # Default fallback
-        if hasattr(self.config, 'ck_reset') and hasattr(self.config.ck_reset, 'reset_steps'):
-            reset_steps = self.config.ck_reset.reset_steps
+        # Get CK reset configuration
+        ck_reset_config = self.config.get('ck_reset', {})
+        enable_reset = ck_reset_config.get('enable_reset', False)
+
+        if not enable_reset:
+            return {'should_reset': False, 'layer_ck_weights': {}}
+
+        # Get reset steps from configuration, which is required.
+        reset_steps = ck_reset_config.get('reset_steps')
+        if reset_steps is None:
+            # If not found, this is a configuration error. We should not proceed with a default.
+            raise ValueError("[CK_RESET_ERROR] 'reset_steps' is not defined in the configuration. "
+                             "Please provide it via 'ck_reset.reset_steps'.")
         should_reset = global_step in reset_steps
         print(f"[CK_RESET_DEBUG] Actor: should_reset = {should_reset} (step {global_step} in {reset_steps})")
         

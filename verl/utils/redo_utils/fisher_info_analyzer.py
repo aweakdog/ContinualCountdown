@@ -369,3 +369,51 @@ class FisherInfoAnalyzer:
               f"{len(current_stats['params'])} components")
         
         return {'params': current_stats['params']}
+    
+    def get_per_layer_ck_weights(self, identifier: str):
+        """
+        Calculate aggregated C_K_normalized values per layer for reset selection.
+        
+        Returns:
+            Dictionary with structure: {'layer_0': C_K_normalized_value, 'layer_1': ...}
+        """
+        current_stats = self.stats.get(identifier)
+        if not current_stats or 'params' not in current_stats:
+            print(f"[FisherInfoAnalyzer] No stats available for per-layer C_K calculation for '{identifier}'")
+            return {}
+        
+        layer_ck_weights = {}
+        
+        # Group parameters by layer and calculate weighted C_K for each layer
+        for component_name, component_data in current_stats['params'].items():
+            # Extract layer number from component name (e.g., "layer_23" -> 23)
+            import re
+            layer_match = re.search(r'layer[s]?[._]?(\d+)', component_name.lower())
+            if layer_match:
+                layer_idx = int(layer_match.group(1))
+                
+                # Calculate weighted C_K for this layer
+                total_c_k_weighted_sum = 0.0
+                total_param_count = 0
+                
+                for param_name, param_stats in component_data.items():
+                    c_k_value = param_stats.get('c_k', 0.0)
+                    
+                    # Get parameter count for weighting
+                    param_shape = self.param_shapes[identifier].get(param_name)
+                    if param_shape:
+                        num_params = param_shape.numel()
+                        total_c_k_weighted_sum += c_k_value * num_params
+                        total_param_count += num_params
+                
+                # Calculate normalized C_K for this layer
+                if total_param_count > 0:
+                    layer_ck_normalized = total_c_k_weighted_sum / total_param_count
+                    layer_ck_weights[layer_idx] = layer_ck_normalized
+                    print(f"[FisherInfoAnalyzer] Layer {layer_idx} C_K_normalized = {layer_ck_normalized:.4f} "
+                          f"(from {len(component_data)} params, {total_param_count} total params)")
+                else:
+                    print(f"[FisherInfoAnalyzer] Layer {layer_idx} has no valid parameters for C_K calculation")
+        
+        print(f"[FisherInfoAnalyzer] Calculated C_K weights for {len(layer_ck_weights)} layers")
+        return layer_ck_weights

@@ -1331,8 +1331,19 @@ class RayPPOTrainer(object):
                                         
                                         # Step 3: Get sample weights before reset for verification
                                         print(f"[CK_RESET_VERIFY] Getting sample weights before reset...")
-                                        before_weights = self.actor_rollout_wg.get_sample_layer_weights(layers_to_reset[:2])  # Sample first 2 layers
-                                        before_sample = before_weights[0] if before_weights else {}
+                                        # Call via RayWorkerGroup execution API to avoid attribute errors
+                                        bw_results = self.actor_rollout_wg.execute_all_sync(
+                                            'get_sample_layer_weights', layers_to_reset[:2]
+                                        )
+                                        # Normalize: pick the first non-empty dict result
+                                        before_sample = {}
+                                        if isinstance(bw_results, dict):
+                                            before_sample = bw_results
+                                        elif isinstance(bw_results, list):
+                                            for item in bw_results:
+                                                if isinstance(item, dict) and item:
+                                                    before_sample = item
+                                                    break
                                         print(f"[CK_RESET_VERIFY] Before reset - sample weights: {list(before_sample.keys())[:5]}")
                                         
                                         # Step 4: Apply to actor using traditional reset method (SAFE)
@@ -1342,8 +1353,17 @@ class RayPPOTrainer(object):
                                         
                                         # Step 5: Get sample weights after reset for verification
                                         print(f"[CK_RESET_VERIFY] Getting sample weights after reset...")
-                                        after_weights = self.actor_rollout_wg.get_sample_layer_weights(layers_to_reset[:2])  # Sample first 2 layers
-                                        after_sample = after_weights[0] if after_weights else {}
+                                        aw_results = self.actor_rollout_wg.execute_all_sync(
+                                            'get_sample_layer_weights', layers_to_reset[:2]
+                                        )
+                                        after_sample = {}
+                                        if isinstance(aw_results, dict):
+                                            after_sample = aw_results
+                                        elif isinstance(aw_results, list):
+                                            for item in aw_results:
+                                                if isinstance(item, dict) and item:
+                                                    after_sample = item
+                                                    break
                                         print(f"[CK_RESET_VERIFY] After reset - sample weights: {list(after_sample.keys())[:5]}")
                                         
                                         # Step 6: Compare weights to verify reset

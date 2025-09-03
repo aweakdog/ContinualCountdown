@@ -790,10 +790,14 @@ class ActorRolloutRefWorker(Worker):
         Returns:
             Dictionary containing parameters for specified layers (on CPU)
         """
+        print(f"[CK_RESET_DEBUG] get_layer_parameters called with role={self.role}, _is_ref={self._is_ref}, layer_indices={layer_indices}")
+        
         if not self._is_ref:
+            print(f"[CK_RESET_DEBUG] Worker is not reference (_is_ref=False), returning empty dict")
             return {}
         
         if not hasattr(self, 'ref_module_fsdp'):
+            print(f"[CK_RESET_DEBUG] Worker has no ref_module_fsdp, returning empty dict")
             return {}
         
         # Get reference base model
@@ -1555,7 +1559,7 @@ class CriticWorker(Worker):
     def apply_layer_parameters(self, layer_params: Dict[str, torch.Tensor]) -> int:
         """
         Apply layer parameters to critic model.
-        Simple parameter application without complex logic.
+        FSDP-aware: Only rank 0 applies parameters to avoid conflicts and reduce memory usage.
         
         Args:
             layer_params: Dictionary of parameters to apply
@@ -1565,6 +1569,13 @@ class CriticWorker(Worker):
         """
         if not layer_params:
             return 0
+        
+        # Only apply on rank 0 to avoid FSDP conflicts and reduce memory usage
+        rank = torch.distributed.get_rank() if torch.distributed.is_initialized() else 0
+        if rank != 0:
+            return 0
+        
+        print(f"[CK_RESET_DEBUG] Critic rank {rank}: Applying {len(layer_params)} layer parameters")
         
         # Get critic base model
         critic_base = self.critic_module._fsdp_wrapped_module if hasattr(self.critic_module, '_fsdp_wrapped_module') else self.critic_module

@@ -227,6 +227,7 @@ class DataParallelPPOActor(BasePPOActor):
     def apply_layer_parameters(self, layer_params: Dict[str, torch.Tensor]) -> int:
         """
         Apply layer parameters to actor model.
+        FSDP-aware: Only rank 0 applies parameters to avoid conflicts and reduce memory usage.
         
         Args:
             layer_params: Dictionary of parameters to apply
@@ -236,6 +237,13 @@ class DataParallelPPOActor(BasePPOActor):
         """
         if not layer_params:
             return 0
+        
+        # Only apply on rank 0 to avoid FSDP conflicts and reduce memory usage
+        rank = torch.distributed.get_rank() if torch.distributed.is_initialized() else 0
+        if rank != 0:
+            return 0
+        
+        print(f"[CK_RESET_DEBUG] Actor rank {rank}: Applying {len(layer_params)} layer parameters")
         
         # Get actor base model
         actor_base = self.actor_module._fsdp_wrapped_module if hasattr(self.actor_module, '_fsdp_wrapped_module') else self.actor_module

@@ -1507,6 +1507,27 @@ class CriticWorker(Worker):
             
             # Get parameters from reference worker using proper RayWorkerGroup method
             print(f"[CK_RESET_DEBUG] Critic: Calling get_layer_parameters on ref_worker for layers: {layers_to_reset}")
+            
+            # Debug: List all available methods on the ref_worker
+            try:
+                first_worker = ref_worker._workers[0] if hasattr(ref_worker, '_workers') and ref_worker._workers else None
+                if first_worker:
+                    # Get all methods that don't start with underscore
+                    available_methods = [attr for attr in dir(first_worker) if not attr.startswith('_') and callable(getattr(first_worker, attr, None))]
+                    print(f"[CK_RESET_DEBUG] Critic: Available methods on ref_worker: {available_methods[:20]}...")  # Show first 20
+                    
+                    # Check specifically for get_layer_parameters
+                    has_method = hasattr(first_worker, 'get_layer_parameters')
+                    print(f"[CK_RESET_DEBUG] Critic: ref_worker has get_layer_parameters method: {has_method}")
+                    
+                    # Check worker type
+                    worker_type = type(first_worker).__name__
+                    print(f"[CK_RESET_DEBUG] Critic: ref_worker type: {worker_type}")
+                else:
+                    print(f"[CK_RESET_DEBUG] Critic: ref_worker has no _workers or empty _workers list")
+            except Exception as debug_e:
+                print(f"[CK_RESET_DEBUG] Critic: Error debugging ref_worker: {debug_e}")
+            
             layer_params_futures = ref_worker.execute_all_async('get_layer_parameters', layers_to_reset)
             layer_params_results = ray.get(layer_params_futures)
             

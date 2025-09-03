@@ -1233,3 +1233,27 @@ class DataParallelPPOActor(BasePPOActor):
 
         self.actor_optimizer.zero_grad()
         return metrics
+
+    @register(dispatch_mode=Dispatch.ONE_TO_ALL)
+    def get_transformer_layer_count(self) -> int:
+        """
+        Get the number of transformer layers in the actor model.
+        This is used by the trainer to determine layer indices for reset.
+        
+        Returns:
+            int: Number of transformer layers in the actor model
+        """
+        try:
+            if hasattr(self, 'ck_reset_manager') and self.ck_reset_manager is not None:
+                transformer_layers = self.ck_reset_manager.get_transformer_layers(self.actor_module)
+                return len(transformer_layers)
+            else:
+                # Fallback: try to get layers directly
+                if hasattr(self.actor_module, 'model') and hasattr(self.actor_module.model, 'layers'):
+                    return len(self.actor_module.model.layers)
+                else:
+                    print(f"[ACTOR_DEBUG] Cannot determine transformer layer count")
+                    return 0
+        except Exception as e:
+            print(f"[ACTOR_DEBUG] Error getting transformer layer count: {e}")
+            return 0

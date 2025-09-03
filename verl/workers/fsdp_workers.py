@@ -883,6 +883,73 @@ class ActorRolloutRefWorker(Worker):
         return layer_params
 
     @register(dispatch_mode=Dispatch.ONE_TO_ALL)
+    def get_sample_layer_weights(self, layer_indices: List[int]) -> Dict[str, Any]:
+        """
+        Return small samples of parameters from specified transformer layers for verification.
+        Works for actor or ref roles. Returns CPU tensors/lists to minimize transfer.
+        """
+        try:
+            sample: Dict[str, Any] = {}
+            # Choose source module based on role
+            src_module = None
+            if self._is_actor and hasattr(self, 'actor_module_fsdp'):
+                src_module = self.actor_module_fsdp
+            elif self._is_ref and hasattr(self, 'ref_module_fsdp'):
+                src_module = self.ref_module_fsdp
+            else:
+                raise RuntimeError("get_sample_layer_weights can only be called on actor or ref workers with initialized modules")
+
+            # Unwrap if FSDP
+            try:
+                from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
+                base = src_module._fsdp_wrapped_module if isinstance(src_module, FSDP) else src_module
+            except Exception:
+                base = src_module
+
+            # Locate transformer layers container
+            transformer_layers = None
+            layer_container_path = None
+            for pattern in ['model.layers', 'transformer.h', 'transformer.layers', 'layers']:
+                try:
+                    container = base
+                    for attr in pattern.split('.'):
+                        container = getattr(container, attr)
+                    if isinstance(container, (list, torch.nn.ModuleList)):
+                        transformer_layers = list(container)
+                        layer_container_path = pattern
+                        break
+                except AttributeError:
+                    continue
+
+            if transformer_layers is None:
+                raise RuntimeError("Could not find transformer layers for sampling")
+
+            # Collect small samples for requested layers
+            for idx in layer_indices:
+                if idx < 0 or idx >= len(transformer_layers):
+                    continue
+                layer = transformer_layers[idx]
+                count = 0
+                for pname, p in layer.named_parameters(recurse=True):
+                    key = f"{layer_container_path}.{idx}.{pname}"
+                    # Take up to first 5 values to keep it light
+                    try:
+                        vals = p.detach().flatten()[:5].to('cpu')
+                        sample[key] = vals.tolist()
+                    except Exception:
+                        # Fallback to shape only
+                        sample[key] = list(p.shape)
+                    count += 1
+                    if count >= 4:
+                        break
+            return sample
+        except Exception as e:
+            print(f"[CK_RESET_DEBUG] get_sample_layer_weights error: {e}")
+            import traceback
+            print(f"[CK_RESET_DEBUG] Traceback: {traceback.format_exc()}")
+            return {}
+
+    @register(dispatch_mode=Dispatch.ONE_TO_ALL)
     def extract_layers_for_reset(self, layer_indices: List[int]) -> Dict[str, torch.Tensor]:
         """
         Extract specific transformer layers from reference model for layer reset.

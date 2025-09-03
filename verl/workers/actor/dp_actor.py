@@ -1273,11 +1273,38 @@ class DataParallelPPOActor(BasePPOActor):
         if should_reset and fisher_stats_for_reset:
             print(f"[CK_RESET_DEBUG] Actor: Attempting to calculate C_K weights...")
             try:
-                # Extract C_K values from Fisher stats for each layer
+                # Handle different Fisher stats structures
                 for component_name, component_stats in fisher_stats_for_reset.items():
-                    if 'layers.' in component_name:
-                        print(f"[CK_RESET_DEBUG] Actor: Processing component: {component_name}")
-                        # Extract layer index from component name (e.g., "layers.0" -> 0)
+                    print(f"[CK_RESET_DEBUG] Actor: Processing component: {component_name}")
+                    print(f"[CK_RESET_DEBUG] Actor: Component stats keys: {list(component_stats.keys()) if isinstance(component_stats, dict) else type(component_stats)}")
+                    
+                    if component_name == 'params':
+                        # Handle aggregated 'params' component - need to extract per-layer info
+                        if isinstance(component_stats, dict):
+                            # Look for layer-specific information within params
+                            for key, value in component_stats.items():
+                                print(f"[CK_RESET_DEBUG] Actor: Params sub-key: {key} = {value}")
+                                if 'layer' in key.lower():
+                                    # Try to extract layer index and Fisher value
+                                    try:
+                                        # Extract layer number from key (various formats)
+                                        import re
+                                        layer_match = re.search(r'layer[s]?[._]?(\d+)', key.lower())
+                                        if layer_match:
+                                            layer_idx = int(layer_match.group(1))
+                                            if isinstance(value, (int, float)):
+                                                layer_ck_weights[layer_idx] = float(value)
+                                                print(f"[CK_RESET_DEBUG] Actor: Layer {layer_idx} C_K weight = {value}")
+                                    except Exception as e:
+                                        print(f"[CK_RESET_DEBUG] Actor: Error parsing layer from {key}: {e}")
+                            
+                            # If no layer-specific info found, leave weights empty
+                            if not layer_ck_weights:
+                                print(f"[CK_RESET_DEBUG] Actor: No layer-specific Fisher info found in params component")
+                    
+                    elif 'layers.' in component_name:
+                        # Handle explicit layer component names
+                        print(f"[CK_RESET_DEBUG] Actor: Processing explicit layer component: {component_name}")
                         layer_parts = component_name.split('.')
                         for i, part in enumerate(layer_parts):
                             if part == 'layers' and i + 1 < len(layer_parts):
@@ -1296,6 +1323,7 @@ class DataParallelPPOActor(BasePPOActor):
                                 except (ValueError, IndexError) as e:
                                     print(f"[CK_RESET_DEBUG] Actor: Error parsing layer index from {component_name}: {e}")
                                     continue
+                
                 print(f"[CK_RESET_DEBUG] Actor: Final C_K weights: {len(layer_ck_weights)} layers")
             except Exception as e:
                 print(f"[CK_RESET_DEBUG] Actor: Error calculating C_K weights: {e}")

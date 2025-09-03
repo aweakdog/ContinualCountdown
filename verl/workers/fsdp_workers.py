@@ -1543,9 +1543,16 @@ class CriticWorker(Worker):
             except Exception as debug_e:
                 print(f"[CK_RESET_DEBUG] Critic: Error debugging ref_worker: {debug_e}")
             
-            # Use execute_rank_zero_async to call the reference worker's get_layer_parameters method
-            layer_params_future = ref_worker.execute_rank_zero_async('get_layer_parameters', layers_to_reset)
-            layer_params = ray.get(layer_params_future)
+            # Use execute_all_async to ensure we get parameters from the actual reference worker
+            layer_params_futures = ref_worker.execute_all_async('ref_get_layer_parameters', layers_to_reset)
+            layer_params_results = ray.get(layer_params_futures)
+            
+            # Find the first non-empty result (from the actual reference worker)
+            layer_params = {}
+            for result in layer_params_results:
+                if result:  # Non-empty dictionary
+                    layer_params = result
+                    break
             
             if not layer_params:
                 return {'reset_params_count': 0, 'reset_layers': []}

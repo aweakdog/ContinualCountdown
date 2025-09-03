@@ -1246,17 +1246,40 @@ class RayPPOTrainer(object):
                             layer_ck_weights = {}
                             
                             # Get CK reset status from actor worker (using current step)
-                            actor_status_list = self.actor_rollout_wg.get_ck_reset_status(self.global_steps)
-                            
-                            # The call returns a list of lists: [[result_rank0, result_rank1], ...]
-                            # We need the result from the first worker, and from the first rank within that worker.
-                            if actor_status_list and actor_status_list[0] and actor_status_list[0][0]:
-                                result = actor_status_list[0][0]
+                            actor_status_raw = self.actor_rollout_wg.get_ck_reset_status(self.global_steps)
+
+                            # Normalize various possible return structures from RayWorkerGroup into a single dict
+                            # Expected final structure: { 'should_reset': bool, 'layer_ck_weights': dict }
+                            def _extract_first_result(obj):
+                                # Handle None
+                                if obj is None:
+                                    return None
+                                # If already a dict with expected keys
+                                if isinstance(obj, dict) and ('should_reset' in obj or 'layer_ck_weights' in obj):
+                                    return obj
+                                # If list/tuple, try first non-empty element recursively
+                                if isinstance(obj, (list, tuple)):
+                                    for item in obj:
+                                        res = _extract_first_result(item)
+                                        if res is not None:
+                                            return res
+                                    return None
+                                # If dict but not the final one, try values by key order
+                                if isinstance(obj, dict):
+                                    for _, v in obj.items():
+                                        res = _extract_first_result(v)
+                                        if res is not None:
+                                            return res
+                                    return None
+                                return None
+
+                            result = _extract_first_result(actor_status_raw)
+                            if result is not None:
                                 should_reset = result.get('should_reset', False)
                                 layer_ck_weights = result.get('layer_ck_weights', {})
                                 print(f"[CK_RESET_DEBUG] Curriculum: Actor reports should_reset={should_reset}, layers={len(layer_ck_weights)}")
                             else:
-                                print(f"[CK_RESET_DEBUG] Curriculum: No CK reset status from actor")
+                                print(f"[CK_RESET_DEBUG] Curriculum: No CK reset status from actor (raw={type(actor_status_raw)}): {actor_status_raw}")
 
                             if should_reset:
                                 with _timer('layer_reset', timing_raw):

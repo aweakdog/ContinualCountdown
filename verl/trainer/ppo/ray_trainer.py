@@ -1271,9 +1271,10 @@ class RayPPOTrainer(object):
                                     
                                     # Step 1: Get layers to reset from actor (using C_K weights)
                                     if layer_ck_weights:
-                                        # Get total layers count from actor
-                                        total_layers_list = self.actor_rollout_wg.get_transformer_layer_count()
-                                        total_layers = total_layers_list[0] if isinstance(total_layers_list, list) else total_layers_list
+                                        # Get total layers count from actor using proper RayWorkerGroup method
+                                        total_layers_futures = self.actor_rollout_wg.apply_async('get_transformer_layer_count')
+                                        total_layers_results = ray.get(total_layers_futures)
+                                        total_layers = total_layers_results[0] if total_layers_results else 28  # Default fallback
                                         
                                         # Calculate layers to reset based on C_K weights (in trainer)
                                         sorted_layers = sorted(layer_ck_weights.items(), key=lambda x: x[1], reverse=True)

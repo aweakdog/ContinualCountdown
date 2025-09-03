@@ -803,6 +803,15 @@ class ActorRolloutRefWorker(Worker):
             print(f"[CK_RESET_DEBUG] Worker has no ref_module_fsdp, returning empty dict")
             return {}
         
+        # Add distributed barrier to ensure all ranks are synchronized
+        try:
+            import torch.distributed as dist
+            if dist.is_initialized():
+                print(f"[CK_RESET_DEBUG] Adding distributed barrier before parameter access")
+                dist.barrier()
+        except Exception as barrier_e:
+            print(f"[CK_RESET_DEBUG] Barrier failed or not needed: {barrier_e}")
+        
         # Get reference base model
         ref_base = self.ref_module_fsdp._fsdp_wrapped_module if hasattr(self.ref_module_fsdp, '_fsdp_wrapped_module') else self.ref_module_fsdp
         
@@ -823,13 +832,45 @@ class ActorRolloutRefWorker(Worker):
         
         # Get parameters for specified layers
         layer_params = {}
-        for layer_idx in layer_indices:
-            if layer_idx < len(ref_layers):
-                ref_layer = ref_layers[layer_idx]
-                for param_name, param in ref_layer.named_parameters():
-                    key = f"layer_{layer_idx}.{param_name}"
-                    layer_params[key] = param.data.detach().cpu().clone()
+        print(f"[CK_RESET_DEBUG] Starting parameter extraction for {len(layer_indices)} layers")
         
+        try:
+            from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
+            
+            for layer_idx in layer_indices:
+                print(f"[CK_RESET_DEBUG] Processing layer {layer_idx}")
+                
+                if layer_idx >= len(ref_layers):
+                    print(f"[CK_RESET_DEBUG] Layer {layer_idx} out of range (max: {len(ref_layers)-1})")
+                    continue
+                
+                ref_layer = ref_layers[layer_idx]
+                print(f"[CK_RESET_DEBUG] Got ref_layer {layer_idx}, type: {type(ref_layer)}")
+                
+                # Use FSDP context for parameter access if layer is FSDP wrapped
+                if isinstance(ref_layer, FSDP):
+                    print(f"[CK_RESET_DEBUG] Layer {layer_idx} is FSDP wrapped, using summon_full_params")
+                    with FSDP.summon_full_params(ref_layer, recurse=False):
+                        for param_name, param in ref_layer.named_parameters():
+                            key = f"layer_{layer_idx}.{param_name}"
+                            layer_params[key] = param.data.detach().cpu().clone()
+                            print(f"[CK_RESET_DEBUG] Extracted {key}, shape: {param.shape}")
+                else:
+                    print(f"[CK_RESET_DEBUG] Layer {layer_idx} is not FSDP wrapped, direct access")
+                    for param_name, param in ref_layer.named_parameters():
+                        key = f"layer_{layer_idx}.{param_name}"
+                        layer_params[key] = param.data.detach().cpu().clone()
+                        print(f"[CK_RESET_DEBUG] Extracted {key}, shape: {param.shape}")
+                
+                print(f"[CK_RESET_DEBUG] Completed layer {layer_idx}")
+        
+        except Exception as e:
+            print(f"[CK_RESET_DEBUG] Error during parameter extraction: {e}")
+            import traceback
+            print(f"[CK_RESET_DEBUG] Traceback: {traceback.format_exc()}")
+            return {}
+        
+        print(f"[CK_RESET_DEBUG] Parameter extraction completed, total params: {len(layer_params)}")
         return layer_params
 
     @register(dispatch_mode=Dispatch.ONE_TO_ALL)

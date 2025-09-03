@@ -152,47 +152,6 @@ class DataParallelPPOActor(BasePPOActor):
         self.debug_fqn_printed = False
 
     @register(dispatch_mode=Dispatch.ONE_TO_ALL)
-    def get_ck_reset_status(self, global_step: int) -> Dict[str, Any]:
-        """
-        Check if CK reset should be performed and return status with C_K weights.
-        
-        Args:
-            global_step: Current global step
-            
-        Returns:
-            Dictionary with reset status and C_K weights
-        """
-        if not hasattr(self, 'ck_reset_manager') or self.ck_reset_manager is None:
-            return {'should_reset': False, 'layer_ck_weights': {}}
-        
-        try:
-            # Check if we have Fisher stats from the last analysis
-            fisher_stats_for_reset = None
-            if hasattr(self, 'fisher_detailed_stats'):
-                fisher_stats_for_reset = self.fisher_detailed_stats
-            
-            # Check if reset should be performed and calculate C_K weights if needed
-            should_reset_ck, _ = self.ck_reset_manager.should_reset_with_ck_analysis(
-                global_step, fisher_stats_for_reset
-            )
-            
-            # Calculate C_K weights if reset is needed and we have Fisher stats
-            layer_ck_weights = {}
-            if should_reset_ck and fisher_stats_for_reset and self.ck_reset_manager.reset_strategy == 'ck_guided':
-                layer_ck_weights = self.ck_reset_manager.calculate_layer_ck_weights(
-                    fisher_stats_for_reset, self.original_param_shapes or {}
-                )
-            
-            return {
-                'should_reset': should_reset_ck,
-                'layer_ck_weights': layer_ck_weights or {}
-            }
-            
-        except Exception as e:
-            print(f"[CK_RESET_ERROR] Actor: Error in get_ck_reset_status: {e}")
-            return {'should_reset': False, 'layer_ck_weights': {}}
-
-    @register(dispatch_mode=Dispatch.ONE_TO_ALL)
     def reset_model_with_ck_analysis(self, layer_ck_weights: Dict[int, float], 
                                    global_step: int, ref_worker) -> Dict[str, Any]:
         """
@@ -283,47 +242,6 @@ class DataParallelPPOActor(BasePPOActor):
             print(f"[ACTOR_RESET_SYNC] Saved reset layers {selected_layers} for step {global_step} via Ray")
         except Exception as e:
             print(f"[ACTOR_RESET_SYNC] Failed to save reset layers: {e}")
-
-    @register(dispatch_mode=Dispatch.ONE_TO_ALL)
-    def get_ck_reset_status(self, global_step: int) -> Dict[str, Any]:
-        """
-        Check if CK reset should be performed and return status with C_K weights.
-        
-        Args:
-            global_step: Current global step
-            
-        Returns:
-            Dictionary with reset status and C_K weights
-        """
-        if not hasattr(self, 'ck_reset_manager') or self.ck_reset_manager is None:
-            return {'should_reset': False, 'layer_ck_weights': {}}
-        
-        try:
-            # Check if we have Fisher stats from the last analysis
-            fisher_stats_for_reset = None
-            if hasattr(self, 'fisher_detailed_stats'):
-                fisher_stats_for_reset = self.fisher_detailed_stats
-            
-            # Check if reset should be performed and calculate C_K weights if needed
-            should_reset_ck, _ = self.ck_reset_manager.should_reset_with_ck_analysis(
-                global_step, fisher_stats_for_reset
-            )
-            
-            # Calculate C_K weights if reset is needed and we have Fisher stats
-            layer_ck_weights = {}
-            if should_reset_ck and fisher_stats_for_reset and self.ck_reset_manager.reset_strategy == 'ck_guided':
-                layer_ck_weights = self.ck_reset_manager.calculate_layer_ck_weights(
-                    fisher_stats_for_reset, self.original_param_shapes or {}
-                )
-            
-            return {
-                'should_reset': should_reset_ck,
-                'layer_ck_weights': layer_ck_weights or {}
-            }
-            
-        except Exception as e:
-            print(f"[CK_RESET_ERROR] Actor: Error in get_ck_reset_status: {e}")
-            return {'should_reset': False, 'layer_ck_weights': {}}
 
     @register(dispatch_mode=Dispatch.ONE_TO_ALL)
     def apply_layer_parameters(self, layer_params: Dict[str, torch.Tensor]) -> int:

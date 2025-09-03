@@ -1260,11 +1260,45 @@ class DataParallelPPOActor(BasePPOActor):
                 # Show first few component names for debugging
                 component_names = list(fisher_stats_for_reset.keys())[:5]
                 print(f"[CK_RESET_DEBUG] Actor: Sample component names: {component_names}")
+                
+                # DETAILED STRUCTURE INSPECTION
+                for comp_name, comp_data in fisher_stats_for_reset.items():
+                    print(f"[CK_RESET_DEBUG] Actor: === COMPONENT '{comp_name}' STRUCTURE ===")
+                    print(f"[CK_RESET_DEBUG] Actor: Component type: {type(comp_data)}")
+                    
+                    if isinstance(comp_data, dict):
+                        print(f"[CK_RESET_DEBUG] Actor: Component has {len(comp_data)} keys")
+                        param_names = list(comp_data.keys())[:10]  # Show first 10 parameter names
+                        print(f"[CK_RESET_DEBUG] Actor: Sample parameter names: {param_names}")
+                        
+                        # Inspect first parameter's structure
+                        if param_names:
+                            first_param = param_names[0]
+                            first_param_data = comp_data[first_param]
+                            print(f"[CK_RESET_DEBUG] Actor: First param '{first_param}' type: {type(first_param_data)}")
+                            
+                            if isinstance(first_param_data, dict):
+                                param_keys = list(first_param_data.keys())
+                                print(f"[CK_RESET_DEBUG] Actor: First param keys: {param_keys}")
+                                
+                                # Show c_k value if exists
+                                if 'c_k' in first_param_data:
+                                    c_k_val = first_param_data['c_k']
+                                    print(f"[CK_RESET_DEBUG] Actor: First param c_k value: {c_k_val} (type: {type(c_k_val)})")
+                                else:
+                                    print(f"[CK_RESET_DEBUG] Actor: First param does NOT have 'c_k' key")
+                            else:
+                                print(f"[CK_RESET_DEBUG] Actor: First param data is not dict: {first_param_data}")
+                    else:
+                        print(f"[CK_RESET_DEBUG] Actor: Component data is not dict: {comp_data}")
+                    print(f"[CK_RESET_DEBUG] Actor: === END COMPONENT '{comp_name}' ===")
             else:
                 print(f"[CK_RESET_DEBUG] Actor: fisher_detailed_stats is None or empty")
         
-        # Simple step-based reset trigger (can be made configurable)
-        reset_steps = [1, 40, 80, 120]  # Example reset steps
+        # Get reset steps from configuration (passed from training script)
+        reset_steps = getattr(self.config, 'reset_steps', [1, 40, 80, 120])  # Default fallback
+        if hasattr(self.config, 'ck_reset') and hasattr(self.config.ck_reset, 'reset_steps'):
+            reset_steps = self.config.ck_reset.reset_steps
         should_reset = global_step in reset_steps
         print(f"[CK_RESET_DEBUG] Actor: should_reset = {should_reset} (step {global_step} in {reset_steps})")
         
@@ -1285,10 +1319,12 @@ class DataParallelPPOActor(BasePPOActor):
                     for component_name, component_stats in fisher_stats_for_reset.items():
                         print(f"[CK_RESET_DEBUG] Actor: Processing component: {component_name}")
                         
-                        # Extract layer number from component name
+                        # Handle both layer-specific components and generic "params" component
                         import re
                         layer_match = re.search(r'layer[s]?[._]?(\d+)', component_name.lower())
+                        
                         if layer_match:
+                            # Layer-specific component (e.g., "layer_0", "layer.1")
                             layer_idx = int(layer_match.group(1))
                             
                             # Calculate simple average of c_k values for this layer
@@ -1303,6 +1339,32 @@ class DataParallelPPOActor(BasePPOActor):
                                     layer_avg_ck = sum(c_k_values) / len(c_k_values)
                                     layer_ck_weights[layer_idx] = layer_avg_ck
                                     print(f"[CK_RESET_DEBUG] Actor: Layer {layer_idx} avg C_K = {layer_avg_ck:.4f} (from {len(c_k_values)} params)")
+                        
+                        elif component_name.lower() in ['params', 'parameters', 'model']:
+                            # Generic component - extract layer info from parameter names
+                            print(f"[CK_RESET_DEBUG] Actor: Processing generic component '{component_name}' with parameter-level parsing")
+                            
+                            if isinstance(component_stats, dict):
+                                for param_name, param_stats in component_stats.items():
+                                    if isinstance(param_stats, dict) and 'c_k' in param_stats:
+                                        # Extract layer number from parameter name (e.g., "layers.0.self_attn.q_proj.weight")
+                                        param_layer_match = re.search(r'layers?[._](\d+)', param_name.lower())
+                                        if param_layer_match:
+                                            layer_idx = int(param_layer_match.group(1))
+                                            c_k_value = param_stats['c_k']
+                                            
+                                            # Accumulate c_k values for each layer
+                                            if layer_idx not in layer_ck_weights:
+                                                layer_ck_weights[layer_idx] = []
+                                            layer_ck_weights[layer_idx].append(c_k_value)
+                                            print(f"[CK_RESET_DEBUG] Actor: Found param '{param_name}' -> Layer {layer_idx}, C_K = {c_k_value:.4f}")
+                                
+                                # Average the c_k values for each layer
+                                for layer_idx, c_k_list in list(layer_ck_weights.items()):
+                                    if isinstance(c_k_list, list):
+                                        layer_avg_ck = sum(c_k_list) / len(c_k_list)
+                                        layer_ck_weights[layer_idx] = layer_avg_ck
+                                        print(f"[CK_RESET_DEBUG] Actor: Layer {layer_idx} avg C_K = {layer_avg_ck:.4f} (from {len(c_k_list)} params)")
                 
                 print(f"[CK_RESET_DEBUG] Actor: Final C_K weights: {len(layer_ck_weights)} layers")
             except Exception as e:

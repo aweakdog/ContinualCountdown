@@ -373,47 +373,66 @@ class FisherInfoAnalyzer:
     def get_per_layer_ck_weights(self, identifier: str):
         """
         Calculate aggregated C_K_normalized values per layer for reset selection.
+        Uses historical sliding window like overall C_K calculation.
         
         Returns:
             Dictionary with structure: {'layer_0': C_K_normalized_value, 'layer_1': ...}
         """
-        current_stats = self.stats.get(identifier)
-        if not current_stats or 'params' not in current_stats:
-            print(f"[FisherInfoAnalyzer] No stats available for per-layer C_K calculation for '{identifier}'")
+        # Check if we have parameter history for this identifier
+        if identifier not in self.param_history or 'params' not in self.param_history[identifier]:
+            print(f"[FisherInfoAnalyzer] No parameter history available for per-layer C_K calculation for '{identifier}'")
             return {}
         
         layer_ck_weights = {}
+        layer_param_groups = {}  # Group parameters by layer
         
-        # Group parameters by layer and calculate weighted C_K for each layer
-        for component_name, component_data in current_stats['params'].items():
-            # Extract layer number from component name (e.g., "layer_23" -> 23)
+        # First, group all parameters by layer
+        param_hist = self.param_history[identifier]['params']
+        for param_name, param_data in param_hist.items():
+            # Extract layer number from parameter name (e.g., "layers.0.self_attn.q_proj.weight" -> 0)
             import re
-            layer_match = re.search(r'layer[s]?[._]?(\d+)', component_name.lower())
+            layer_match = re.search(r'layers?[._](\d+)', param_name.lower())
             if layer_match:
                 layer_idx = int(layer_match.group(1))
                 
-                # Calculate weighted C_K for this layer
-                total_c_k_weighted_sum = 0.0
-                total_param_count = 0
+                if layer_idx not in layer_param_groups:
+                    layer_param_groups[layer_idx] = []
+                layer_param_groups[layer_idx].append(param_name)
+        
+        # Calculate weighted historical C_K for each layer
+        for layer_idx, param_names in layer_param_groups.items():
+            total_c_k_weighted_sum = 0.0
+            total_param_count = 0
+            valid_params = 0
+            
+            for param_name in param_names:
+                param_data = param_hist[param_name]
                 
-                for param_name, param_stats in component_data.items():
-                    c_k_value = param_stats.get('c_k', 0.0)
+                # Use historical c_k values (sliding window average like overall C_K)
+                if param_data['c_k_history']:
+                    # Calculate C_K for this parameter from its history (same as overall method)
+                    C_K_param = np.mean(param_data['c_k_history'])
                     
                     # Get parameter count for weighting
                     param_shape = self.param_shapes[identifier].get(param_name)
                     if param_shape:
                         num_params = param_shape.numel()
-                        total_c_k_weighted_sum += c_k_value * num_params
+                        total_c_k_weighted_sum += C_K_param * num_params
                         total_param_count += num_params
-                
-                # Calculate normalized C_K for this layer
-                if total_param_count > 0:
-                    layer_ck_normalized = total_c_k_weighted_sum / total_param_count
-                    layer_ck_weights[layer_idx] = layer_ck_normalized
-                    print(f"[FisherInfoAnalyzer] Layer {layer_idx} C_K_normalized = {layer_ck_normalized:.4f} "
-                          f"(from {len(component_data)} params, {total_param_count} total params)")
-                else:
-                    print(f"[FisherInfoAnalyzer] Layer {layer_idx} has no valid parameters for C_K calculation")
+                        valid_params += 1
+                        
+                        print(f"[FisherInfoAnalyzer] Layer {layer_idx} param '{param_name}': "
+                              f"C_K_historical = {C_K_param:.6f} (from {len(param_data['c_k_history'])} steps), "
+                              f"num_params = {num_params}")
+            
+            # Calculate normalized C_K for this layer using historical data
+            if total_param_count > 0 and valid_params > 0:
+                layer_ck_normalized = total_c_k_weighted_sum / total_param_count
+                layer_ck_weights[layer_idx] = layer_ck_normalized
+                print(f"[FisherInfoAnalyzer] Layer {layer_idx} C_K_normalized_historical = {layer_ck_normalized:.6f} "
+                      f"(from {valid_params} params, {total_param_count} total params)")
+            else:
+                print(f"[FisherInfoAnalyzer] Layer {layer_idx} has no valid historical parameters for C_K calculation")
         
-        print(f"[FisherInfoAnalyzer] Calculated C_K weights for {len(layer_ck_weights)} layers")
+        print(f"[FisherInfoAnalyzer] Calculated historical C_K weights for {len(layer_ck_weights)} layers")
         return layer_ck_weights

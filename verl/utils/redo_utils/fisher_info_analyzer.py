@@ -355,26 +355,36 @@ class FisherInfoAnalyzer:
     
     def get_detailed_component_stats(self, identifier: str):
         """
-        Returns detailed per-component and per-parameter statistics for C_K reset analysis.
+        Returns detailed component-level statistics for C_K reset analysis.
+        Includes pre-calculated layer-level C_K weights using historical sliding window.
         
         Returns:
-            Dictionary with structure: {'params': {'component_name': {'param_name': {'c_k': value}}}}
+            Dictionary with structure: 
+            {
+                'params': {'component_name': {'param_name': {'c_k': value}}},
+                'layer_ck_weights': {layer_idx: historical_ck_weight}
+            }
         """
         current_stats = self.stats.get(identifier)
         if not current_stats or 'params' not in current_stats:
             print(f"[FisherInfoAnalyzer] No detailed stats available for identifier '{identifier}'")
             return {}
         
-        print(f"[FisherInfoAnalyzer] Returning detailed component stats for '{identifier}': "
-              f"{len(current_stats['params'])} components")
+        # Calculate pre-computed layer-level C_K weights using historical sliding window
+        layer_ck_weights = self.get_per_layer_ck_weights(identifier)
         
-        return {'params': current_stats['params']}
+        print(f"[FisherInfoAnalyzer] Returning detailed component stats for '{identifier}': "
+              f"{len(current_stats['params'])} components, {len(layer_ck_weights)} layer weights")
+        
+        return {
+            'params': current_stats['params'],
+            'layer_ck_weights': layer_ck_weights  # Pre-calculated with sliding window
+        }
     
     def get_per_layer_ck_weights(self, identifier: str):
         """
         Calculate aggregated C_K_normalized values per layer for reset selection.
         Uses historical sliding window like overall C_K calculation.
-        
         Returns:
             Dictionary with structure: {'layer_0': C_K_normalized_value, 'layer_1': ...}
         """

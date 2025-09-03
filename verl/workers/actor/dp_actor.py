@@ -1314,57 +1314,49 @@ class DataParallelPPOActor(BasePPOActor):
                     for layer_idx, ck_weight in layer_ck_weights.items():
                         print(f"[CK_RESET_DEBUG] Actor: Layer {layer_idx} C_K_normalized = {ck_weight:.4f}")
                 else:
-                    print(f"[CK_RESET_DEBUG] Actor: No Fisher analyzer available, falling back to manual parsing")
-                    # Fallback to manual parsing if Fisher analyzer is not available
-                    for component_name, component_stats in fisher_stats_for_reset.items():
-                        print(f"[CK_RESET_DEBUG] Actor: Processing component: {component_name}")
-                        
-                        # Handle both layer-specific components and generic "params" component
-                        import re
-                        layer_match = re.search(r'layer[s]?[._]?(\d+)', component_name.lower())
-                        
-                        if layer_match:
-                            # Layer-specific component (e.g., "layer_0", "layer.1")
-                            layer_idx = int(layer_match.group(1))
-                            
-                            # Calculate simple average of c_k values for this layer
-                            if isinstance(component_stats, dict):
-                                c_k_values = []
-                                for param_name, param_stats in component_stats.items():
-                                    if isinstance(param_stats, dict) and 'c_k' in param_stats:
-                                        c_k_values.append(param_stats['c_k'])
+                    print(f"[CK_RESET_DEBUG] Actor: No Fisher analyzer available, checking for pre-calculated layer weights")
+                    
+                    # Check if Fisher analyzer pre-calculated layer weights are available
+                    if 'layer_ck_weights' in fisher_stats_for_reset:
+                        layer_ck_weights = fisher_stats_for_reset['layer_ck_weights']
+                        print(f"[CK_RESET_DEBUG] Actor: Using pre-calculated layer C_K weights: {len(layer_ck_weights)} layers")
+                        for layer_idx, ck_weight in layer_ck_weights.items():
+                            print(f"[CK_RESET_DEBUG] Actor: Layer {layer_idx} C_K_historical = {ck_weight:.6f}")
+                    else:
+                        print(f"[CK_RESET_DEBUG] Actor: No pre-calculated layer weights found, falling back to manual parsing")
+                        # Fallback to manual parsing if no pre-calculated weights
+                        for component_name, component_stats in fisher_stats_for_reset.items():
+                            if component_name == 'layer_ck_weights':
+                                continue  # Skip the weights we already checked
                                 
-                                if c_k_values:
-                                    # Simple average (not parameter-weighted)
-                                    layer_avg_ck = sum(c_k_values) / len(c_k_values)
-                                    layer_ck_weights[layer_idx] = layer_avg_ck
-                                    print(f"[CK_RESET_DEBUG] Actor: Layer {layer_idx} avg C_K = {layer_avg_ck:.4f} (from {len(c_k_values)} params)")
-                        
-                        elif component_name.lower() in ['params', 'parameters', 'model']:
-                            # Generic component - extract layer info from parameter names
-                            print(f"[CK_RESET_DEBUG] Actor: Processing generic component '{component_name}' with parameter-level parsing")
+                            print(f"[CK_RESET_DEBUG] Actor: Processing component: {component_name}")
                             
-                            if isinstance(component_stats, dict):
-                                for param_name, param_stats in component_stats.items():
-                                    if isinstance(param_stats, dict) and 'c_k' in param_stats:
-                                        # Extract layer number from parameter name (e.g., "layers.0.self_attn.q_proj.weight")
-                                        param_layer_match = re.search(r'layers?[._](\d+)', param_name.lower())
-                                        if param_layer_match:
-                                            layer_idx = int(param_layer_match.group(1))
-                                            c_k_value = param_stats['c_k']
+                            if component_name.lower() in ['params', 'parameters', 'model']:
+                                # Generic component - Fisher stats are organized by component names like 'layer_0', 'layer_1'
+                                print(f"[CK_RESET_DEBUG] Actor: Processing generic component '{component_name}' with component-level parsing")
+                                
+                                if isinstance(component_stats, dict):
+                                    import re
+                                    for comp_name, comp_data in component_stats.items():
+                                        # Check if this is a layer component (e.g., 'layer_0', 'layer_1')
+                                        layer_match = re.search(r'layer[s]?[._]?(\d+)', comp_name.lower())
+                                        if layer_match:
+                                            layer_idx = int(layer_match.group(1))
+                                            print(f"[CK_RESET_DEBUG] Actor: Found layer component '{comp_name}' -> Layer {layer_idx}")
                                             
-                                            # Accumulate c_k values for each layer
-                                            if layer_idx not in layer_ck_weights:
-                                                layer_ck_weights[layer_idx] = []
-                                            layer_ck_weights[layer_idx].append(c_k_value)
-                                            print(f"[CK_RESET_DEBUG] Actor: Found param '{param_name}' -> Layer {layer_idx}, C_K = {c_k_value:.4f}")
-                                
-                                # Average the c_k values for each layer
-                                for layer_idx, c_k_list in list(layer_ck_weights.items()):
-                                    if isinstance(c_k_list, list):
-                                        layer_avg_ck = sum(c_k_list) / len(c_k_list)
-                                        layer_ck_weights[layer_idx] = layer_avg_ck
-                                        print(f"[CK_RESET_DEBUG] Actor: Layer {layer_idx} avg C_K = {layer_avg_ck:.4f} (from {len(c_k_list)} params)")
+                                            # Process parameters within this layer component (fallback only)
+                                            if isinstance(comp_data, dict):
+                                                c_k_values = []
+                                                for param_name, param_stats in comp_data.items():
+                                                    if isinstance(param_stats, dict) and 'c_k' in param_stats:
+                                                        c_k_values.append(param_stats['c_k'])
+                                                
+                                                if c_k_values:
+                                                    layer_avg_ck = sum(c_k_values) / len(c_k_values)
+                                                    layer_ck_weights[layer_idx] = layer_avg_ck
+                                                    print(f"[CK_RESET_DEBUG] Actor: Layer {layer_idx} fallback C_K = {layer_avg_ck:.6f} (from {len(c_k_values)} params)")
+                                        else:
+                                            print(f"[CK_RESET_DEBUG] Actor: Component '{comp_name}' is not a layer component, skipping")
                 
                 print(f"[CK_RESET_DEBUG] Actor: Final C_K weights: {len(layer_ck_weights)} layers")
             except Exception as e:

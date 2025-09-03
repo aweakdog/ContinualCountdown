@@ -1501,8 +1501,15 @@ class CriticWorker(Worker):
             reset_count = min(self.ck_reset_manager.reset_k_layers, len(sorted_layers))
             layers_to_reset = [layer_idx for layer_idx, _ in sorted_layers[:reset_count]]
             
-            # Get parameters from reference worker
-            layer_params = ref_worker.get_layer_parameters(layers_to_reset)
+            # Get parameters from reference worker using proper RayWorkerGroup method
+            print(f"[CK_RESET_DEBUG] Critic: Calling get_layer_parameters on ref_worker for layers: {layers_to_reset}")
+            layer_params_futures = ref_worker.execute_all_async('get_layer_parameters', layers_to_reset)
+            layer_params_results = ray.get(layer_params_futures)
+            
+            # Use the first result (all should be identical for reference worker)
+            layer_params = layer_params_results[0] if layer_params_results else {}
+            print(f"[CK_RESET_DEBUG] Critic: Received {len(layer_params)} layer parameters from ref_worker")
+            
             if not layer_params:
                 return {'reset_params_count': 0, 'reset_layers': []}
             

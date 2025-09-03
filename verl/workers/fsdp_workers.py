@@ -671,6 +671,7 @@ class ActorRolloutRefWorker(Worker):
         torch.cuda.empty_cache()
         return output
     
+    @register(dispatch_mode=Dispatch.ONE_TO_ALL)
     def get_ck_reset_status(self, global_step: int):
         """Forward CK reset status call to the actor instance."""
         if hasattr(self, 'actor') and self.actor is not None:

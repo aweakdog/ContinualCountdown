@@ -1249,10 +1249,12 @@ class RayPPOTrainer(object):
                                 # Get CK reset status from actor worker (using current step)
                                 actor_status_list = self.actor_rollout_wg.get_ck_reset_status(self.global_steps)
                                 
-                                # Use the first worker's status (all should be the same)
-                                if actor_status_list and actor_status_list[0]:
-                                    should_reset = actor_status_list[0].get('should_reset', False)
-                                    layer_ck_weights = actor_status_list[0].get('layer_ck_weights', {})
+                                # The call returns a list of lists: [[result_rank0, result_rank1], ...]
+                                # We need the result from the first worker, and from the first rank within that worker.
+                                if actor_status_list and actor_status_list[0] and actor_status_list[0][0]:
+                                    result = actor_status_list[0][0]
+                                    should_reset = result.get('should_reset', False)
+                                    layer_ck_weights = result.get('layer_ck_weights', {})
                                     print(f"[CK_RESET_DEBUG] Curriculum: Actor reports should_reset={should_reset}, layers={len(layer_ck_weights)}")
                                 else:
                                     print(f"[CK_RESET_DEBUG] Curriculum: No CK reset status from actor")
@@ -1260,8 +1262,9 @@ class RayPPOTrainer(object):
                             except Exception as e:
                                 print(f"[CK_RESET_DEBUG] Curriculum: Error getting CK reset status: {e}")
                                 should_reset = False
-                            continue
                             
+                            continue
+
                             if should_reset:
                                 with _timer('layer_reset', timing_raw):
                                     print(f"[CK_RESET_EXECUTE] *** PERFORMING CK RESET at global step {self.global_steps} (CURRICULUM) ***")
@@ -1270,18 +1273,27 @@ class RayPPOTrainer(object):
                                     ref_worker = self.ref_policy_wg
                                     print(f"[CK_RESET_EXECUTE] Using ref_policy_wg as reference worker")
                                     
-                                    # Step 1: Get layers to reset from actor (using C_K weights)
+                                    # Step 1: Select top-k layers to reset based on C_K weights
+                                    layers_to_reset = []
                                     if layer_ck_weights:
-                                        # Get total layers count from actor worker (direct call)
-                                        total_layers_list = self.actor_rollout_wg.get_transformer_layer_count()
-                                        total_layers = total_layers_list[0] if isinstance(total_layers_list, list) else total_layers_list
-                                        
-                                        # Calculate layers to reset based on C_K weights (in trainer)
-                                        sorted_layers = sorted(layer_ck_weights.items(), key=lambda x: x[1], reverse=True)
-                                        reset_k_layers = 4  # Default from config, should be configurable
-                                        layers_to_reset = [layer_idx for layer_idx, _ in sorted_layers[:reset_k_layers]]
-                                        
-                                        print(f"[CK_RESET_EXECUTE] C_K weights: {dict(sorted_layers[:10])}")  # Show top 10
+                                        try:
+                                            ck_reset_config = self.config.actor_rollout_ref.actor.ck_reset
+                                            reset_k_layers = ck_reset_config.get('reset_k_layers', 0)
+                                            
+                                            if reset_k_layers > 0:
+                                                # Sort layers by C_K weight in descending order
+                                                sorted_layers = sorted(layer_ck_weights.items(), key=lambda item: item[1], reverse=True)
+                                                
+                                                # Select the top-k layer indices
+                                                layers_to_reset = [layer_idx for layer_idx, weight in sorted_layers[:reset_k_layers]]
+                                                print(f"[CK_RESET_EXECUTE] Selected top {len(layers_to_reset)} layers to reset: {layers_to_reset}")
+                                            else:
+                                                print(f"[CK_RESET_EXECUTE] 'reset_k_layers' is {reset_k_layers}, skipping reset.")
+                                        except Exception as e:
+                                            print(f"[CK_RESET_ERROR] Failed to select layers for reset: {e}")
+
+                                    # Step 2: Perform the reset if layers were selected
+                                    if layers_to_reset:
                                         print(f"[CK_RESET_EXECUTE] Selected layers to reset based on C_K weights: {layers_to_reset}")
                                     else:
                                         print(f"[CK_RESET_WARNING] No C_K weights available, falling back to traditional reset")

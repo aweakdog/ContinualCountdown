@@ -1396,7 +1396,15 @@ class RayPPOTrainer(object):
 
                                         if verify_samples:
                                             print(f"[CK_RESET_VERIFY] Getting sample weights before reset...")
-                                            bw_results = self.actor_rollout_wg.execute_all_sync('get_sample_layer_weights', layers_to_reset[:2])
+                                            try:
+                                                direct_get = getattr(self.actor_rollout_wg, 'get_sample_layer_weights', None)
+                                                if callable(direct_get):
+                                                    bw_results = direct_get(layers_to_reset[:2])
+                                                else:
+                                                    bw_results = self.actor_rollout_wg.execute_all_sync('get_sample_layer_weights', layers_to_reset[:2])
+                                            except Exception as e:
+                                                print(f"[CK_RESET_ERROR] Direct get_sample_layer_weights failed: {e}; falling back to execute_all_sync")
+                                                bw_results = self.actor_rollout_wg.execute_all_sync('get_sample_layer_weights', layers_to_reset[:2])
                                             if isinstance(bw_results, dict):
                                                 before_sample = bw_results
                                             elif isinstance(bw_results, list):
@@ -1421,7 +1429,15 @@ class RayPPOTrainer(object):
 
                                         if verify_samples:
                                             print(f"[CK_RESET_VERIFY] Getting sample weights after reset...")
-                                            aw_results = self.actor_rollout_wg.execute_all_sync('get_sample_layer_weights', layers_to_reset[:2])
+                                            try:
+                                                direct_get = getattr(self.actor_rollout_wg, 'get_sample_layer_weights', None)
+                                                if callable(direct_get):
+                                                    aw_results = direct_get(layers_to_reset[:2])
+                                                else:
+                                                    aw_results = self.actor_rollout_wg.execute_all_sync('get_sample_layer_weights', layers_to_reset[:2])
+                                            except Exception as e:
+                                                print(f"[CK_RESET_ERROR] Direct get_sample_layer_weights failed: {e}; falling back to execute_all_sync")
+                                                aw_results = self.actor_rollout_wg.execute_all_sync('get_sample_layer_weights', layers_to_reset[:2])
                                             if isinstance(aw_results, dict):
                                                 after_sample = aw_results
                                             elif isinstance(aw_results, list):

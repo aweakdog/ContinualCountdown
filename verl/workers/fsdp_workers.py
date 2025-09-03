@@ -1513,30 +1513,39 @@ class CriticWorker(Worker):
             
             # Debug: List all available methods on the ref_worker
             try:
-                first_worker = ref_worker._workers[0] if hasattr(ref_worker, '_workers') and ref_worker._workers else None
-                if first_worker:
-                    # Get all methods that don't start with underscore
-                    available_methods = [attr for attr in dir(first_worker) if not attr.startswith('_') and callable(getattr(first_worker, attr, None))]
-                    print(f"[CK_RESET_DEBUG] Critic: Available methods on ref_worker: {available_methods[:20]}...")  # Show first 20
+                print(f"[CK_RESET_DEBUG] Critic: ref_worker type: {type(ref_worker).__name__}")
+                print(f"[CK_RESET_DEBUG] Critic: ref_worker has _workers: {hasattr(ref_worker, '_workers')}")
+                
+                if hasattr(ref_worker, '_workers') and ref_worker._workers:
+                    print(f"[CK_RESET_DEBUG] Critic: Number of workers in ref_worker: {len(ref_worker._workers)}")
                     
-                    # Check specifically for get_layer_parameters
-                    has_method = hasattr(first_worker, 'get_layer_parameters')
-                    print(f"[CK_RESET_DEBUG] Critic: ref_worker has get_layer_parameters method: {has_method}")
-                    
-                    # Check worker type
-                    worker_type = type(first_worker).__name__
-                    print(f"[CK_RESET_DEBUG] Critic: ref_worker type: {worker_type}")
+                    # Check all workers in the group
+                    for i, worker in enumerate(ref_worker._workers):
+                        worker_type = type(worker).__name__
+                        print(f"[CK_RESET_DEBUG] Critic: Worker {i}: type={worker_type}")
+                        
+                        # Check if this worker has reference methods
+                        ref_methods = [attr for attr in dir(worker) if 'ref_' in attr.lower() and not attr.startswith('_')]
+                        if ref_methods:
+                            print(f"[CK_RESET_DEBUG] Critic: Worker {i} ref methods: {ref_methods[:10]}")
+                        
+                        # Check for get_layer_parameters
+                        has_get_layer = hasattr(worker, 'get_layer_parameters')
+                        print(f"[CK_RESET_DEBUG] Critic: Worker {i} has get_layer_parameters: {has_get_layer}")
+                        
+                        # Check worker role if available
+                        if hasattr(worker, 'role'):
+                            print(f"[CK_RESET_DEBUG] Critic: Worker {i} role: {getattr(worker, 'role', 'unknown')}")
+                        if hasattr(worker, '_is_ref'):
+                            print(f"[CK_RESET_DEBUG] Critic: Worker {i} _is_ref: {getattr(worker, '_is_ref', 'unknown')}")
                 else:
                     print(f"[CK_RESET_DEBUG] Critic: ref_worker has no _workers or empty _workers list")
             except Exception as debug_e:
                 print(f"[CK_RESET_DEBUG] Critic: Error debugging ref_worker: {debug_e}")
             
-            layer_params_futures = ref_worker.execute_all_async('actor_rollout_get_layer_parameters', layers_to_reset)
-            layer_params_results = ray.get(layer_params_futures)
-            
-            # Use the first result (all should be identical for reference worker)
-            layer_params = layer_params_results[0] if layer_params_results else {}
-            print(f"[CK_RESET_DEBUG] Critic: Received {len(layer_params)} layer parameters from ref_worker")
+            # Use execute_rank_zero_async to call the reference worker's get_layer_parameters method
+            layer_params_future = ref_worker.execute_rank_zero_async('get_layer_parameters', layers_to_reset)
+            layer_params = ray.get(layer_params_future)
             
             if not layer_params:
                 return {'reset_params_count': 0, 'reset_layers': []}

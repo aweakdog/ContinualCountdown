@@ -337,7 +337,7 @@ class DataParallelPPOActor(BasePPOActor):
             except Exception as debug_e:
                 print(f"[CK_RESET_DEBUG] Actor: Error debugging ref_worker: {debug_e}")
             
-            layer_params_futures = ref_worker.execute_all_async('get_layer_parameters', layers_to_reset)
+            layer_params_futures = ref_worker.execute_all_async('actor_rollout_get_layer_parameters', layers_to_reset)
             layer_params_results = ray.get(layer_params_futures)
             
             # Use the first result (all should be identical for reference worker)

@@ -1280,9 +1280,18 @@ class RayPPOTrainer(object):
                                         reset_k_layers = 4  # Default from config, should be configurable
                                         layers_to_reset = [layer_idx for layer_idx, _ in sorted_layers[:reset_k_layers]]
                                         
+                                        print(f"[CK_RESET_EXECUTE] C_K weights: {dict(sorted_layers[:10])}")  # Show top 10
                                         print(f"[CK_RESET_EXECUTE] Selected layers to reset based on C_K weights: {layers_to_reset}")
                                     else:
-                                        layers_to_reset = []
+                                        print(f"[CK_RESET_WARNING] No C_K weights available, falling back to traditional reset")
+                                        # Fallback to traditional layer selection when no C_K weights
+                                        total_layers_list = self.actor_rollout_wg.get_transformer_layer_count()
+                                        total_layers = total_layers_list[0] if isinstance(total_layers_list, list) else total_layers_list
+                                        if hasattr(self, 'layer_reset_manager'):
+                                            layers_to_reset = self.layer_reset_manager.get_layer_indices_to_reset(total_layers)
+                                            print(f"[CK_RESET_EXECUTE] Using traditional layer selection: {layers_to_reset}")
+                                        else:
+                                            layers_to_reset = []
                                     
                                     if layers_to_reset:
                                         # Step 2: Extract reference layers (SAFE trainer->worker call)
@@ -1291,12 +1300,32 @@ class RayPPOTrainer(object):
                                         ref_layer_state_dict = ref_layer_state_dict_result[0] if isinstance(ref_layer_state_dict_result, list) else ref_layer_state_dict_result
                                         print(f"[CK_RESET_EXECUTE] Reference layers extracted successfully ({len(ref_layer_state_dict)} parameters)")
                                         
-                                        # Step 3: Apply to actor using traditional reset method (SAFE)
+                                        # Step 3: Get sample weights before reset for verification
+                                        print(f"[CK_RESET_VERIFY] Getting sample weights before reset...")
+                                        before_weights = self.actor_rollout_wg.get_sample_layer_weights(layers_to_reset[:2])  # Sample first 2 layers
+                                        before_sample = before_weights[0] if before_weights else {}
+                                        print(f"[CK_RESET_VERIFY] Before reset - sample weights: {list(before_sample.keys())[:5]}")
+                                        
+                                        # Step 4: Apply to actor using traditional reset method (SAFE)
                                         print(f"[CK_RESET_EXECUTE] Resetting actor layers...")
-                                        self.actor_rollout_wg.reset_layers_with_ref_dict(self.layer_reset_manager, ref_layer_state_dict)
+                                        reset_results = self.actor_rollout_wg.reset_layers_with_ref_dict(self.layer_reset_manager, ref_layer_state_dict)
                                         print(f"[CK_RESET_EXECUTE] Actor layers reset completed")
                                         
-                                        # Step 4: Apply to critic using same reference (SAFE)
+                                        # Step 5: Get sample weights after reset for verification
+                                        print(f"[CK_RESET_VERIFY] Getting sample weights after reset...")
+                                        after_weights = self.actor_rollout_wg.get_sample_layer_weights(layers_to_reset[:2])  # Sample first 2 layers
+                                        after_sample = after_weights[0] if after_weights else {}
+                                        print(f"[CK_RESET_VERIFY] After reset - sample weights: {list(after_sample.keys())[:5]}")
+                                        
+                                        # Step 6: Compare weights to verify reset
+                                        if before_sample and after_sample:
+                                            for key in list(before_sample.keys())[:3]:  # Check first 3 parameters
+                                                if key in after_sample:
+                                                    before_val = before_sample[key][:5] if hasattr(before_sample[key], '__getitem__') else str(before_sample[key])[:50]
+                                                    after_val = after_sample[key][:5] if hasattr(after_sample[key], '__getitem__') else str(after_sample[key])[:50]
+                                                    print(f"[CK_RESET_VERIFY] {key}: before={before_val} -> after={after_val}")
+                                        
+                                        # Step 7: Apply to critic using same reference (SAFE)
                                         if self.use_critic:
                                             print(f"[CK_RESET_EXECUTE] Resetting critic layers...")
                                             self.critic_wg.reset_layers_with_ref_dict(self.layer_reset_manager, ref_layer_state_dict)

@@ -1286,6 +1286,66 @@ class DataParallelPPOActor(BasePPOActor):
         }
 
     @register(dispatch_mode=Dispatch.ONE_TO_ALL)
+    def get_sample_layer_weights(self, layer_indices: List[int]) -> Dict[str, Any]:
+        """
+        Get sample weights from specified layers for verification.
+        
+        Args:
+            layer_indices: List of layer indices to sample
+            
+        Returns:
+            Dictionary with sample weights from specified layers
+        """
+        try:
+            sample_weights = {}
+            
+            # Get actor base model
+            actor_base = self.actor_module._fsdp_wrapped_module if hasattr(self.actor_module, '_fsdp_wrapped_module') else self.actor_module
+            
+            # Find transformer layers
+            actor_layers = None
+            for pattern in ['model.layers', 'transformer.h', 'transformer.layers', 'layers']:
+                try:
+                    actor_layers = actor_base
+                    for attr in pattern.split('.'):
+                        actor_layers = getattr(actor_layers, attr)
+                    if isinstance(actor_layers, (list, torch.nn.ModuleList)):
+                        break
+                except AttributeError:
+                    continue
+            
+            if actor_layers is None:
+                return {}
+            
+            # Sample weights from specified layers
+            for layer_idx in layer_indices[:3]:  # Limit to first 3 layers to avoid spam
+                if layer_idx < len(actor_layers):
+                    layer = actor_layers[layer_idx]
+                    layer_weights = {}
+                    
+                    # Sample first few parameters from this layer
+                    param_count = 0
+                    for name, param in layer.named_parameters():
+                        if param_count >= 3:  # Limit to 3 parameters per layer
+                            break
+                        try:
+                            # Get a small sample of the parameter values
+                            if param.data.numel() > 0:
+                                sample_values = param.data.flatten()[:5].detach().cpu().tolist()
+                                layer_weights[f"layer_{layer_idx}.{name}"] = sample_values
+                            param_count += 1
+                        except Exception as e:
+                            layer_weights[f"layer_{layer_idx}.{name}"] = f"Error: {e}"
+                    
+                    sample_weights.update(layer_weights)
+            
+            return sample_weights
+            
+        except Exception as e:
+            print(f"[SAMPLE_WEIGHTS_ERROR] Failed to get sample weights: {e}")
+            return {}
+
+    @register(dispatch_mode=Dispatch.ONE_TO_ALL)
     def get_transformer_layer_count(self) -> int:
         """
         Get the number of transformer layers in the actor model.

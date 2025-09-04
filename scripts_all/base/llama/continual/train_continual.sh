@@ -14,9 +14,9 @@ echo "[Model Config] SFT model name: $SFT_MODEL_NAME"
 echo "[Model Config] SFT checkpoint: $SFT_CHECKPOINT"
 
 # Experiment repetition control parameters
-export EXP1_REPEAT_COUNT=${EXP1_REPEAT_COUNT:-3}  # Default: run Experiment 1 once
-export EXP2_REPEAT_COUNT=${EXP2_REPEAT_COUNT:-3}  # Default: run Experiment 2 twice
-export EXP3_REPEAT_COUNT=${EXP3_REPEAT_COUNT:-3}  # Default: run Experiment 3 twice
+export EXP1_REPEAT_COUNT=${EXP1_REPEAT_COUNT:-0}  # Default: run Experiment 1 once
+export EXP2_REPEAT_COUNT=${EXP2_REPEAT_COUNT:-2}  # Default: run Experiment 2 twice
+export EXP3_REPEAT_COUNT=${EXP3_REPEAT_COUNT:-0}  # Default: run Experiment 3 twice
 
 echo "[Experiment Config] Experiment 1 will run $EXP1_REPEAT_COUNT time(s)"
 echo "[Experiment Config] Experiment 2 will run $EXP2_REPEAT_COUNT time(s)"

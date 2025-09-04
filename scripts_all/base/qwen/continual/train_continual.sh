@@ -62,7 +62,7 @@ echo "[Layer Reset] Legacy layer reset disabled - using C_K-based reset instead"
 export CK_RESET_ENABLE=${CK_RESET_ENABLE:-false}              # Enable actor C_K reset
 export CK_RESET_STRATEGY=${CK_RESET_STRATEGY:-"ck_guided"}   # Actor strategy: ck_guided
 export CK_RESET_K_LAYERS=${CK_RESET_K_LAYERS:-15}            # Number of layers to reset
-export CK_RESET_STEPS=${CK_RESET_STEPS:-"[1,40,80,120]"}     # Reset at global steps
+export CK_RESET_STEPS=${CK_RESET_STEPS:-"[40,80,120]"}     # Reset at global steps
 export CK_RESET_RANDOM_SEED=${CK_RESET_RANDOM_SEED:-42}      # Random seed for reproducible reset
 export CK_RESET_HISTORY_WINDOW=${CK_RESET_HISTORY_WINDOW:-20}  # Sliding window for C_K averaging
 
@@ -154,8 +154,8 @@ fi
 echo "=== EXPERIMENT 1: Training Group 0 (${EXP1_REPEAT_COUNT} repetition(s)) ==="
 for ((exp1_iter=1; exp1_iter<=EXP1_REPEAT_COUNT; exp1_iter++)); do
   echo "--- Experiment 1 Iteration $exp1_iter/$EXP1_REPEAT_COUNT ---"
-  TRAIN_FILES_STR="[\"./data/qwen_base/group_0/train.parquet\"]"
-  VAL_FILES_STR="[\"./data/qwen_base/group_0/test.parquet\"]"
+  TRAIN_FILES_STR="[\"./data/base/group_0/train.parquet\"]"
+  VAL_FILES_STR="[\"./data/base/group_0/test.parquet\"]"
   TRAIN_SAMPLE_SIZE="[2560]"
   RUN_NAME="Exp1_Group0_Iter${exp1_iter}_SFT_${SFT_CHECKPOINT}_$(date +%Y%m%d_%H%M%S)"
   export RUN_NAME
@@ -240,8 +240,8 @@ echo "Experiment 1 completed after $EXP1_REPEAT_COUNT iteration(s)"
 echo "=== EXPERIMENT 2: Training Group 1 + Group 2 (${EXP2_REPEAT_COUNT} repetition(s)) ==="
 for ((exp2_iter=1; exp2_iter<=EXP2_REPEAT_COUNT; exp2_iter++)); do
   echo "--- Experiment 2 Iteration $exp2_iter/$EXP2_REPEAT_COUNT ---"
-  TRAIN_FILES_STR="[\"./data/base/group_2/train.parquet\", \"./data/base/group_1/train.parquet\"]"
-  VAL_FILES_STR="[\"./data/base/group_2/test.parquet\", \"./data/base/group_1/test.parquet\"]"
+  TRAIN_FILES_STR="[\"./data/base/group_1/train.parquet\", \"./data/base/group_2/train.parquet\"]"
+  VAL_FILES_STR="[\"./data/base/group_1/test.parquet\", \"./data/base/group_2/test.parquet\"]"
   TRAIN_SAMPLE_SIZE="[2560, 2560]"
   #TRAIN_SAMPLE_SIZE="[512, 512]"
   RUN_NAME="Exp2_Group1and2_Iter${exp2_iter}_SFT_${SFT_CHECKPOINT}_$(date +%Y%m%d_%H%M%S)"
@@ -333,8 +333,8 @@ echo "Experiment 2 completed after $EXP2_REPEAT_COUNT iteration(s)"
 echo "=== EXPERIMENT 3: Training Group 2 (${EXP3_REPEAT_COUNT} repetition(s)) ==="
 for ((exp3_iter=1; exp3_iter<=EXP3_REPEAT_COUNT; exp3_iter++)); do
   echo "--- Experiment 3 Iteration $exp3_iter/$EXP3_REPEAT_COUNT ---"
-  TRAIN_FILES_STR="[\"./data/qwen_base/deepmath/train.parquet\"]"
-  VAL_FILES_STR="[\"./data/qwen_base/deepmath/test.parquet\"]"
+  TRAIN_FILES_STR="[\"./data/base/group_2/train.parquet\"]"
+  VAL_FILES_STR="[\"./data/base/group_2/test.parquet\"]"
   TRAIN_SAMPLE_SIZE="[2560]"
   RUN_NAME="Exp3_deepmath_Iter${exp3_iter}_SFT_${SFT_CHECKPOINT}_$(date +%Y%m%d_%H%M%S)"
   export RUN_NAME

@@ -424,7 +424,7 @@ class SFTDataGenerator:
                 # Add incorrect attempts
                 if incorrect_solutions:
                     for i, incorrect in enumerate(incorrect_solutions):
-                        response += f"{incorrect}, Not correct, Let's try another one.\n\n"
+                        response += f"{incorrect}, Incorrect! So Let's try next one.\n\n"
                 
                 # Add correct solution as the final attempt
                 try:

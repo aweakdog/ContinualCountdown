@@ -62,7 +62,7 @@ echo "[Layer Reset] Legacy layer reset disabled - using C_K-based reset instead"
 export CK_RESET_ENABLE=${CK_RESET_ENABLE:-true}              # Enable actor C_K reset
 export CK_RESET_STRATEGY=${CK_RESET_STRATEGY:-"random"}   # Actor strategy: ck_guided
 export CK_RESET_K_LAYERS=${CK_RESET_K_LAYERS:-15}            # Number of layers to reset
-export CK_RESET_STEPS=${CK_RESET_STEPS:-"[1,2,40,80,120]"}     # Reset at global steps
+export CK_RESET_STEPS=${CK_RESET_STEPS:-"[40,80,120]"}     # Reset at global steps
 export CK_RESET_RANDOM_SEED=${CK_RESET_RANDOM_SEED:-42}      # Random seed for reproducible reset
 export CK_RESET_HISTORY_WINDOW=${CK_RESET_HISTORY_WINDOW:-20}  # Sliding window for C_K averaging
 

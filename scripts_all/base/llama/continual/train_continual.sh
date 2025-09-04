@@ -51,7 +51,7 @@ export RAY_ANALYZER_GPU_COUNT=${RAY_ANALYZER_GPU_COUNT:-4}  # Use 4 GPUs for ana
 echo "[GPU Config] Training will use GPUs 0-3, Analyzers will use GPUs 4-7"
 
 # Legacy Layer Reset Configuration (DISABLED - using C_K reset instead)
-export LAYER_RESET_ENABLE=false # 没用参数
+export LAYER_RESET_ENABLE=false
 export LAYER_RESET_K_FIRST=0
 export LAYER_RESET_K_LAST=0
 export LAYER_RESET_STEPS="[]"
@@ -62,7 +62,7 @@ echo "[Layer Reset] Legacy layer reset disabled - using C_K-based reset instead"
 export CK_RESET_ENABLE=${CK_RESET_ENABLE:-false}              # Enable actor C_K reset
 export CK_RESET_STRATEGY=${CK_RESET_STRATEGY:-"ck_guided"}   # Actor strategy: ck_guided
 export CK_RESET_K_LAYERS=${CK_RESET_K_LAYERS:-15}            # Number of layers to reset
-export CK_RESET_STEPS=${CK_RESET_STEPS:-"[1,2,40,80,120]"}     # Reset at global steps
+export CK_RESET_STEPS=${CK_RESET_STEPS:-"[1,2,10,40,80,120]"}     # Reset at global steps
 export CK_RESET_RANDOM_SEED=${CK_RESET_RANDOM_SEED:-42}      # Random seed for reproducible reset
 export CK_RESET_HISTORY_WINDOW=${CK_RESET_HISTORY_WINDOW:-20}  # Sliding window for C_K averaging
 
@@ -126,6 +126,56 @@ EXP_LOG_DIR=$LOG_BASE_DIR/${EXPERIMENT_TYPE}_continual_llama_sft_${SFT_CHECKPOIN
 mkdir -p "$EXP_LOG_DIR"
 cp tmp/monitor_master.sh "$EXP_LOG_DIR/"
 MASTER_LOG_FILE="$EXP_LOG_DIR/experiment_master.log"
+# Write run configuration snapshot
+CONFIG_FILE="$EXP_LOG_DIR/config.log"
+{
+  echo "[Experiment]"
+  echo "timestamp=$EXPERIMENT_TIMESTAMP"
+  echo "experiment_type=$EXPERIMENT_TYPE"
+  echo
+  echo "[Model]"
+  echo "sft_model_base_dir=$SFT_MODEL_BASE_DIR"
+  echo "sft_model_name=$SFT_MODEL_NAME"
+  echo "sft_checkpoint=$SFT_CHECKPOINT"
+  echo "base_model=$BASE_MODEL"
+  echo
+  echo "[GPU]"
+  echo "n_gpus=$N_GPUS"
+  echo "cuda_visible_devices=$CUDA_VISIBLE_DEVICES"
+  echo "ray_analyzer_gpu_start=$RAY_ANALYZER_GPU_START"
+  echo "ray_analyzer_gpu_count=$RAY_ANALYZER_GPU_COUNT"
+  echo "vllm_attention_backend=$VLLM_ATTENTION_BACKEND"
+  echo
+  echo "[Repetitions]"
+  echo "exp1_repeat_count=$EXP1_REPEAT_COUNT"
+  echo "exp2_repeat_count=$EXP2_REPEAT_COUNT"
+  echo "exp3_repeat_count=$EXP3_REPEAT_COUNT"
+  echo
+  echo "[LegacyLayerReset]"
+  echo "enable=$LAYER_RESET_ENABLE"
+  echo "k_first=$LAYER_RESET_K_FIRST"
+  echo "k_last=$LAYER_RESET_K_LAST"
+  echo "steps=$LAYER_RESET_STEPS"
+  echo
+  echo "[CKReset Actor]"
+  echo "enable=$CK_RESET_ENABLE"
+  echo "strategy=$CK_RESET_STRATEGY"
+  echo "k_layers=$CK_RESET_K_LAYERS"
+  echo "steps=$CK_RESET_STEPS"
+  echo "random_seed=$CK_RESET_RANDOM_SEED"
+  echo "history_window=$CK_RESET_HISTORY_WINDOW"
+  echo
+  echo "[CKReset Critic]"
+  echo "enable=$CK_RESET_CRITIC_ENABLE"
+  echo "strategy=$CK_RESET_CRITIC_STRATEGY"
+  echo
+  echo "[Training]"
+  echo "checkpoint_base_dir=$CHECKPOINT_BASE_DIR"
+  echo "wandb_mode=$WANDB_MODE"
+  echo "fsdp_grad_metric_enabled=$FSDP_GRAD_METRIC_ENABLED"
+  echo "rollout_tp_size=$ROLLOUT_TP_SIZE"
+} > "$CONFIG_FILE"
+echo "Wrote run config to $CONFIG_FILE"
 # Remove previous master log if it exists
 if [ -f "$MASTER_LOG_FILE" ]; then
   rm "$MASTER_LOG_FILE"

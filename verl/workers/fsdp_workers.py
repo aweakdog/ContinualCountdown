@@ -1124,72 +1124,54 @@ class ActorRolloutRefWorker(Worker):
             
             # Memory-efficient extraction: only get specific layers and transfer to CPU
             layer_state_dict = {}
-            
+
             # Extract state dict layer by layer to minimize GPU memory usage
             for layer_idx in layer_indices:
                 print(f"[LAYER_RESET_DEBUG] Extracting layer {layer_idx}...")
-                
+
                 # Get the specific layer
                 target_layer = transformer_layers[layer_idx]
-                
-                # Extract parameters for this layer and immediately transfer to CPU
-                layer_prefix = f"{layer_container_path}.{layer_idx}."
-                
-                # Use FSDP-safe parameter extraction with rank0_only to avoid collective ops
+
+                # Compose prefix to match FSDP state_dict keys
+                # Include _fsdp_wrapped_module so keys align with model.state_dict()
+                layer_prefix = f"{layer_container_path}.{layer_idx}._fsdp_wrapped_module."
+
                 layer_params_found = 0
-                
+
                 try:
-                    import torch.distributed as dist
-                    
-                    # Check if we're in a distributed environment
-                    if dist.is_initialized():
-                        current_rank = dist.get_rank()
-                        print(f"[LAYER_RESET_DEBUG] Current rank: {current_rank}")
-                    else:
-                        current_rank = 0
-                        print(f"[LAYER_RESET_DEBUG] Not in distributed mode, using rank 0")
-                    
-                    # CRITICAL: Avoid FSDP collective operations in Ray distributed environment
-                    # Use initialization fallback to avoid deadlock
-                    print(f"[LAYER_RESET_DEBUG] Rank {current_rank}: Using initialization fallback to avoid FSDP collective deadlock")
-                    
-                    # Access the underlying model directly to get parameter shapes
+                    # Access parameters directly from the wrapped module layer and clone to CPU
                     if hasattr(self.ref_module_fsdp, '_fsdp_wrapped_module'):
                         base_ref_model = self.ref_module_fsdp._fsdp_wrapped_module
-                        ref_layer = base_ref_model
+                        ref_layer_container = base_ref_model
                         for attr in layer_container_path.split('.'):
-                            ref_layer = getattr(ref_layer, attr)
-                        target_ref_layer = ref_layer[layer_idx]
-                        
-                        # Mark all parameters for initialization reset (None = reinitialize)
-                        for param_name, ref_param in target_ref_layer.named_parameters():
+                            ref_layer_container = getattr(ref_layer_container, attr)
+                        target_ref_layer = ref_layer_container[layer_idx]
+
+                        for param_name, ref_param in target_ref_layer.named_parameters(recurse=True):
                             full_param_name = f"{layer_prefix}{param_name}"
-                            layer_state_dict[full_param_name] = None  # None triggers reinitialization
+                            # Clone to CPU to minimize GPU memory
+                            layer_state_dict[full_param_name] = ref_param.detach().cpu().clone()
                             layer_params_found += 1
-                            print(f"[LAYER_RESET_DEBUG] Rank {current_rank}: Marked {full_param_name} for reinitialization")
+                            if layer_params_found <= 3:
+                                print(f"[LAYER_RESET_DEBUG] Extracted {full_param_name}, shape: {tuple(ref_param.shape)}")
                     else:
-                        print(f"[LAYER_RESET_DEBUG] No _fsdp_wrapped_module found, cannot access parameters")
-                    
-                    print(f"[LAYER_RESET_DEBUG] Initialization fallback completed for layer {layer_idx}")
-                
+                        # Non-FSDP case (unlikely for ref), fall back to direct names
+                        for param_name, ref_param in target_layer.named_parameters(recurse=True):
+                            full_param_name = f"{layer_container_path}.{layer_idx}.{param_name}"
+                            layer_state_dict[full_param_name] = ref_param.detach().cpu().clone()
+                            layer_params_found += 1
+
                 except Exception as e:
                     print(f"[LAYER_RESET_DEBUG] Error extracting layer {layer_idx} parameters: {e}")
                     import traceback
                     print(f"[LAYER_RESET_DEBUG] Traceback: {traceback.format_exc()}")
-                    
-                    # Fallback: mark all parameters for initialization reset
-                    for param_name, param in target_layer.named_parameters():
-                        full_param_name = f"{layer_prefix}{param_name}"
-                        layer_state_dict[full_param_name] = None
-                        layer_params_found += 1
-                        print(f"[LAYER_RESET_DEBUG] Fallback init reset: {full_param_name}")
-                
-                print(f"[LAYER_RESET_DEBUG] Layer {layer_idx}: processed {layer_params_found} parameters")
-                
+
+                print(f"[LAYER_RESET_DEBUG] Layer {layer_idx}: extracted {layer_params_found} parameters")
+
                 # Force garbage collection to free GPU memory
                 torch.cuda.empty_cache()
                 print(f"[LAYER_RESET_DEBUG] Layer {layer_idx} extracted and transferred to CPU")
-            
+
             print(f"[LAYER_RESET_DEBUG] RefWorker extracted {len(layer_state_dict)} parameters for layers {layer_indices}")
             return layer_state_dict
             

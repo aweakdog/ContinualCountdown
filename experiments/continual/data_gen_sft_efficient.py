@@ -153,7 +153,7 @@ def safe_evaluate_expression(expr_str):
 def generate_incorrect_solutions(source_numbers, target_num, num_incorrect=3):
     """Generate incorrect solutions with complex expressions similar to correct solutions."""
     incorrect_solutions = []
-    operators = ['+', '-', '*']
+    operators = ['+', '-', '*', '/']
     
     # Try to generate different incorrect solutions with complex expressions
     attempts = 0
@@ -402,7 +402,7 @@ class SFTDataGenerator:
                 # Generate prompts for all template types
                 template_types = ['base', 'qwen-instruct', 'llama-instruct']
                 questions = {}
-                operators = ["+","-","*","/","%"]
+                operators = ["+","-","*","/"]
                 for template_type in template_types:
                     questions[template_type] = make_prefix(s, operators=operators, template_type=template_type)
                 
@@ -416,7 +416,7 @@ class SFTDataGenerator:
                 
                 # Randomly decide number of incorrect attempts (0-2)
                 import random
-                num_incorrect = random.randint(0, 2)
+                num_incorrect = random.randint(0, 1)
                 incorrect_solutions = generate_incorrect_solutions(source_number, target_num, num_incorrect=num_incorrect) if num_incorrect > 0 else []
                 
                 #response += "Let me try some approaches:\n\n"

@@ -1135,42 +1135,65 @@ class ActorRolloutRefWorker(Worker):
                 # Compose prefix to match FSDP state_dict keys
                 # Include _fsdp_wrapped_module so keys align with model.state_dict()
                 layer_prefix = f"{layer_container_path}.{layer_idx}._fsdp_wrapped_module."
-
-                layer_params_found = 0
-
-                try:
-                    # Access parameters directly from the wrapped module layer and clone to CPU
-                    if hasattr(self.ref_module_fsdp, '_fsdp_wrapped_module'):
-                        base_ref_model = self.ref_module_fsdp._fsdp_wrapped_module
-                        ref_layer_container = base_ref_model
-                        for attr in layer_container_path.split('.'):
-                            ref_layer_container = getattr(ref_layer_container, attr)
-                        target_ref_layer = ref_layer_container[layer_idx]
-
-                        for param_name, ref_param in target_ref_layer.named_parameters(recurse=True):
-                            full_param_name = f"{layer_prefix}{param_name}"
-                            # Clone to CPU to minimize GPU memory
-                            layer_state_dict[full_param_name] = ref_param.detach().cpu().clone()
+                
+                with FSDP.state_dict_type(self.ref_module_fsdp, StateDictType.FULL_STATE_DICT,
+                                         FullStateDictConfig(offload_to_cpu=False, rank0_only=False)):
+                    # Get full state dict but only extract what we need
+                    full_state_dict = self.ref_module_fsdp.state_dict()
+                    
+                    # Extract only this layer's parameters and transfer to CPU immediately
+                    layer_params_found = 0
+                    for param_name, param_tensor in full_state_dict.items():
+                        if param_name.startswith(layer_prefix):
+                            # Transfer to CPU to save GPU memory
+                            layer_state_dict[param_name] = param_tensor.detach().cpu().clone()
                             layer_params_found += 1
-                            if layer_params_found <= 3:
-                                print(f"[LAYER_RESET_DEBUG] Extracted {full_param_name}, shape: {tuple(ref_param.shape)}")
-                    else:
-                        # Non-FSDP case (unlikely for ref), fall back to direct names
-                        for param_name, ref_param in target_layer.named_parameters(recurse=True):
-                            full_param_name = f"{layer_container_path}.{layer_idx}.{param_name}"
-                            layer_state_dict[full_param_name] = ref_param.detach().cpu().clone()
-                            layer_params_found += 1
-
-                except Exception as e:
-                    print(f"[LAYER_RESET_DEBUG] Error extracting layer {layer_idx} parameters: {e}")
-                    import traceback
-                    print(f"[LAYER_RESET_DEBUG] Traceback: {traceback.format_exc()}")
-
-                print(f"[LAYER_RESET_DEBUG] Layer {layer_idx}: extracted {layer_params_found} parameters")
-
+                            print(f"[LAYER_RESET_DEBUG] Extracted parameter: {param_name} (shape: {param_tensor.shape})")
+                    
+                    print(f"[LAYER_RESET_DEBUG] Layer {layer_idx}: found {layer_params_found} parameters with prefix '{layer_prefix}'")
+                    
+                    # Clear the full state dict to free GPU memory
+                    del full_state_dict
+                
                 # Force garbage collection to free GPU memory
                 torch.cuda.empty_cache()
                 print(f"[LAYER_RESET_DEBUG] Layer {layer_idx} extracted and transferred to CPU")
+
+                #layer_params_found = 0
+
+                #try:
+                #    # Access parameters directly from the wrapped module layer and clone to CPU
+                #    if hasattr(self.ref_module_fsdp, '_fsdp_wrapped_module'):
+                #        base_ref_model = self.ref_module_fsdp._fsdp_wrapped_module
+                #        ref_layer_container = base_ref_model
+                #        for attr in layer_container_path.split('.'):
+                #            ref_layer_container = getattr(ref_layer_container, attr)
+                #        target_ref_layer = ref_layer_container[layer_idx]
+
+                #        for param_name, ref_param in target_ref_layer.named_parameters(recurse=True):
+                #            full_param_name = f"{layer_prefix}{param_name}"
+                #            # Clone to CPU to minimize GPU memory
+                #            layer_state_dict[full_param_name] = ref_param.detach().cpu().clone()
+                #            layer_params_found += 1
+                #            if layer_params_found <= 3:
+                #                print(f"[LAYER_RESET_DEBUG] Extracted {full_param_name}, shape: {tuple(ref_param.shape)}")
+                #    else:
+                #        # Non-FSDP case (unlikely for ref), fall back to direct names
+                #        for param_name, ref_param in target_layer.named_parameters(recurse=True):
+                #            full_param_name = f"{layer_container_path}.{layer_idx}.{param_name}"
+                #            layer_state_dict[full_param_name] = ref_param.detach().cpu().clone()
+                #            layer_params_found += 1
+
+                #except Exception as e:
+                #    print(f"[LAYER_RESET_DEBUG] Error extracting layer {layer_idx} parameters: {e}")
+                #    import traceback
+                #    print(f"[LAYER_RESET_DEBUG] Traceback: {traceback.format_exc()}")
+
+                #print(f"[LAYER_RESET_DEBUG] Layer {layer_idx}: extracted {layer_params_found} parameters")
+
+                ## Force garbage collection to free GPU memory
+                #torch.cuda.empty_cache()
+                #print(f"[LAYER_RESET_DEBUG] Layer {layer_idx} extracted and transferred to CPU")
 
             print(f"[LAYER_RESET_DEBUG] RefWorker extracted {len(layer_state_dict)} parameters for layers {layer_indices}")
             return layer_state_dict

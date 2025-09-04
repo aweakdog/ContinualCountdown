@@ -569,8 +569,28 @@ class RayPPOTrainer(object):
         try:
             ck_reset_config = self.config.actor_rollout_ref.actor.ck_reset
             reset_k_layers = ck_reset_config.get('reset_k_layers', 0)
+            reset_strategy = ck_reset_config.get('reset_strategy', 'ck_guided')
         except Exception:
             reset_k_layers = 0
+            reset_strategy = 'ck_guided'
+
+        # If strategy is random, do NOT use CK; choose random layers deterministically by global_step
+        if reset_strategy == 'random':
+            try:
+                total_layers_list = self.actor_rollout_wg.get_transformer_layer_count()
+                total_layers = total_layers_list[0] if isinstance(total_layers_list, list) else total_layers_list
+                import random
+                # Use global step for sync between actor/critic; fallback to provided random_seed
+                global_step = getattr(self, 'global_steps', 0)
+                if global_step is None:
+                    global_step = 0
+                random.seed(global_step)
+                k = max(0, min(int(reset_k_layers), int(total_layers)))
+                selected = sorted(random.sample(list(range(int(total_layers))), k)) if k > 0 else []
+                print(f"[CK_RESET_EXECUTE] Random strategy (seed=global_step:{global_step}) selected layers: {selected}")
+                return selected
+            except Exception as e:
+                print(f"[CK_RESET_ERROR] Random strategy selection failed: {e}")
 
         # Prefer CK-guided selection when available
         if layer_ck_weights and reset_k_layers > 0:

@@ -311,7 +311,9 @@ class LayerResetManager:
                 target_state_dict = model.state_dict()
                 
                 # Copy parameters from reference to target state dict
+                print('315[LAYER_RESET_DEBUG]target_state_dict.keys():',target_state_dict.keys())
                 for ref_param_name, ref_param in ref_layer_state_dict.items():
+                    print('315[LAYER_RESET_DEBUG]ref_param_name',ref_param_name)
                     if ref_param_name in target_state_dict:
                         print(f"[LAYER_RESET_DEBUG] Copying {ref_param_name} (ref: {ref_param.shape} -> target: {target_state_dict[ref_param_name].shape})")
                         

@@ -1134,7 +1134,7 @@ class ActorRolloutRefWorker(Worker):
 
                 # Compose prefix to match FSDP state_dict keys
                 # Include _fsdp_wrapped_module so keys align with model.state_dict()
-                layer_prefix = f"{layer_container_path}.{layer_idx}._fsdp_wrapped_module."
+                layer_prefix = f"{layer_container_path}.{layer_idx}."
                 
                 with FSDP.state_dict_type(self.ref_module_fsdp, StateDictType.FULL_STATE_DICT,
                                          FullStateDictConfig(offload_to_cpu=False, rank0_only=False)):

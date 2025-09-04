@@ -1377,6 +1377,7 @@ class RayPPOTrainer(object):
                                                 print("[CK_RESET_EXECUTE] Using direct call on ref worker for extract_layers_for_reset")
                                                 ref_layer_state_dict_result = direct_method(layers_to_reset)
                                                 ref_layer_state_dict = ref_layer_state_dict_result[0] if isinstance(ref_layer_state_dict_result, list) else ref_layer_state_dict_result
+                                                print('1380ref_layer_state_dict:',ref_layer_state_dict)
                                             else:
                                                 print("[CK_RESET_EXECUTE] Direct method not found; using execute_all_sync on worker group")
                                                 ref_layer_state_dict_result = ref_worker.execute_all_sync('extract_layers_for_reset', layers_to_reset)

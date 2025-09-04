@@ -594,6 +594,27 @@ class ActorRolloutRefWorker(Worker):
         torch.cuda.empty_cache()
         return output
 
+    @register(dispatch_mode=Dispatch.ONE_TO_ALL)
+    def get_transformer_layer_count(self) -> int:
+        """
+        Get the number of transformer layers in the actor model.
+        Used by the trainer for selecting layer indices to reset.
+        Returns 0 on non-actor roles or error.
+        """
+        if not getattr(self, '_is_actor', False):
+            return 0
+        try:
+            # Lazy import to avoid circular deps
+            from verl.utils.redo_utils.layer_reset import LayerResetManager
+            layer_manager = LayerResetManager()
+            transformer_layers = layer_manager.get_transformer_layers(self.actor_module_fsdp)
+            layer_count = len(transformer_layers)
+            print(f"[LAYER_RESET_DEBUG] Actor model has {layer_count} transformer layers")
+            return int(layer_count)
+        except Exception as e:
+            print(f"[LAYER_RESET_DEBUG] Error getting transformer layer count: {e}")
+            return 0
+
     @register(dispatch_mode=Dispatch.DP_COMPUTE_PROTO)
     def generate_sequences(self, prompts: DataProto):
         prompts = prompts.to('cuda')

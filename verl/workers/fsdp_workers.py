@@ -1056,8 +1056,6 @@ class ActorRolloutRefWorker(Worker):
         Returns:
             Dictionary containing state dict for specified layers (on CPU)
         """
-        print(f"[LAYER_RESET_DEBUG] RefWorker extracting layers {layer_indices}")
-        
         # Import required FSDP types
         from torch.distributed.fsdp import StateDictType, FullStateDictConfig
         
@@ -1816,12 +1814,10 @@ class CriticWorker(Worker):
         if not layer_reset_manager.reset_critic:
             return  # Only reset if critic reset is enabled
         
-        print(f"[LAYER_RESET_DEBUG] CriticWorker resetting layers with pre-extracted reference: k_first={layer_reset_manager.reset_k_first}, k_last={layer_reset_manager.reset_k_last}")
         
         # Get transformer layers for debugging
         transformer_layers = layer_reset_manager.get_transformer_layers(self.critic_module)
         total_layers = len(transformer_layers)
-        print(f"[LAYER_RESET_DEBUG] Critic model has {total_layers} transformer layers")
         
         # Determine layer indices to reset
         if layer_indices is None:
@@ -1834,7 +1830,6 @@ class CriticWorker(Worker):
             print(f"[LAYER_RESET_DEBUG] No layers to reset for critic")
             return
         
-        print(f"[LAYER_RESET_DEBUG] Critic resetting layers: {layer_indices}")
         
         # Capture weights before reset for comparison
         weights_before = {}
@@ -1843,11 +1838,9 @@ class CriticWorker(Worker):
             for name, param in layer.named_parameters():
                 if 'weight' in name:
                     weights_before[f"layer_{layer_idx}.{name}"] = param.data.clone().detach().cpu()
-                    print(f"[LAYER_RESET_DEBUG] Before reset - Critic Layer {layer_idx} {name}: mean={param.data.mean().item():.6f}, std={param.data.std().item():.6f}")
                     break  # Only check one weight per layer
         
         # Reset critic layers using pre-extracted reference state dict
-        print(f"[LAYER_RESET_DEBUG] Using pre-extracted reference layers for critic (avoiding Ray deadlock)")
         reset_param_names = layer_reset_manager.reset_model_layers_from_ref(
             model=self.critic_module,
             ref_layer_state_dict=ref_layer_state_dict,

@@ -1174,35 +1174,26 @@ class DataParallelPPOActor(BasePPOActor):
         if has_fisher_stats:
             fisher_stats_for_reset = self.fisher_detailed_stats
             if fisher_stats_for_reset:
-                print(f"[CK_RESET_DEBUG] Actor: fisher_detailed_stats has {len(fisher_stats_for_reset)} components")
                 # Show first few component names for debugging
                 component_names = list(fisher_stats_for_reset.keys())[:5]
-                print(f"[CK_RESET_DEBUG] Actor: Sample component names: {component_names}")
                 
                 # DETAILED STRUCTURE INSPECTION
                 for comp_name, comp_data in fisher_stats_for_reset.items():
-                    print(f"[CK_RESET_DEBUG] Actor: === COMPONENT '{comp_name}' STRUCTURE ===")
-                    print(f"[CK_RESET_DEBUG] Actor: Component type: {type(comp_data)}")
                     
                     if isinstance(comp_data, dict):
-                        print(f"[CK_RESET_DEBUG] Actor: Component has {len(comp_data)} keys")
                         param_names = list(comp_data.keys())[:10]  # Show first 10 parameter names
-                        print(f"[CK_RESET_DEBUG] Actor: Sample parameter names: {param_names}")
                         
                         # Inspect first parameter's structure
                         if param_names:
                             first_param = param_names[0]
                             first_param_data = comp_data[first_param]
-                            print(f"[CK_RESET_DEBUG] Actor: First param '{first_param}' type: {type(first_param_data)}")
                             
                             if isinstance(first_param_data, dict):
                                 param_keys = list(first_param_data.keys())
-                                print(f"[CK_RESET_DEBUG] Actor: First param keys: {param_keys}")
                                 
                                 # Show c_k value if exists
                                 if 'c_k' in first_param_data:
                                     c_k_val = first_param_data['c_k']
-                                    print(f"[CK_RESET_DEBUG] Actor: First param c_k value: {c_k_val} (type: {type(c_k_val)})")
                                 else:
                                     print(f"[CK_RESET_DEBUG] Actor: First param does NOT have 'c_k' key")
                             else:

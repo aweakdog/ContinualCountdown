@@ -1358,39 +1358,34 @@ class RayPPOTrainer(object):
 
                                     # Step 1: Select layers to reset (CK-guided with fallback)
                                     layers_to_reset = self._select_layers_for_reset(layer_ck_weights)
+
                                     # Normalize to plain Python ints to satisfy worker expectations
                                     try:
                                         layers_to_reset = [int(i) for i in layers_to_reset if i is not None]
                                     except Exception:
                                         pass
-                                    print(f"[CK_RESET_EXECUTE] layers_to_reset (normalized): {layers_to_reset}")
+                                    print("[CK_RESET_EXECUTE] globals_steps:",self.global_steps,"layer_to_reset:",layers_to_reset)
                                     if not layers_to_reset:
                                         print("[CK_RESET_EXECUTE] No layers selected; skip reset.")
                                     else:
                                         # Step 2: Extract reference layers (SAFE trainer->worker call)
-                                        print(f"[CK_RESET_EXECUTE] Pre-extracting reference layers to avoid Ray deadlock...")
-                                        # Prefer direct call if available (e.g., single ref worker), fallback to RayWorkerGroup API
                                         ref_layer_state_dict = None
                                         try:
                                             direct_method = getattr(ref_worker, 'extract_layers_for_reset', None)
                                             if callable(direct_method):
-                                                print("[CK_RESET_EXECUTE] Using direct call on ref worker for extract_layers_for_reset")
                                                 ref_layer_state_dict_result = direct_method(layers_to_reset)
                                                 ref_layer_state_dict = ref_layer_state_dict_result[0] if isinstance(ref_layer_state_dict_result, list) else ref_layer_state_dict_result
-                                                print('1380ref_layer_state_dict:',ref_layer_state_dict)
                                             else:
-                                                print("[CK_RESET_EXECUTE] Direct method not found; using execute_all_sync on worker group")
                                                 ref_layer_state_dict_result = ref_worker.execute_all_sync('extract_layers_for_reset', layers_to_reset)
                                                 ref_layer_state_dict = ref_layer_state_dict_result[0] if isinstance(ref_layer_state_dict_result, list) else ref_layer_state_dict_result
                                         except Exception as e:
-                                            print(f"[CK_RESET_ERROR] Failed to extract reference layers via primary path: {e}")
                                             # Final fallback: attempt execute_all_sync once more explicitly
                                             ref_layer_state_dict_result = ref_worker.execute_all_sync('extract_layers_for_reset', layers_to_reset)
                                             ref_layer_state_dict = ref_layer_state_dict_result[0] if isinstance(ref_layer_state_dict_result, list) else ref_layer_state_dict_result
                                         print(f"[CK_RESET_EXECUTE] Reference layers extracted successfully ({len(ref_layer_state_dict)} parameters)")
 
                                         # Optional verification before reset (forced ON for debugging)
-                                        verify_samples = True
+                                        verify_samples = False
 
                                         before_sample = {}
                                         after_sample = {}

@@ -6,7 +6,7 @@ EXPERIMENT_TYPE=${1:-train}  # Default to 'train' if no argument provided
 # Model configuration parameters
 SFT_MODEL_BASE_DIR=${SFT_MODEL_BASE_DIR:-"./models"}
 SFT_MODEL_NAME=${SFT_MODEL_NAME:-"qwen_base_sft_models"}
-SFT_CHECKPOINT=${SFT_CHECKPOINT:-"global_step_20"}
+SFT_CHECKPOINT=${SFT_CHECKPOINT:-"global_step_10"}
 
 echo "[Experiment Type] Using type: $EXPERIMENT_TYPE"
 echo "[Model Config] SFT model base directory: $SFT_MODEL_BASE_DIR"
@@ -207,7 +207,7 @@ for ((exp1_iter=1; exp1_iter<=EXP1_REPEAT_COUNT; exp1_iter++)); do
   critic.ppo_mini_batch_size=32 \
   critic.ppo_micro_batch_size=8 \
   ++actor_rollout_ref.actor.redo_tau=0.1 \
-  ++actor_rollout_ref.actor.enable_gradient_analysis=true \
+  ++actor_rollout_ref.actor.enable_gradient_analysis=false \
   ++actor_rollout_ref.actor.gradient_analysis_freq=1 \
   ++actor_rollout_ref.actor.enable_fisher_analysis=true \
   ++actor_rollout_ref.actor.fisher_analysis_freq=1 \
@@ -300,7 +300,7 @@ python3 -m verl.trainer.main_ppo \
   critic.ppo_mini_batch_size=32 \
   critic.ppo_micro_batch_size=8 \
   ++actor_rollout_ref.actor.redo_tau=0.1 \
-  ++actor_rollout_ref.actor.enable_gradient_analysis=true \
+  ++actor_rollout_ref.actor.enable_gradient_analysis=false \
   ++actor_rollout_ref.actor.gradient_analysis_freq=1 \
   ++actor_rollout_ref.actor.enable_fisher_analysis=true \
   ++actor_rollout_ref.actor.fisher_analysis_freq=1 \
@@ -392,7 +392,7 @@ for ((exp3_iter=1; exp3_iter<=EXP3_REPEAT_COUNT; exp3_iter++)); do
   critic.ppo_mini_batch_size=32 \
   critic.ppo_micro_batch_size=8 \
   ++actor_rollout_ref.actor.redo_tau=0.1 \
-  ++actor_rollout_ref.actor.enable_gradient_analysis=true \
+  ++actor_rollout_ref.actor.enable_gradient_analysis=false \
   ++actor_rollout_ref.actor.gradient_analysis_freq=1 \
   ++actor_rollout_ref.actor.enable_fisher_analysis=true \
   ++actor_rollout_ref.actor.fisher_analysis_freq=1 \

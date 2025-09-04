@@ -5,8 +5,8 @@ EXPERIMENT_TYPE=${1:-train}  # Default to 'train' if no argument provided
 
 # Model configuration parameters
 SFT_MODEL_BASE_DIR=${SFT_MODEL_BASE_DIR:-"./models"}
-SFT_MODEL_NAME=${SFT_MODEL_NAME:-"qwen_base_sft_models"}
-SFT_CHECKPOINT=${SFT_CHECKPOINT:-"global_step_20"}
+SFT_MODEL_NAME=${SFT_MODEL_NAME:-"llama_base_sft_models"}
+SFT_CHECKPOINT=${SFT_CHECKPOINT:-"global_step_10"}
 
 echo "[Experiment Type] Using type: $EXPERIMENT_TYPE"
 echo "[Model Config] SFT model base directory: $SFT_MODEL_BASE_DIR"
@@ -14,9 +14,9 @@ echo "[Model Config] SFT model name: $SFT_MODEL_NAME"
 echo "[Model Config] SFT checkpoint: $SFT_CHECKPOINT"
 
 # Experiment repetition control parameters
-export EXP1_REPEAT_COUNT=${EXP1_REPEAT_COUNT:-3}  # Default: run Experiment 1 once
-export EXP2_REPEAT_COUNT=${EXP2_REPEAT_COUNT:-3}  # Default: run Experiment 2 twice
-export EXP3_REPEAT_COUNT=${EXP3_REPEAT_COUNT:-3}  # Default: run Experiment 3 twice
+export EXP1_REPEAT_COUNT=${EXP1_REPEAT_COUNT:-0}  # Default: run Experiment 1 once
+export EXP2_REPEAT_COUNT=${EXP2_REPEAT_COUNT:-2}  # Default: run Experiment 2 twice
+export EXP3_REPEAT_COUNT=${EXP3_REPEAT_COUNT:-0}  # Default: run Experiment 3 twice
 
 echo "[Experiment Config] Experiment 1 will run $EXP1_REPEAT_COUNT time(s)"
 echo "[Experiment Config] Experiment 2 will run $EXP2_REPEAT_COUNT time(s)"
@@ -30,7 +30,7 @@ fi
 
 # Configuration - Set environment variables
 export NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-all}
-export CHECKPOINT_BASE_DIR=${CHECKPOINT_BASE_DIR:-./checkpoints/qwen_base/continual_countdown3b_qwen_curriculum}
+export CHECKPOINT_BASE_DIR=${CHECKPOINT_BASE_DIR:-./checkpoints/llama_base/continual_countdown3b_llama_curriculum}
 # Construct BASE_MODEL path - handle empty SFT_MODEL_NAME
 if [ -z "$SFT_MODEL_NAME" ]; then
     export BASE_MODEL=${BASE_MODEL:-"${SFT_MODEL_BASE_DIR}/${SFT_CHECKPOINT}"}
@@ -62,7 +62,7 @@ echo "[Layer Reset] Legacy layer reset disabled - using C_K-based reset instead"
 export CK_RESET_ENABLE=${CK_RESET_ENABLE:-false}              # Enable actor C_K reset
 export CK_RESET_STRATEGY=${CK_RESET_STRATEGY:-"ck_guided"}   # Actor strategy: ck_guided
 export CK_RESET_K_LAYERS=${CK_RESET_K_LAYERS:-15}            # Number of layers to reset
-export CK_RESET_STEPS=${CK_RESET_STEPS:-"[40,80,120]"}     # Reset at global steps
+export CK_RESET_STEPS=${CK_RESET_STEPS:-"[1,2,10,40,80,120]"}     # Reset at global steps
 export CK_RESET_RANDOM_SEED=${CK_RESET_RANDOM_SEED:-42}      # Random seed for reproducible reset
 export CK_RESET_HISTORY_WINDOW=${CK_RESET_HISTORY_WINDOW:-20}  # Sliding window for C_K averaging
 
@@ -77,8 +77,8 @@ echo "[C_K Reset] Layers per reset: $CK_RESET_K_LAYERS"
 echo "[C_K Reset] C_K history window: $CK_RESET_HISTORY_WINDOW steps"
 
 # Set up logging with backup - organized by script location
-LOG_BASE_DIR="./logs/base/qwen/continual"
-LOG_FILE="$LOG_BASE_DIR/ContinualCountdown3B_qwen_Curriculum.log"
+LOG_BASE_DIR="./logs/base/llama/continual"
+LOG_FILE="$LOG_BASE_DIR/ContinualCountdown3B_llama_Curriculum.log"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 BACKUP_DIR="$LOG_BASE_DIR/run"
 
@@ -89,7 +89,7 @@ mkdir -p "$BACKUP_DIR"
 # Create backup of existing log if it exists
 if [ -f "$LOG_FILE" ]; then
     mkdir -p "$BACKUP_DIR"
-    cp "$LOG_FILE" "$BACKUP_DIR/ContinualCountdown3B_qwen_Curriculum_${TIMESTAMP}.log"
+    cp "$LOG_FILE" "$BACKUP_DIR/ContinualCountdown3B_llama_Curriculum_${TIMESTAMP}.log"
 fi
 
 # Clean up previous checkpoints
@@ -122,10 +122,60 @@ fi
 
 # Create a unique subdirectory for this experiment's logs with timestamp
 EXPERIMENT_TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-EXP_LOG_DIR=$LOG_BASE_DIR/${EXPERIMENT_TYPE}_continual_qwen_sft_${SFT_CHECKPOINT}_reset_k${LAYER_RESET_K_FIRST}f_k${LAYER_RESET_K_LAST}l_${EXPERIMENT_TIMESTAMP}
+EXP_LOG_DIR=$LOG_BASE_DIR/${EXPERIMENT_TYPE}_continual_llama_sft_${SFT_CHECKPOINT}_reset_k${LAYER_RESET_K_FIRST}f_k${LAYER_RESET_K_LAST}l_${EXPERIMENT_TIMESTAMP}
 mkdir -p "$EXP_LOG_DIR"
 cp tmp/monitor_master.sh "$EXP_LOG_DIR/"
 MASTER_LOG_FILE="$EXP_LOG_DIR/experiment_master.log"
+# Write run configuration snapshot
+CONFIG_FILE="$EXP_LOG_DIR/config.log"
+{
+  echo "[Experiment]"
+  echo "timestamp=$EXPERIMENT_TIMESTAMP"
+  echo "experiment_type=$EXPERIMENT_TYPE"
+  echo
+  echo "[Model]"
+  echo "sft_model_base_dir=$SFT_MODEL_BASE_DIR"
+  echo "sft_model_name=$SFT_MODEL_NAME"
+  echo "sft_checkpoint=$SFT_CHECKPOINT"
+  echo "base_model=$BASE_MODEL"
+  echo
+  echo "[GPU]"
+  echo "n_gpus=$N_GPUS"
+  echo "cuda_visible_devices=$CUDA_VISIBLE_DEVICES"
+  echo "ray_analyzer_gpu_start=$RAY_ANALYZER_GPU_START"
+  echo "ray_analyzer_gpu_count=$RAY_ANALYZER_GPU_COUNT"
+  echo "vllm_attention_backend=$VLLM_ATTENTION_BACKEND"
+  echo
+  echo "[Repetitions]"
+  echo "exp1_repeat_count=$EXP1_REPEAT_COUNT"
+  echo "exp2_repeat_count=$EXP2_REPEAT_COUNT"
+  echo "exp3_repeat_count=$EXP3_REPEAT_COUNT"
+  echo
+  echo "[LegacyLayerReset]"
+  echo "enable=$LAYER_RESET_ENABLE"
+  echo "k_first=$LAYER_RESET_K_FIRST"
+  echo "k_last=$LAYER_RESET_K_LAST"
+  echo "steps=$LAYER_RESET_STEPS"
+  echo
+  echo "[CKReset Actor]"
+  echo "enable=$CK_RESET_ENABLE"
+  echo "strategy=$CK_RESET_STRATEGY"
+  echo "k_layers=$CK_RESET_K_LAYERS"
+  echo "steps=$CK_RESET_STEPS"
+  echo "random_seed=$CK_RESET_RANDOM_SEED"
+  echo "history_window=$CK_RESET_HISTORY_WINDOW"
+  echo
+  echo "[CKReset Critic]"
+  echo "enable=$CK_RESET_CRITIC_ENABLE"
+  echo "strategy=$CK_RESET_CRITIC_STRATEGY"
+  echo
+  echo "[Training]"
+  echo "checkpoint_base_dir=$CHECKPOINT_BASE_DIR"
+  echo "wandb_mode=$WANDB_MODE"
+  echo "fsdp_grad_metric_enabled=$FSDP_GRAD_METRIC_ENABLED"
+  echo "rollout_tp_size=$ROLLOUT_TP_SIZE"
+} > "$CONFIG_FILE"
+echo "Wrote run config to $CONFIG_FILE"
 # Remove previous master log if it exists
 if [ -f "$MASTER_LOG_FILE" ]; then
   rm "$MASTER_LOG_FILE"
@@ -154,8 +204,8 @@ fi
 echo "=== EXPERIMENT 1: Training Group 0 (${EXP1_REPEAT_COUNT} repetition(s)) ==="
 for ((exp1_iter=1; exp1_iter<=EXP1_REPEAT_COUNT; exp1_iter++)); do
   echo "--- Experiment 1 Iteration $exp1_iter/$EXP1_REPEAT_COUNT ---"
-  TRAIN_FILES_STR="[\"./data/base/group_0/train.parquet\"]"
-  VAL_FILES_STR="[\"./data/base/group_0/test.parquet\"]"
+  TRAIN_FILES_STR="[\"./data/llama_base/group_0/train.parquet\"]"
+  VAL_FILES_STR="[\"./data/llama_base/group_0/test.parquet\"]"
   TRAIN_SAMPLE_SIZE="[2560]"
   RUN_NAME="Exp1_Group0_Iter${exp1_iter}_SFT_${SFT_CHECKPOINT}_$(date +%Y%m%d_%H%M%S)"
   export RUN_NAME
@@ -167,78 +217,72 @@ for ((exp1_iter=1; exp1_iter<=EXP1_REPEAT_COUNT; exp1_iter++)); do
   python3 -m verl.trainer.main_ppo \
   --config-path $(pwd)/verl/trainer/config \
   --config-name ppo_trainer \
-  fsdp_grad_metric_enabled=$FSDP_GRAD_METRIC_ENABLED \
-  data.train_files="$TRAIN_FILES_STR" \
-  data.val_files="$VAL_FILES_STR" \
-  data.train_batch_size=256 \
-  data.val_batch_size=256 \
-  data.max_response_length=1024 \
-  ++data.curriculum_learning=true \
-  ++data.epochs_per_group=15 \
-  ++data.total_rounds=1 \
-  ++data.train_sample_size="$TRAIN_SAMPLE_SIZE" \
-  actor_rollout_ref.model.path=$BASE_MODEL \
-  actor_rollout_ref.model.use_remove_padding=True \
-  actor_rollout_ref.actor.use_dynamic_bsz=True \
-  +actor_rollout_ref.model.trust_remote_code=true \
-  +actor_rollout_ref.model.torch_dtype=bfloat16 \
-  +actor_rollout_ref.model.low_cpu_mem_usage=true \
-  +actor_rollout_ref.model.device_map=auto \
-  +actor_rollout_ref.model.attn_implementation=flash_attention_2 \
-  +actor_rollout_ref.model.use_cache=false \
-  actor_rollout_ref.actor.optim.lr=1e-6 \
-  actor_rollout_ref.actor.ppo_mini_batch_size=32 \
-  actor_rollout_ref.actor.ppo_micro_batch_size=8 \
-  actor_rollout_ref.rollout.log_prob_micro_batch_size=8 \
-  actor_rollout_ref.rollout.tensor_model_parallel_size=$ROLLOUT_TP_SIZE \
-  actor_rollout_ref.rollout.gpu_memory_utilization=0.6 \
-  actor_rollout_ref.rollout.enforce_eager=true \
-  actor_rollout_ref.rollout.free_cache_engine=false \
-  actor_rollout_ref.ref.log_prob_micro_batch_size=8 \
-  actor_rollout_ref.model.enable_gradient_checkpointing=True \
-  critic.model.enable_gradient_checkpointing=True \
-  critic.optim.lr=1e-5 \
-  critic.model.path=$BASE_MODEL \
-  +critic.model.trust_remote_code=true \
-  +critic.model.torch_dtype=bfloat16 \
-  +critic.model.device_map=auto \
-  +critic.model.attn_implementation=flash_attention_2 \
-  +critic.model.use_cache=false \
-  critic.ppo_mini_batch_size=32 \
-  critic.ppo_micro_batch_size=8 \
-  ++actor_rollout_ref.actor.redo_tau=0.1 \
-  ++actor_rollout_ref.actor.enable_gradient_analysis=true \
-  ++actor_rollout_ref.actor.gradient_analysis_freq=1 \
-  ++actor_rollout_ref.actor.enable_fisher_analysis=true \
-  ++actor_rollout_ref.actor.fisher_analysis_freq=1 \
-  algorithm.kl_ctrl.kl_coef=0.001 \
-  trainer.logger=['wandb','console'] \
-  +logger.print_to_console=true \
-  trainer.default_hdfs_dir=null \
-  trainer.default_local_dir=${CHECKPOINT_BASE_DIR} \
-  trainer.n_gpus_per_node=$N_GPUS \
-  trainer.nnodes=1 \
-  trainer.save_freq=1200 \
-  trainer.test_freq=30 \
-  trainer.project_name=ContinualCountdown3B_qwen \
-  trainer.experiment_name=$RUN_NAME \
-  trainer.total_epochs=1 \
-  +trainer.val_before_train=true \
-  ++reward_model.enable=False \
-  ++reward_model.model.path=$BASE_MODEL \
-  $LAYER_RESET_CONFIG \
-  ++actor_rollout_ref.actor.ck_reset.enable=$CK_RESET_ENABLE \
-  ++actor_rollout_ref.actor.ck_reset.reset_strategy=$CK_RESET_STRATEGY \
-  ++actor_rollout_ref.actor.ck_reset.reset_k_layers=$CK_RESET_K_LAYERS \
-  ++actor_rollout_ref.actor.ck_reset.reset_steps="$CK_RESET_STEPS" \
-  ++actor_rollout_ref.actor.ck_reset.random_seed=$CK_RESET_RANDOM_SEED \
-  ++actor_rollout_ref.actor.ck_reset.ck_history_window=$CK_RESET_HISTORY_WINDOW \
-  ++critic.ck_reset.enable=$CK_RESET_CRITIC_ENABLE \
-  ++critic.ck_reset.reset_strategy=$CK_RESET_CRITIC_STRATEGY \
-  2>&1 | tee -a "$LOG_FILE" | tee -a "$MASTER_LOG_FILE"
+    fsdp_grad_metric_enabled=$FSDP_GRAD_METRIC_ENABLED \
+    data.train_files="$TRAIN_FILES_STR" \
+    data.val_files="$VAL_FILES_STR" \
+    data.train_batch_size=256 \
+    data.val_batch_size=256 \
+    data.max_response_length=1024 \
+    ++data.curriculum_learning=true \
+    ++data.epochs_per_group=15 \
+    ++data.total_rounds=1 \
+    ++data.train_sample_size="$TRAIN_SAMPLE_SIZE" \
+    actor_rollout_ref.model.path=$BASE_MODEL \
+    actor_rollout_ref.model.use_remove_padding=True \
+    actor_rollout_ref.actor.use_dynamic_bsz=True \
+    +actor_rollout_ref.model.trust_remote_code=true \
+    +actor_rollout_ref.model.torch_dtype=bfloat16 \
+    +actor_rollout_ref.model.low_cpu_mem_usage=true \
+    +actor_rollout_ref.model.device_map=auto \
+    +actor_rollout_ref.model.attn_implementation=flash_attention_2 \
+    +actor_rollout_ref.model.use_cache=false \
+    actor_rollout_ref.actor.optim.lr=1e-6 \
+    actor_rollout_ref.actor.ppo_mini_batch_size=32 \
+    actor_rollout_ref.actor.ppo_micro_batch_size=8 \
+    actor_rollout_ref.rollout.log_prob_micro_batch_size=8 \
+    actor_rollout_ref.rollout.tensor_model_parallel_size=$ROLLOUT_TP_SIZE \
+    actor_rollout_ref.rollout.gpu_memory_utilization=0.6 \
+    actor_rollout_ref.rollout.enforce_eager=true \
+    actor_rollout_ref.rollout.free_cache_engine=false \
+    actor_rollout_ref.ref.log_prob_micro_batch_size=8 \
+    actor_rollout_ref.model.enable_gradient_checkpointing=True \
+    critic.model.enable_gradient_checkpointing=True \
+    critic.optim.lr=1e-5 \
+    critic.model.path=$BASE_MODEL \
+    +critic.model.trust_remote_code=true \
+    +critic.model.torch_dtype=bfloat16 \
+    +critic.model.device_map=auto \
+    +critic.model.attn_implementation=flash_attention_2 \
+    +critic.model.use_cache=false \
+    critic.ppo_mini_batch_size=32 \
+    critic.ppo_micro_batch_size=8 \
+    ++actor_rollout_ref.actor.redo_tau=0.1 \
+    algorithm.kl_ctrl.kl_coef=0.001 \
+    trainer.logger=['wandb','console'] \
+    +logger.print_to_console=true \
+    trainer.default_hdfs_dir=null \
+    trainer.default_local_dir=${CHECKPOINT_BASE_DIR} \
+    trainer.n_gpus_per_node=$N_GPUS \
+    trainer.nnodes=1 \
+    trainer.save_freq=1200 \
+    trainer.test_freq=30 \
+    trainer.project_name=ContinualCountdown3B_llama \
+    trainer.experiment_name=$RUN_NAME \
+    trainer.total_epochs=1 \
+    +trainer.val_before_train=true \
+    ++reward_model.enable=False \
+    ++reward_model.model.path=$BASE_MODEL \
+    $LAYER_RESET_CONFIG \
+    ++actor_rollout_ref.actor.ck_reset.enable_reset=$CK_RESET_ENABLE \
+    ++actor_rollout_ref.actor.ck_reset.reset_strategy=$CK_RESET_STRATEGY \
+    ++actor_rollout_ref.actor.ck_reset.reset_k_layers=$CK_RESET_K_LAYERS \
+    ++actor_rollout_ref.actor.ck_reset.reset_steps="$CK_RESET_STEPS" \
+    ++actor_rollout_ref.actor.ck_reset.random_seed=$CK_RESET_RANDOM_SEED \
+    ++actor_rollout_ref.actor.ck_reset.ck_history_window=$CK_RESET_HISTORY_WINDOW \
+    2>&1 | tee -a "$LOG_FILE" | tee -a "$MASTER_LOG_FILE"
   ray stop
   sleep 10
-  echo "Experiment 2 Iteration $exp2_iter completed"
+  echo "Experiment 1 Iteration $exp1_iter completed"
 done
 echo "Experiment 1 completed after $EXP1_REPEAT_COUNT iteration(s)"
 
@@ -300,9 +344,9 @@ python3 -m verl.trainer.main_ppo \
   critic.ppo_mini_batch_size=32 \
   critic.ppo_micro_batch_size=8 \
   ++actor_rollout_ref.actor.redo_tau=0.1 \
-  ++actor_rollout_ref.actor.enable_gradient_analysis=true \
+  ++actor_rollout_ref.actor.enable_gradient_analysis=false \
   ++actor_rollout_ref.actor.gradient_analysis_freq=1 \
-  ++actor_rollout_ref.actor.enable_fisher_analysis=true \
+  ++actor_rollout_ref.actor.enable_fisher_analysis=false \
   ++actor_rollout_ref.actor.fisher_analysis_freq=1 \
   algorithm.kl_ctrl.kl_coef=0.001 \
   trainer.logger=['wandb','console'] \
@@ -313,20 +357,20 @@ python3 -m verl.trainer.main_ppo \
   trainer.nnodes=1 \
   trainer.save_freq=1200 \
   trainer.test_freq=30 \
-  trainer.project_name=ContinualCountdown3B_qwen \
+  trainer.project_name=ContinualCountdown3B_llama \
   trainer.experiment_name=$RUN_NAME \
   trainer.total_epochs=1 \
   +trainer.val_before_train=true \
   ++reward_model.enable=False \
   ++reward_model.model.path=$BASE_MODEL \
   $LAYER_RESET_CONFIG \
-  ++actor_rollout_ref.actor.ck_reset.enable=$CK_RESET_ENABLE \
+  ++actor_rollout_ref.actor.ck_reset.enable_reset=$CK_RESET_ENABLE \
   ++actor_rollout_ref.actor.ck_reset.reset_strategy=$CK_RESET_STRATEGY \
   ++actor_rollout_ref.actor.ck_reset.reset_k_layers=$CK_RESET_K_LAYERS \
   ++actor_rollout_ref.actor.ck_reset.reset_steps="$CK_RESET_STEPS" \
   ++actor_rollout_ref.actor.ck_reset.random_seed=$CK_RESET_RANDOM_SEED \
   ++actor_rollout_ref.actor.ck_reset.ck_history_window=$CK_RESET_HISTORY_WINDOW \
-  ++critic.ck_reset.enable=$CK_RESET_CRITIC_ENABLE \
+  ++critic.ck_reset.enable_reset=$CK_RESET_CRITIC_ENABLE \
   ++critic.ck_reset.reset_strategy=$CK_RESET_CRITIC_STRATEGY \
   2>&1 | tee -a "$LOG_FILE" | tee -a "$MASTER_LOG_FILE"
   ray stop
@@ -339,8 +383,8 @@ echo "Experiment 2 completed after $EXP2_REPEAT_COUNT iteration(s)"
 echo "=== EXPERIMENT 3: Training Group 2 (${EXP3_REPEAT_COUNT} repetition(s)) ==="
 for ((exp3_iter=1; exp3_iter<=EXP3_REPEAT_COUNT; exp3_iter++)); do
   echo "--- Experiment 3 Iteration $exp3_iter/$EXP3_REPEAT_COUNT ---"
-  TRAIN_FILES_STR="[\"./data/base/group_2/train.parquet\"]"
-  VAL_FILES_STR="[\"./data/base/group_2/test.parquet\"]"
+  TRAIN_FILES_STR="[\"./data/llama_base/deepmath/train.parquet\"]"
+  VAL_FILES_STR="[\"./data/llama_base/deepmath/test.parquet\"]"
   TRAIN_SAMPLE_SIZE="[2560]"
   RUN_NAME="Exp3_deepmath_Iter${exp3_iter}_SFT_${SFT_CHECKPOINT}_$(date +%Y%m%d_%H%M%S)"
   export RUN_NAME
@@ -352,78 +396,72 @@ for ((exp3_iter=1; exp3_iter<=EXP3_REPEAT_COUNT; exp3_iter++)); do
   python3 -m verl.trainer.main_ppo \
   --config-path $(pwd)/verl/trainer/config \
   --config-name ppo_trainer \
-  fsdp_grad_metric_enabled=$FSDP_GRAD_METRIC_ENABLED \
-  data.train_files="$TRAIN_FILES_STR" \
-  data.val_files="$VAL_FILES_STR" \
-  data.train_batch_size=256 \
-  data.val_batch_size=256 \
-  data.max_response_length=1024 \
-  ++data.curriculum_learning=true \
-  ++data.epochs_per_group=15 \
-  ++data.total_rounds=1 \
-  ++data.train_sample_size="$TRAIN_SAMPLE_SIZE" \
-  actor_rollout_ref.model.path=$BASE_MODEL \
-  actor_rollout_ref.model.use_remove_padding=True \
-  actor_rollout_ref.actor.use_dynamic_bsz=True \
-  +actor_rollout_ref.model.trust_remote_code=true \
-  +actor_rollout_ref.model.torch_dtype=bfloat16 \
-  +actor_rollout_ref.model.low_cpu_mem_usage=true \
-  +actor_rollout_ref.model.device_map=auto \
-  +actor_rollout_ref.model.attn_implementation=flash_attention_2 \
-  +actor_rollout_ref.model.use_cache=false \
-  actor_rollout_ref.actor.optim.lr=1e-6 \
-  actor_rollout_ref.actor.ppo_mini_batch_size=32 \
-  actor_rollout_ref.actor.ppo_micro_batch_size=8 \
-  actor_rollout_ref.rollout.log_prob_micro_batch_size=8 \
-  actor_rollout_ref.rollout.tensor_model_parallel_size=$ROLLOUT_TP_SIZE \
-  actor_rollout_ref.rollout.gpu_memory_utilization=0.6 \
-  actor_rollout_ref.rollout.enforce_eager=true \
-  actor_rollout_ref.rollout.free_cache_engine=false \
-  actor_rollout_ref.ref.log_prob_micro_batch_size=8 \
-  actor_rollout_ref.model.enable_gradient_checkpointing=True \
-  critic.model.enable_gradient_checkpointing=True \
-  critic.optim.lr=1e-5 \
-  critic.model.path=$BASE_MODEL \
-  +critic.model.trust_remote_code=true \
-  +critic.model.torch_dtype=bfloat16 \
-  +critic.model.device_map=auto \
-  +critic.model.attn_implementation=flash_attention_2 \
-  +critic.model.use_cache=false \
-  critic.ppo_mini_batch_size=32 \
-  critic.ppo_micro_batch_size=8 \
-  ++actor_rollout_ref.actor.redo_tau=0.1 \
-  ++actor_rollout_ref.actor.enable_gradient_analysis=true \
-  ++actor_rollout_ref.actor.gradient_analysis_freq=1 \
-  ++actor_rollout_ref.actor.enable_fisher_analysis=true \
-  ++actor_rollout_ref.actor.fisher_analysis_freq=1 \
-  algorithm.kl_ctrl.kl_coef=0.001 \
-  trainer.logger=['wandb','console'] \
-  +logger.print_to_console=true \
-  trainer.default_hdfs_dir=null \
-  trainer.default_local_dir=${CHECKPOINT_BASE_DIR} \
-  trainer.n_gpus_per_node=$N_GPUS \
-  trainer.nnodes=1 \
-  trainer.save_freq=1200 \
-  trainer.test_freq=30 \
-  trainer.project_name=ContinualCountdown3B_qwen \
-  trainer.experiment_name=$RUN_NAME \
-  trainer.total_epochs=1 \
-  +trainer.val_before_train=true \
-  ++reward_model.enable=False \
-  ++reward_model.model.path=$BASE_MODEL \
-  $LAYER_RESET_CONFIG \
-  ++actor_rollout_ref.actor.ck_reset.enable=$CK_RESET_ENABLE \
-  ++actor_rollout_ref.actor.ck_reset.reset_strategy=$CK_RESET_STRATEGY \
-  ++actor_rollout_ref.actor.ck_reset.reset_k_layers=$CK_RESET_K_LAYERS \
-  ++actor_rollout_ref.actor.ck_reset.reset_steps="$CK_RESET_STEPS" \
-  ++actor_rollout_ref.actor.ck_reset.random_seed=$CK_RESET_RANDOM_SEED \
-  ++actor_rollout_ref.actor.ck_reset.ck_history_window=$CK_RESET_HISTORY_WINDOW \
-  ++critic.ck_reset.enable=$CK_RESET_CRITIC_ENABLE \
-  ++critic.ck_reset.reset_strategy=$CK_RESET_CRITIC_STRATEGY \
-  2>&1 | tee -a "$LOG_FILE" | tee -a "$MASTER_LOG_FILE"
+    fsdp_grad_metric_enabled=$FSDP_GRAD_METRIC_ENABLED \
+    data.train_files="$TRAIN_FILES_STR" \
+    data.val_files="$VAL_FILES_STR" \
+    data.train_batch_size=256 \
+    data.val_batch_size=256 \
+    data.max_response_length=1024 \
+    ++data.curriculum_learning=true \
+    ++data.epochs_per_group=15 \
+    ++data.total_rounds=1 \
+    ++data.train_sample_size="$TRAIN_SAMPLE_SIZE" \
+    actor_rollout_ref.model.path=$BASE_MODEL \
+    actor_rollout_ref.model.use_remove_padding=True \
+    actor_rollout_ref.actor.use_dynamic_bsz=True \
+    +actor_rollout_ref.model.trust_remote_code=true \
+    +actor_rollout_ref.model.torch_dtype=bfloat16 \
+    +actor_rollout_ref.model.low_cpu_mem_usage=true \
+    +actor_rollout_ref.model.device_map=auto \
+    +actor_rollout_ref.model.attn_implementation=flash_attention_2 \
+    +actor_rollout_ref.model.use_cache=false \
+    actor_rollout_ref.actor.optim.lr=1e-6 \
+    actor_rollout_ref.actor.ppo_mini_batch_size=32 \
+    actor_rollout_ref.actor.ppo_micro_batch_size=8 \
+    actor_rollout_ref.rollout.log_prob_micro_batch_size=8 \
+    actor_rollout_ref.rollout.tensor_model_parallel_size=$ROLLOUT_TP_SIZE \
+    actor_rollout_ref.rollout.gpu_memory_utilization=0.6 \
+    actor_rollout_ref.rollout.enforce_eager=true \
+    actor_rollout_ref.rollout.free_cache_engine=false \
+    actor_rollout_ref.ref.log_prob_micro_batch_size=8 \
+    actor_rollout_ref.model.enable_gradient_checkpointing=True \
+    critic.model.enable_gradient_checkpointing=True \
+    critic.optim.lr=1e-5 \
+    critic.model.path=$BASE_MODEL \
+    +critic.model.trust_remote_code=true \
+    +critic.model.torch_dtype=bfloat16 \
+    +critic.model.device_map=auto \
+    +critic.model.attn_implementation=flash_attention_2 \
+    +critic.model.use_cache=false \
+    critic.ppo_mini_batch_size=32 \
+    critic.ppo_micro_batch_size=8 \
+    ++actor_rollout_ref.actor.redo_tau=0.1 \
+    algorithm.kl_ctrl.kl_coef=0.001 \
+    trainer.logger=['wandb','console'] \
+    +logger.print_to_console=true \
+    trainer.default_hdfs_dir=null \
+    trainer.default_local_dir=${CHECKPOINT_BASE_DIR} \
+    trainer.n_gpus_per_node=$N_GPUS \
+    trainer.nnodes=1 \
+    trainer.save_freq=1200 \
+    trainer.test_freq=30 \
+    trainer.project_name=ContinualCountdown3B_llama \
+    trainer.experiment_name=$RUN_NAME \
+    trainer.total_epochs=1 \
+    +trainer.val_before_train=true \
+    ++reward_model.enable=False \
+    ++reward_model.model.path=$BASE_MODEL \
+    $LAYER_RESET_CONFIG \
+    ++actor_rollout_ref.actor.ck_reset.enable_reset=$CK_RESET_ENABLE \
+    ++actor_rollout_ref.actor.ck_reset.reset_strategy=$CK_RESET_STRATEGY \
+    ++actor_rollout_ref.actor.ck_reset.reset_k_layers=$CK_RESET_K_LAYERS \
+    ++actor_rollout_ref.actor.ck_reset.reset_steps="$CK_RESET_STEPS" \
+    ++actor_rollout_ref.actor.ck_reset.random_seed=$CK_RESET_RANDOM_SEED \
+    ++actor_rollout_ref.actor.ck_reset.ck_history_window=$CK_RESET_HISTORY_WINDOW \
+    2>&1 | tee -a "$LOG_FILE" | tee -a "$MASTER_LOG_FILE"
   ray stop
   sleep 10
-  echo "Experiment 2 Iteration $exp2_iter completed"
+  echo "Experiment 3 Iteration $exp3_iter completed"
 done
 echo "Experiment 3 completed after $EXP3_REPEAT_COUNT iteration(s)"
 
